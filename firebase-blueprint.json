@@ -1,0 +1,128 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated MegaStream user account and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "plan": { "type": "string", "enum": ["free", "monthly", "quarterly", "annual"] },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "blocked": { "type": "boolean" },
+        "preferredTheme": { "type": "string", "enum": ["cinematografico", "neon-roxo", "minimalista", "gold-premium", "3d-glass"] },
+        "preferredLanguage": { "type": "string", "maxLength": 16 },
+        "preferredQuality": { "type": "string", "maxLength": 16 },
+        "parentalControl": { "type": "boolean" },
+        "notificationsEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "plan", "role", "blocked", "createdAt", "updatedAt"]
+    },
+    "FavoriteItem": {
+      "title": "FavoriteItem",
+      "description": "Movie or TV series saved in a user's Minha Lista.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tmdbId": { "type": "number" },
+        "mediaType": { "type": "string", "enum": ["movie", "tv"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "posterPath": { "type": "string", "maxLength": 400 },
+        "voteAverage": { "type": "number" },
+        "releaseYear": { "type": "string", "maxLength": 10 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "tmdbId", "mediaType", "title", "createdAt"]
+    },
+    "HistoryItem": {
+      "title": "HistoryItem",
+      "description": "Playback history entry with TMDB reference and progress.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tmdbId": { "type": "number" },
+        "mediaType": { "type": "string", "enum": ["movie", "tv"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "posterPath": { "type": "string", "maxLength": 400 },
+        "backdropPath": { "type": "string", "maxLength": 400 },
+        "progressPercent": { "type": "number" },
+        "seasonNumber": { "type": "number" },
+        "episodeNumber": { "type": "number" },
+        "playerProvider": { "type": "string", "maxLength": 32 },
+        "watchedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "tmdbId", "mediaType", "title", "progressPercent", "watchedAt"]
+    },
+    "LiveChannel": {
+      "title": "LiveChannel",
+      "description": "Admin-registered authorized live TV channel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "category": { "type": "string", "enum": ["Notícias", "Esportes", "Entretenimento", "Filmes", "Variedades", "Infantil"] },
+        "streamUrl": { "type": "string", "minLength": 8, "maxLength": 500 },
+        "logoUrl": { "type": "string", "maxLength": 500 },
+        "description": { "type": "string", "maxLength": 300 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "category", "streamUrl", "active", "createdAt"]
+    },
+    "SubscriptionRecord": {
+      "title": "SubscriptionRecord",
+      "description": "User subscription plan state and billing readiness metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planId": { "type": "string", "enum": ["monthly", "quarterly", "annual"] },
+        "status": { "type": "string", "enum": ["pending_gateway", "active", "canceled", "expired"] },
+        "amountBrl": { "type": "number" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "planId", "status", "amountBrl", "updatedAt"]
+    },
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Trusted admin lookup document keyed by user UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 180 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile and personal preferences."
+    },
+    "/users/{userId}/favorites/{favoriteId}": {
+      "schema": { "$ref": "#/entities/FavoriteItem" },
+      "description": "User saved movies and series in Minha Lista."
+    },
+    "/users/{userId}/history/{historyId}": {
+      "schema": { "$ref": "#/entities/HistoryItem" },
+      "description": "User playback history and resume progress."
+    },
+    "/channels/{channelId}": {
+      "schema": { "$ref": "#/entities/LiveChannel" },
+      "description": "Authorized live TV channels managed by administrators."
+    },
+    "/subscriptions/{userId}": {
+      "schema": { "$ref": "#/entities/SubscriptionRecord" },
+      "description": "User subscription record."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "Trusted administrator lookup collection."
+    }
+  }
+}

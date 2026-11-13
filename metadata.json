@@ -1,0 +1,6 @@
+{
+  "name": "MegaStream",
+  "description": "MegaStream — Plataforma profissional de streaming de filmes, séries e canais ao vivo com catálogo TMDB, player MegaEmbed e Inteligência Artificial.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,111 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root,
+[data-theme="cinematografico"] {
+  --ms-bg: #050814;
+  --ms-bg-secondary: #0a1128;
+  --ms-surface: rgba(12, 22, 49, 0.78);
+  --ms-surface-solid: #0c1631;
+  --ms-border: rgba(56, 189, 248, 0.16);
+  --ms-accent: #1d63ff;
+  --ms-accent-bright: #00d4ff;
+  --ms-accent-glow: rgba(0, 168, 255, 0.35);
+  --ms-text: #f8fafc;
+  --ms-text-muted: #94a3b8;
+}
+
+[data-theme="neon-roxo"] {
+  --ms-bg: #070414;
+  --ms-bg-secondary: #12092b;
+  --ms-surface: rgba(24, 13, 52, 0.8);
+  --ms-surface-solid: #180d34;
+  --ms-border: rgba(168, 85, 247, 0.24);
+  --ms-accent: #8b5cf6;
+  --ms-accent-bright: #d946ef;
+  --ms-accent-glow: rgba(168, 85, 247, 0.38);
+  --ms-text: #faf5ff;
+  --ms-text-muted: #a78bfa;
+}
+
+[data-theme="minimalista"] {
+  --ms-bg: #09090b;
+  --ms-bg-secondary: #111115;
+  --ms-surface: rgba(24, 24, 29, 0.88);
+  --ms-surface-solid: #18181d;
+  --ms-border: rgba(255, 255, 255, 0.11);
+  --ms-accent: #e4e4e7;
+  --ms-accent-bright: #ffffff;
+  --ms-accent-glow: rgba(255, 255, 255, 0.14);
+  --ms-text: #fafafa;
+  --ms-text-muted: #a1a1aa;
+}
+
+[data-theme="gold-premium"] {
+  --ms-bg: #0a0804;
+  --ms-bg-secondary: #171209;
+  --ms-surface: rgba(28, 22, 12, 0.84);
+  --ms-surface-solid: #1c160c;
+  --ms-border: rgba(245, 158, 11, 0.24);
+  --ms-accent: #d97706;
+  --ms-accent-bright: #fbbf24;
+  --ms-accent-glow: rgba(245, 158, 11, 0.32);
+  --ms-text: #fffbeb;
+  --ms-text-muted: #d6b88d;
+}
+
+[data-theme="3d-glass"] {
+  --ms-bg: #030b18;
+  --ms-bg-secondary: #081c36;
+  --ms-surface: rgba(14, 38, 72, 0.56);
+  --ms-surface-solid: #0e2648;
+  --ms-border: rgba(125, 211, 252, 0.28);
+  --ms-accent: #0284c7;
+  --ms-accent-bright: #38bdf8;
+  --ms-accent-glow: rgba(56, 189, 248, 0.42);
+  --ms-text: #f0f9ff;
+  --ms-text-muted: #bae6fd;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--ms-bg);
+    color: var(--ms-text);
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+    overflow-x: hidden;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-display {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono-tabular {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.ms-glass {
+  background-color: var(--ms-surface);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--ms-border);
+}
+
+.ms-glow {
+  box-shadow: 0 0 28px -6px var(--ms-accent-glow);
+}
+
+.ms-scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.ms-scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

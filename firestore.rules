@@ -1,0 +1,233 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'meggadriver@gmail.com'
+      );
+    }
+
+    // Validation Blueprints
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'plan', 'role', 'blocked', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'name', 'email', 'photoUrl', 'plan', 'role', 'blocked',
+          'preferredTheme', 'preferredLanguage', 'preferredQuality',
+          'parentalControl', 'notificationsEnabled', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 180
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && data.plan in ['free', 'monthly', 'quarterly', 'annual']
+        && data.role in ['user', 'admin']
+        && data.blocked is bool
+        && (!('preferredTheme' in data) || data.preferredTheme in ['cinematografico', 'neon-roxo', 'minimalista', 'gold-premium', '3d-glass'])
+        && (!('preferredLanguage' in data) || (data.preferredLanguage is string && data.preferredLanguage.size() <= 16))
+        && (!('preferredQuality' in data) || (data.preferredQuality is string && data.preferredQuality.size() <= 16))
+        && (!('parentalControl' in data) || data.parentalControl is bool)
+        && (!('notificationsEnabled' in data) || data.notificationsEnabled is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFavoriteItem(data, userId) {
+      return data.keys().hasAll(['userId', 'tmdbId', 'mediaType', 'title', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'tmdbId', 'mediaType', 'title', 'posterPath', 'voteAverage', 'releaseYear', 'createdAt'])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.tmdbId is number && data.tmdbId > 0
+        && data.mediaType in ['movie', 'tv']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && (!('posterPath' in data) || (data.posterPath is string && data.posterPath.size() <= 400))
+        && (!('voteAverage' in data) || (data.voteAverage is number && data.voteAverage >= 0 && data.voteAverage <= 10))
+        && (!('releaseYear' in data) || (data.releaseYear is string && data.releaseYear.size() <= 10))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidHistoryItem(data, userId) {
+      return data.keys().hasAll(['userId', 'tmdbId', 'mediaType', 'title', 'progressPercent', 'watchedAt'])
+        && data.keys().hasOnly([
+          'userId', 'tmdbId', 'mediaType', 'title', 'posterPath', 'backdropPath',
+          'progressPercent', 'seasonNumber', 'episodeNumber', 'playerProvider', 'watchedAt'
+        ])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.tmdbId is number && data.tmdbId > 0
+        && data.mediaType in ['movie', 'tv']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && (!('posterPath' in data) || (data.posterPath is string && data.posterPath.size() <= 400))
+        && (!('backdropPath' in data) || (data.backdropPath is string && data.backdropPath.size() <= 400))
+        && data.progressPercent is number && data.progressPercent >= 0 && data.progressPercent <= 100
+        && (!('seasonNumber' in data) || (data.seasonNumber is number && data.seasonNumber >= 0))
+        && (!('episodeNumber' in data) || (data.episodeNumber is number && data.episodeNumber >= 0))
+        && (!('playerProvider' in data) || (data.playerProvider is string && data.playerProvider.size() <= 32))
+        && data.watchedAt is timestamp;
+    }
+
+    function isValidChannel(data, channelId) {
+      return data.keys().hasAll(['id', 'name', 'category', 'streamUrl', 'active', 'createdAt'])
+        && data.keys().hasOnly(['id', 'name', 'category', 'streamUrl', 'logoUrl', 'description', 'active', 'createdAt'])
+        && data.id is string && data.id == channelId && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.category in ['Notícias', 'Esportes', 'Entretenimento', 'Filmes', 'Variedades', 'Infantil']
+        && data.streamUrl is string && data.streamUrl.size() >= 8 && data.streamUrl.size() <= 500
+        && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 500))
+        && (!('description' in data) || (data.description is string && data.description.size() <= 300))
+        && data.active is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSubscription(data, userId) {
+      return data.keys().hasAll(['userId', 'planId', 'status', 'amountBrl', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'planId', 'status', 'amountBrl', 'expiresAt', 'updatedAt'])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.planId in ['monthly', 'quarterly', 'annual']
+        && data.status in ['pending_gateway', 'active', 'canceled', 'expired']
+        && data.amountBrl is number && data.amountBrl >= 0
+        && (!('expiresAt' in data) || data.expiresAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /users/{userId}
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().role == 'user'
+        && incoming().blocked == false
+        && incoming().plan == 'free'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().blocked == existing().blocked
+            && incoming().plan == existing().plan
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'photoUrl', 'preferredTheme', 'preferredLanguage',
+              'preferredQuality', 'parentalControl', 'notificationsEnabled', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // Subcollection: /users/{userId}/favorites/{favoriteId}
+      match /favorites/{favoriteId} {
+        allow get: if isValidId(userId) && isValidId(favoriteId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isVerifiedUser()
+          && isValidId(userId) && isValidId(favoriteId)
+          && isOwner(userId)
+          && isValidFavoriteItem(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(favoriteId) && (isOwner(userId) || isAdmin());
+      }
+
+      // Subcollection: /users/{userId}/history/{historyId}
+      match /history/{historyId} {
+        allow get: if isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isVerifiedUser()
+          && isValidId(userId) && isValidId(historyId)
+          && isOwner(userId)
+          && isValidHistoryItem(incoming(), userId)
+          && incoming().watchedAt == request.time;
+        allow update: if isVerifiedUser()
+          && isValidId(userId) && isValidId(historyId)
+          && isOwner(userId)
+          && isValidHistoryItem(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().tmdbId == existing().tmdbId
+          && incoming().mediaType == existing().mediaType
+          && incoming().watchedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'posterPath', 'backdropPath', 'progressPercent',
+            'seasonNumber', 'episodeNumber', 'playerProvider', 'watchedAt'
+          ]);
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    // Collection: /channels/{channelId}
+    match /channels/{channelId} {
+      allow get: if isValidId(channelId) && (existing().active == true || isAdmin());
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isAdmin() && isValidId(channelId) && isValidChannel(incoming(), channelId) && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidId(channelId) && isValidChannel(incoming(), channelId) && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(channelId);
+    }
+
+    // Collection: /subscriptions/{userId}
+    match /subscriptions/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidSubscription(incoming(), userId)
+        && incoming().status == 'pending_gateway'
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidSubscription(incoming(), userId)
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(userId)
+            && incoming().userId == existing().userId
+            && incoming().status in ['pending_gateway', 'canceled']
+            && incoming().diff(existing()).affectedKeys().hasOnly(['planId', 'status', 'amountBrl', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Collection: /admins/{adminId}
+    match /admins/{adminId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Connection check document (read-only ping)
+    match /test/connection {
+      allow get: if true;
+    }
+  }
+}
