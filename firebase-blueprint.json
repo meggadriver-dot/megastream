@@ -97,12 +97,38 @@
         "grantedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "grantedAt"]
+    },
+    "StreamProfile": {
+      "title": "StreamProfile",
+      "description": "Customizable viewing profile under a user account with optional PIN lock, avatar, kids mode, and theme.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "avatarId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "avatarUrl": { "type": "string", "minLength": 1, "maxLength": 45000 },
+        "hasPin": { "type": "boolean" },
+        "pinHash": { "type": "string", "maxLength": 128 },
+        "isKids": { "type": "boolean" },
+        "preferredTheme": { "type": "string", "enum": ["cinematografico", "neon-roxo", "minimalista", "gold-premium", "3d-glass"] },
+        "preferredLanguage": { "type": "string", "minLength": 2, "maxLength": 16 },
+        "preferredQuality": { "type": "string", "minLength": 2, "maxLength": 16 },
+        "autoplayNext": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "avatarId", "avatarUrl", "hasPin", "isKids", "preferredTheme", "preferredLanguage", "preferredQuality", "autoplayNext", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Private user account profile and personal preferences."
+    },
+    "/users/{userId}/profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/StreamProfile" },
+      "description": "Viewer profiles under a user account with avatar, PIN hash, kids mode, and preferences."
     },
     "/users/{userId}/favorites/{favoriteId}": {
       "schema": { "$ref": "#/entities/FavoriteItem" },

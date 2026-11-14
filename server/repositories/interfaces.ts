@@ -4,6 +4,7 @@ import type {
   FavoriteItem,
   HistoryItem,
   LiveChannel,
+  StoredStreamProfile,
   SubscriptionRecord,
   SystemLogEntry,
   UserProfile,
@@ -13,6 +14,9 @@ export interface IRepositoryStore {
   getUsers(): UserProfile[];
   getUser(uid: string): UserProfile | null;
   upsertUser(user: UserProfile): UserProfile;
+  getProfiles(userId: string): StoredStreamProfile[];
+  upsertProfile(profile: StoredStreamProfile): StoredStreamProfile;
+  deleteProfile(userId: string, profileId: string): boolean;
   getFavorites(userId: string): FavoriteItem[];
   addFavorite(item: FavoriteItem): FavoriteItem;
   removeFavorite(userId: string, tmdbId: number, mediaType: 'movie' | 'tv'): boolean;
@@ -34,6 +38,7 @@ export interface IRepositoryStore {
 
 interface PersistedState {
   users: Record<string, UserProfile>;
+  profiles: Record<string, StoredStreamProfile[]>;
   favorites: Record<string, FavoriteItem[]>;
   history: Record<string, HistoryItem[]>;
   channels: Record<string, LiveChannel>;
@@ -65,6 +70,7 @@ class JsonRepositoryStore implements IRepositoryStore {
     }
     return {
       users: {},
+      profiles: {},
       favorites: {},
       history: {},
       channels: {},
@@ -103,6 +109,35 @@ class JsonRepositoryStore implements IRepositoryStore {
     this.state.users[user.uid] = user;
     this.save();
     return user;
+  }
+
+  getProfiles(userId: string): StoredStreamProfile[] {
+    return (this.state.profiles ?? {})[userId] ?? [];
+  }
+
+  upsertProfile(profile: StoredStreamProfile): StoredStreamProfile {
+    if (!this.state.profiles) this.state.profiles = {};
+    const list = this.state.profiles[profile.userId] ?? [];
+    const idx = list.findIndex((p) => p.id === profile.id);
+    if (idx >= 0) {
+      const next = [...list];
+      next[idx] = profile;
+      this.state.profiles[profile.userId] = next;
+    } else {
+      this.state.profiles[profile.userId] = [...list, profile];
+    }
+    this.save();
+    return profile;
+  }
+
+  deleteProfile(userId: string, profileId: string): boolean {
+    if (!this.state.profiles) return false;
+    const list = this.state.profiles[userId] ?? [];
+    const next = list.filter((p) => p.id !== profileId);
+    const removed = next.length !== list.length;
+    this.state.profiles[userId] = next;
+    this.save();
+    return removed;
   }
 
   getFavorites(userId: string): FavoriteItem[] {

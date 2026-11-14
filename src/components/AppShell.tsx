@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { resolveProfileAvatarUrl } from '../data/avatarPresets';
 import { Logo } from './Logo';
 
 interface AppShellProps {
@@ -44,7 +45,7 @@ const MOBILE_BOTTOM_TABS = [
 ];
 
 export function AppShell({ children, hideChrome = false }: AppShellProps) {
-  const { firebaseUser, profile } = useAuth();
+  const { firebaseUser, profile, activeProfile, openProfileGate } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const navigate = useNavigate();
@@ -148,7 +149,7 @@ export function AppShell({ children, hideChrome = false }: AppShellProps) {
       <div className="flex-1 min-w-0 w-full md:pl-60 lg:pl-64 flex flex-col min-h-screen relative z-10 pb-20 md:pb-0">
         {/* Top Bar (Clean 3-Zone Contract, compact mobile height <= 56px) */}
         <header
-          className="sticky top-0 z-20 h-14 sm:h-16 px-4 sm:px-6 flex items-center justify-between gap-4 ms-glass border-b"
+          className="sticky top-0 z-20 h-14 sm:h-16 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-4 ms-glass border-b"
           style={{ borderColor: 'var(--ms-border)' }}
         >
           <div className="flex items-center gap-3 md:hidden shrink-0">
@@ -179,12 +180,12 @@ export function AppShell({ children, hideChrome = false }: AppShellProps) {
           </form>
 
           {/* Right Actions */}
-          <div className="flex items-center gap-2.5 shrink-0 ml-auto">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 ml-auto">
             <button
               type="button"
               onClick={() => setMobileSearchOpen((v) => !v)}
               aria-label="Abrir pesquisa"
-              className="sm:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-200 hover:bg-white/10 cursor-pointer"
+              className="sm:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl text-slate-200 hover:bg-white/10 cursor-pointer"
             >
               {mobileSearchOpen ? <X className="w-5 h-5" /> : <Search className="w-5 h-5" />}
             </button>
@@ -197,6 +198,25 @@ export function AppShell({ children, hideChrome = false }: AppShellProps) {
               <Bot className="w-4 h-4 text-sky-400" aria-hidden="true" />
               IA Inteligente
             </Link>
+
+            {firebaseUser && activeProfile && (
+              <button
+                type="button"
+                onClick={openProfileGate}
+                aria-label={`Trocar perfil ativo (${activeProfile.name})`}
+                className="inline-flex items-center gap-2 p-1 sm:px-2.5 sm:py-1.5 rounded-xl ms-glass hover:bg-white/15 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <img
+                  src={resolveProfileAvatarUrl(activeProfile.avatarId, activeProfile.avatarUrl)}
+                  alt={activeProfile.name}
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-lg object-cover border border-sky-400/60"
+                />
+                <span className="hidden sm:inline text-xs sm:text-sm font-medium text-white max-w-[110px] truncate">
+                  {activeProfile.name}
+                </span>
+              </button>
+            )}
 
             {firebaseUser ? (
               <Link
@@ -218,14 +238,14 @@ export function AppShell({ children, hideChrome = false }: AppShellProps) {
                     {(profile?.name || firebaseUser.email || 'M')[0].toUpperCase()}
                   </div>
                 )}
-                <span className="hidden sm:inline text-sm font-medium text-white max-w-[120px] truncate">
+                <span className="hidden lg:inline text-sm font-medium text-white max-w-[120px] truncate">
                   {profile?.name || firebaseUser.displayName || 'Minha Conta'}
                 </span>
               </Link>
             ) : (
               <Link
                 to="/login"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white whitespace-nowrap shrink-0 transition-opacity hover:opacity-95"
+                className="inline-flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-white whitespace-nowrap shrink-0 transition-opacity hover:opacity-95"
                 style={{ backgroundColor: 'var(--ms-accent)' }}
               >
                 <LogIn className="w-4 h-4" aria-hidden="true" />

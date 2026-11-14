@@ -152,6 +152,35 @@ export interface UserProfile {
   updatedAt: string;
 }
 
+export type AvatarCategory = 'todos' | 'desenhos' | 'series' | 'filmes' | 'infantil';
+
+export interface AvatarPresetMeta {
+  id: string;
+  label: string;
+  category: Exclude<AvatarCategory, 'todos'>;
+  fallbackPath: string;
+}
+
+export interface StreamProfile {
+  id: string;
+  userId: string;
+  name: string;
+  avatarId: string;
+  avatarUrl: string;
+  hasPin: boolean;
+  isKids: boolean;
+  preferredTheme: ThemeId;
+  preferredLanguage: string;
+  preferredQuality: string;
+  autoplayNext: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredStreamProfile extends StreamProfile {
+  pinHash?: string;
+}
+
 export interface FavoriteItem {
   id: string;
   userId: string;

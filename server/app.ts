@@ -16,6 +16,7 @@ import { ChannelService } from './services/ChannelService.ts';
 import { FavoritesService } from './services/FavoritesService.ts';
 import { HistoryService } from './services/HistoryService.ts';
 import { PlayerService } from './services/PlayerService.ts';
+import { ProfileService } from './services/ProfileService.ts';
 import { RecommendationService } from './services/RecommendationService.ts';
 import { SubscriptionService } from './services/SubscriptionService.ts';
 import { TMDBService } from './services/TMDBService.ts';
@@ -328,6 +329,65 @@ export function createApiApp(): Express {
     const updated = UserService.updatePreferences(req.identity!.uid, req.body ?? {});
     if (!updated) return res.status(404).json({ error: 'Usuário não encontrado.' });
     res.json({ user: updated });
+  });
+
+  // --- Multi-Profile API ---
+  app.get('/api/users/profiles', requireAuth, (req: AuthenticatedRequest, res) => {
+    const items = ProfileService.list(req.identity!.uid, req.identity!.name);
+    res.json({ items });
+  });
+
+  app.post('/api/users/profiles', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const created = await ProfileService.create(req.identity!.uid, req.body ?? {});
+      res.status(201).json(created);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao criar perfil.' });
+    }
+  });
+
+  app.patch('/api/users/profiles/:profileId', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const updated = await ProfileService.update(
+        req.identity!.uid,
+        req.params.profileId,
+        req.body ?? {}
+      );
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao atualizar perfil.' });
+    }
+  });
+
+  app.post(
+    '/api/users/profiles/:profileId/verify-pin',
+    requireAuth,
+    async (req: AuthenticatedRequest, res) => {
+      const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+      const verified = await ProfileService.verifyPin(
+        req.identity!.uid,
+        req.params.profileId,
+        pin
+      );
+      if (!verified) {
+        return res.status(403).json({ verified: false, error: 'Senha do perfil incorreta.' });
+      }
+      res.json({ verified: true });
+    }
+  );
+
+  app.delete('/api/users/profiles/:profileId', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const currentPin = typeof req.body?.currentPin === 'string' ? req.body.currentPin : undefined;
+      const removed = await ProfileService.remove(
+        req.identity!.uid,
+        req.params.profileId,
+        currentPin
+      );
+      res.json({ removed });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao remover perfil.' });
+    }
   });
 
   app.get('/api/users/favorites', requireAuth, (req: AuthenticatedRequest, res) => {

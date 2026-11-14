@@ -44,7 +44,7 @@ export function RegisterPage() {
     setLoading(true);
     try {
       await registerWithEmail(name.trim(), email.trim(), password);
-      navigate('/profile');
+      navigate('/');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('operation-not-allowed')) {
@@ -68,7 +68,7 @@ export function RegisterPage() {
     setLoading(true);
     try {
       await signInWithGoogle();
-      navigate('/profile');
+      navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao registrar com Google.');
     } finally {

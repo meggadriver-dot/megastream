@@ -127,6 +127,7 @@ var JsonRepositoryStore = class {
     }
     return {
       users: {},
+      profiles: {},
       favorites: {},
       history: {},
       channels: {},
@@ -160,6 +161,32 @@ var JsonRepositoryStore = class {
     this.state.users[user.uid] = user;
     this.save();
     return user;
+  }
+  getProfiles(userId) {
+    return (this.state.profiles ?? {})[userId] ?? [];
+  }
+  upsertProfile(profile) {
+    if (!this.state.profiles) this.state.profiles = {};
+    const list = this.state.profiles[profile.userId] ?? [];
+    const idx = list.findIndex((p) => p.id === profile.id);
+    if (idx >= 0) {
+      const next = [...list];
+      next[idx] = profile;
+      this.state.profiles[profile.userId] = next;
+    } else {
+      this.state.profiles[profile.userId] = [...list, profile];
+    }
+    this.save();
+    return profile;
+  }
+  deleteProfile(userId, profileId) {
+    if (!this.state.profiles) return false;
+    const list = this.state.profiles[userId] ?? [];
+    const next = list.filter((p) => p.id !== profileId);
+    const removed = next.length !== list.length;
+    this.state.profiles[userId] = next;
+    this.save();
+    return removed;
   }
   getFavorites(userId) {
     return this.state.favorites[userId] ?? [];
@@ -1824,6 +1851,283 @@ var PlayerServiceImpl = class {
 };
 var PlayerService = new PlayerServiceImpl();
 
+// server/services/ProfileService.ts
+import crypto from "node:crypto";
+
+// shared/profileUtils.ts
+var MAX_PROFILES_PER_ACCOUNT = 6;
+var VALID_PROFILE_THEMES = [
+  "cinematografico",
+  "neon-roxo",
+  "minimalista",
+  "gold-premium",
+  "3d-glass"
+];
+var PROFILE_AVATAR_PRESETS = [
+  {
+    id: "avatar_cartoon_hero",
+    label: "Her\xF3i Animado",
+    category: "desenhos",
+    fallbackPath: "/src/assets/images/avatar_cartoon_hero_1794675751477.jpg"
+  },
+  {
+    id: "avatar_anime_pilot",
+    label: "Piloto Cyber Anime",
+    category: "desenhos",
+    fallbackPath: "/src/assets/images/avatar_anime_pilot_1794675752025.jpg"
+  },
+  {
+    id: "avatar_series_detective",
+    label: "Detetive Noir",
+    category: "series",
+    fallbackPath: "/src/assets/images/avatar_series_detective_1794675751043.jpg"
+  },
+  {
+    id: "avatar_series_queen",
+    label: "Rainha Fantasia",
+    category: "series",
+    fallbackPath: "/src/assets/images/avatar_series_queen_1794675751674.jpg"
+  },
+  {
+    id: "avatar_movie_explorer",
+    label: "Explorador Duna",
+    category: "filmes",
+    fallbackPath: "/src/assets/images/avatar_movie_explorer_1794675752185.jpg"
+  },
+  {
+    id: "avatar_movie_vigilante",
+    label: "Vigilante Noturno",
+    category: "filmes",
+    fallbackPath: "/src/assets/images/avatar_movie_vigilante_1794675753040.jpg"
+  },
+  {
+    id: "avatar_kids_dino",
+    label: "Dino Pipoca Kids",
+    category: "infantil",
+    fallbackPath: "/src/assets/images/avatar_kids_dino_1794675753063.jpg"
+  },
+  {
+    id: "avatar_movie_astronaut",
+    label: "Astronauta Neon",
+    category: "filmes",
+    fallbackPath: "/src/assets/images/avatar_movie_astronaut_1794675753848.jpg"
+  }
+];
+function getAvatarPresetById(id) {
+  if (!id) return void 0;
+  return PROFILE_AVATAR_PRESETS.find((preset) => preset.id === id);
+}
+function sanitizeProfileName(input, fallback = "Perfil") {
+  const cleaned = sanitizePlainText(input ?? "", 40);
+  return cleaned.length >= 1 ? cleaned : fallback;
+}
+function isValidProfileId(id) {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+function sanitizeProfileTheme(theme, fallback = "cinematografico") {
+  if (theme && VALID_PROFILE_THEMES.includes(theme)) {
+    return theme;
+  }
+  return fallback;
+}
+function sanitizeAvatarUrl(url) {
+  const trimmed = (url ?? "").trim();
+  if (!trimmed) {
+    return PROFILE_AVATAR_PRESETS[7].fallbackPath;
+  }
+  if (trimmed.startsWith("/src/assets/images/") || trimmed.startsWith("/assets/")) {
+    return trimmed.slice(0, 300);
+  }
+  if (/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+    return trimmed.length <= 45e3 ? trimmed : PROFILE_AVATAR_PRESETS[7].fallbackPath;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+      return parsed.toString().slice(0, 500);
+    }
+  } catch {
+  }
+  return PROFILE_AVATAR_PRESETS[7].fallbackPath;
+}
+function validateProfilePin(pin) {
+  if (typeof pin !== "string") return false;
+  const trimmed = pin.trim();
+  return trimmed.length >= 4 && trimmed.length <= 12 && !/\s/.test(trimmed);
+}
+async function hashProfilePin(profileId, pin) {
+  const normalized = pin.trim();
+  if (!validateProfilePin(normalized)) {
+    throw new Error("A senha do perfil deve ter entre 4 e 12 caracteres sem espa\xE7os.");
+  }
+  const encoder = new TextEncoder();
+  const data = encoder.encode(`megastream:profile:v1:${profileId}:${normalized}`);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function verifyProfilePin(profileId, pin, expectedHash) {
+  if (!expectedHash || !validateProfilePin(pin)) {
+    return false;
+  }
+  const computed = await hashProfilePin(profileId, pin);
+  return computed === expectedHash;
+}
+function toPublicStreamProfile(profile) {
+  const { pinHash: _ignored, ...publicProfile } = profile;
+  return publicProfile;
+}
+function createDefaultProfiles(userId, ownerName) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const mainName = sanitizeProfileName(ownerName || "Principal", "Principal");
+  return [
+    {
+      id: "profile_main",
+      userId,
+      name: mainName,
+      avatarId: "avatar_movie_astronaut",
+      avatarUrl: PROFILE_AVATAR_PRESETS[7].fallbackPath,
+      hasPin: false,
+      pinHash: "",
+      isKids: false,
+      preferredTheme: "cinematografico",
+      preferredLanguage: "pt-BR",
+      preferredQuality: "1080p",
+      autoplayNext: true,
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+}
+
+// server/services/ProfileService.ts
+var ProfileServiceImpl = class {
+  ensureProfiles(userId, ownerName) {
+    const existing = repositoryStore.getProfiles(userId);
+    if (existing.length > 0) return existing;
+    const defaults = createDefaultProfiles(userId, ownerName);
+    for (const prof of defaults) {
+      repositoryStore.upsertProfile(prof);
+    }
+    return defaults;
+  }
+  list(userId, ownerName) {
+    return this.ensureProfiles(userId, ownerName).map(toPublicStreamProfile);
+  }
+  async create(userId, payload) {
+    const current = this.ensureProfiles(userId);
+    if (current.length >= MAX_PROFILES_PER_ACCOUNT) {
+      throw new Error(`Limite m\xE1ximo de ${MAX_PROFILES_PER_ACCOUNT} perfis por conta atingido.`);
+    }
+    const profileId = `prof_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const preset = getAvatarPresetById(payload.avatarId);
+    const avatarId = preset ? preset.id : "custom";
+    const avatarUrl = preset ? preset.fallbackPath : sanitizeAvatarUrl(payload.avatarUrl);
+    const rawPin = typeof payload.pin === "string" ? payload.pin.trim() : "";
+    let hasPin = false;
+    let pinHash = "";
+    if (rawPin.length > 0) {
+      if (!validateProfilePin(rawPin)) {
+        throw new Error("A senha do perfil deve ter entre 4 e 12 caracteres sem espa\xE7os.");
+      }
+      hasPin = true;
+      pinHash = await hashProfilePin(profileId, rawPin);
+    }
+    const created = {
+      id: profileId,
+      userId,
+      name: sanitizeProfileName(payload.name, "Novo Perfil"),
+      avatarId,
+      avatarUrl,
+      hasPin,
+      pinHash,
+      isKids: Boolean(payload.isKids),
+      preferredTheme: sanitizeProfileTheme(payload.preferredTheme, "cinematografico"),
+      preferredLanguage: payload.preferredLanguage === "en-US" || payload.preferredLanguage === "es-ES" ? payload.preferredLanguage : "pt-BR",
+      preferredQuality: payload.preferredQuality === "auto" || payload.preferredQuality === "720p" ? payload.preferredQuality : "1080p",
+      autoplayNext: payload.autoplayNext !== void 0 ? Boolean(payload.autoplayNext) : true,
+      createdAt: now,
+      updatedAt: now
+    };
+    repositoryStore.upsertProfile(created);
+    return toPublicStreamProfile(created);
+  }
+  async update(userId, profileId, payload) {
+    if (!isValidProfileId(profileId)) {
+      throw new Error("Identificador de perfil inv\xE1lido.");
+    }
+    const current = this.ensureProfiles(userId);
+    const existing = current.find((p) => p.id === profileId);
+    if (!existing) {
+      throw new Error("Perfil n\xE3o encontrado.");
+    }
+    if (existing.hasPin && (payload.pin || payload.removePin)) {
+      const ok = await verifyProfilePin(profileId, payload.currentPin ?? "", existing.pinHash);
+      if (!ok) {
+        throw new Error("Senha atual do perfil incorreta.");
+      }
+    }
+    let nextHasPin = existing.hasPin;
+    let nextPinHash = existing.pinHash ?? "";
+    if (payload.removePin) {
+      nextHasPin = false;
+      nextPinHash = "";
+    } else if (typeof payload.pin === "string" && payload.pin.trim().length > 0) {
+      if (!validateProfilePin(payload.pin)) {
+        throw new Error("A senha do perfil deve ter entre 4 e 12 caracteres sem espa\xE7os.");
+      }
+      nextHasPin = true;
+      nextPinHash = await hashProfilePin(profileId, payload.pin);
+    }
+    const preset = payload.avatarId ? getAvatarPresetById(payload.avatarId) : void 0;
+    const nextAvatarId = payload.avatarId ? preset ? preset.id : "custom" : existing.avatarId;
+    const nextAvatarUrl = payload.avatarId || payload.avatarUrl ? preset ? preset.fallbackPath : sanitizeAvatarUrl(payload.avatarUrl ?? existing.avatarUrl) : existing.avatarUrl;
+    const updated = {
+      ...existing,
+      name: payload.name !== void 0 ? sanitizeProfileName(payload.name, existing.name) : existing.name,
+      avatarId: nextAvatarId,
+      avatarUrl: nextAvatarUrl,
+      hasPin: nextHasPin,
+      pinHash: nextPinHash,
+      isKids: payload.isKids !== void 0 ? Boolean(payload.isKids) : existing.isKids,
+      preferredTheme: payload.preferredTheme !== void 0 ? sanitizeProfileTheme(payload.preferredTheme, existing.preferredTheme) : existing.preferredTheme,
+      preferredLanguage: payload.preferredLanguage === "pt-BR" || payload.preferredLanguage === "en-US" || payload.preferredLanguage === "es-ES" ? payload.preferredLanguage : existing.preferredLanguage,
+      preferredQuality: payload.preferredQuality === "auto" || payload.preferredQuality === "1080p" || payload.preferredQuality === "720p" ? payload.preferredQuality : existing.preferredQuality,
+      autoplayNext: payload.autoplayNext !== void 0 ? Boolean(payload.autoplayNext) : existing.autoplayNext,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    repositoryStore.upsertProfile(updated);
+    return toPublicStreamProfile(updated);
+  }
+  async verifyPin(userId, profileId, pin) {
+    if (!isValidProfileId(profileId)) return false;
+    const list = this.ensureProfiles(userId);
+    const target = list.find((p) => p.id === profileId);
+    if (!target) return false;
+    if (!target.hasPin) return true;
+    return verifyProfilePin(profileId, pin, target.pinHash);
+  }
+  async remove(userId, profileId, currentPin) {
+    if (!isValidProfileId(profileId)) {
+      throw new Error("Identificador de perfil inv\xE1lido.");
+    }
+    const list = this.ensureProfiles(userId);
+    if (list.length <= 1) {
+      throw new Error("\xC9 necess\xE1rio manter pelo menos um perfil ativo.");
+    }
+    const target = list.find((p) => p.id === profileId);
+    if (!target) return false;
+    if (target.hasPin) {
+      const ok = await verifyProfilePin(profileId, currentPin ?? "", target.pinHash);
+      if (!ok) {
+        throw new Error("Informe a senha atual do perfil para remov\xEA-lo.");
+      }
+    }
+    return repositoryStore.deleteProfile(userId, profileId);
+  }
+};
+var ProfileService = new ProfileServiceImpl();
+
 // server/services/SubscriptionService.ts
 var SubscriptionServiceImpl = class {
   getPlans() {
@@ -2163,6 +2467,59 @@ function createApiApp() {
     const updated = UserService.updatePreferences(req.identity.uid, req.body ?? {});
     if (!updated) return res.status(404).json({ error: "Usu\xE1rio n\xE3o encontrado." });
     res.json({ user: updated });
+  });
+  app2.get("/api/users/profiles", requireAuth, (req, res) => {
+    const items = ProfileService.list(req.identity.uid, req.identity.name);
+    res.json({ items });
+  });
+  app2.post("/api/users/profiles", requireAuth, async (req, res) => {
+    try {
+      const created = await ProfileService.create(req.identity.uid, req.body ?? {});
+      res.status(201).json(created);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao criar perfil." });
+    }
+  });
+  app2.patch("/api/users/profiles/:profileId", requireAuth, async (req, res) => {
+    try {
+      const updated = await ProfileService.update(
+        req.identity.uid,
+        req.params.profileId,
+        req.body ?? {}
+      );
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao atualizar perfil." });
+    }
+  });
+  app2.post(
+    "/api/users/profiles/:profileId/verify-pin",
+    requireAuth,
+    async (req, res) => {
+      const pin = typeof req.body?.pin === "string" ? req.body.pin : "";
+      const verified = await ProfileService.verifyPin(
+        req.identity.uid,
+        req.params.profileId,
+        pin
+      );
+      if (!verified) {
+        return res.status(403).json({ verified: false, error: "Senha do perfil incorreta." });
+      }
+      res.json({ verified: true });
+    }
+  );
+  app2.delete("/api/users/profiles/:profileId", requireAuth, async (req, res) => {
+    try {
+      const currentPin = typeof req.body?.currentPin === "string" ? req.body.currentPin : void 0;
+      const removed = await ProfileService.remove(
+        req.identity.uid,
+        req.params.profileId,
+        currentPin
+      );
+      res.json({ removed });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao remover perfil." });
+    }
   });
   app2.get("/api/users/favorites", requireAuth, (req, res) => {
     const type = req.query.type === "movie" || req.query.type === "tv" ? req.query.type : "all";

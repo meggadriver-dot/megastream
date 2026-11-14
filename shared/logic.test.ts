@@ -17,6 +17,18 @@ import {
   sanitizePlainText,
 } from './catalogUtils.ts';
 import { normalizeVercelApiUrl } from './vercelUtils.ts';
+import {
+  PROFILE_AVATAR_PRESETS,
+  createDefaultProfiles,
+  hashProfilePin,
+  sanitizeAvatarUrl,
+  sanitizeProfileName,
+  sanitizeProfileTheme,
+  shouldShowProfileGate,
+  toPublicStreamProfile,
+  validateProfilePin,
+  verifyProfilePin,
+} from './profileUtils.ts';
 import type { MediaItem } from './types.ts';
 
 test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragment', () => {
@@ -217,3 +229,67 @@ test('normalizeVercelApiUrl reconstructs /api/* paths from Vercel rewrites clean
   assert.equal(normalizeVercelApiUrl('/api/catalog/home'), '/api/catalog/home');
   assert.equal(normalizeVercelApiUrl('/api/index'), '/api');
 });
+
+test('profile sanitization and validation helpers enforce constraints', () => {
+  assert.equal(sanitizeProfileName('  <b>Ana</b>  '), 'bAna/b');
+  assert.equal(sanitizeProfileName('   ', 'Fallback'), 'Fallback');
+  assert.equal(sanitizeProfileTheme('neon-roxo'), 'neon-roxo');
+  assert.equal(sanitizeProfileTheme('invalid-theme', 'minimalista'), 'minimalista');
+  assert.equal(validateProfilePin('1234'), true);
+  assert.equal(validateProfilePin('abc99'), true);
+  assert.equal(validateProfilePin('123'), false);
+  assert.equal(validateProfilePin('12 34'), false);
+  assert.equal(validateProfilePin('1234567890123'), false);
+});
+
+test('sanitizeAvatarUrl accepts safe asset paths, base64 images, and HTTP(S) URLs only', () => {
+  const defaultAvatar = PROFILE_AVATAR_PRESETS[7].fallbackPath;
+  assert.equal(sanitizeAvatarUrl('/src/assets/images/avatar_kids_dino_1794675753063.jpg'), '/src/assets/images/avatar_kids_dino_1794675753063.jpg');
+  assert.equal(sanitizeAvatarUrl('https://cdn.example.com/avatar.png'), 'https://cdn.example.com/avatar.png');
+  assert.equal(sanitizeAvatarUrl('data:image/jpeg;base64,ABCD1234'), 'data:image/jpeg;base64,ABCD1234');
+  assert.equal(sanitizeAvatarUrl('javascript:alert(1)'), defaultAvatar);
+  assert.equal(sanitizeAvatarUrl('   '), defaultAvatar);
+});
+
+test('hashProfilePin and verifyProfilePin hash securely and verify against profileId', async () => {
+  const hash = await hashProfilePin('profile_kids', '4321');
+  assert.equal(hash.length, 64);
+  assert.notEqual(hash, '4321');
+  assert.equal(await verifyProfilePin('profile_kids', '4321', hash), true);
+  assert.equal(await verifyProfilePin('profile_kids', '9999', hash), false);
+  assert.equal(await verifyProfilePin('profile_other', '4321', hash), false);
+  await assert.rejects(() => hashProfilePin('profile_kids', '12'), /entre 4 e 12 caracteres/);
+});
+
+test('createDefaultProfiles and toPublicStreamProfile strip pinHash from public payloads', () => {
+  const defaults = createDefaultProfiles('user_1', 'Lucas');
+  assert.equal(defaults.length, 1);
+  assert.equal(defaults[0].id, 'profile_main');
+  assert.equal(defaults[0].name, 'Lucas');
+  assert.equal(defaults[0].hasPin, false);
+
+  const pub = toPublicStreamProfile({ ...defaults[0], hasPin: true, pinHash: 'secret_sha256' });
+  assert.equal('pinHash' in pub, false);
+  assert.equal(pub.hasPin, true);
+});
+
+test('shouldShowProfileGate appears only when authenticated and profile not yet chosen', () => {
+  assert.equal(
+    shouldShowProfileGate({ isAuthenticated: false, isAuthLoading: false, profileSelectedForSession: false }),
+    false
+  );
+  assert.equal(
+    shouldShowProfileGate({ isAuthenticated: true, isAuthLoading: true, profileSelectedForSession: false }),
+    false
+  );
+  assert.equal(
+    shouldShowProfileGate({ isAuthenticated: true, isAuthLoading: false, profileSelectedForSession: false }),
+    true
+  );
+  assert.equal(
+    shouldShowProfileGate({ isAuthenticated: true, isAuthLoading: false, profileSelectedForSession: true }),
+    false
+  );
+});
+
+

@@ -112,6 +112,33 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidStreamProfile(data, userId, profileId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'name', 'avatarId', 'avatarUrl', 'hasPin',
+          'isKids', 'preferredTheme', 'preferredLanguage', 'preferredQuality',
+          'autoplayNext', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'name', 'avatarId', 'avatarUrl', 'hasPin', 'pinHash',
+          'isKids', 'preferredTheme', 'preferredLanguage', 'preferredQuality',
+          'autoplayNext', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == profileId && isValidId(data.id)
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 40
+        && data.avatarId is string && data.avatarId.size() >= 1 && data.avatarId.size() <= 64
+        && data.avatarUrl is string && data.avatarUrl.size() >= 1 && data.avatarUrl.size() <= 45000
+        && data.hasPin is bool
+        && (!('pinHash' in data) || (data.pinHash is string && data.pinHash.size() <= 128))
+        && data.isKids is bool
+        && data.preferredTheme in ['cinematografico', 'neon-roxo', 'minimalista', 'gold-premium', '3d-glass']
+        && data.preferredLanguage is string && data.preferredLanguage.size() >= 2 && data.preferredLanguage.size() <= 16
+        && data.preferredQuality is string && data.preferredQuality.size() >= 2 && data.preferredQuality.size() <= 16
+        && data.autoplayNext is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // Collection: /users/{userId}
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -181,6 +208,37 @@ service cloud.firestore {
             'seasonNumber', 'episodeNumber', 'playerProvider', 'watchedAt'
           ]);
         allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
+      }
+
+      // Subcollection: /users/{userId}/profiles/{profileId}
+      match /profiles/{profileId} {
+        allow get: if isValidId(userId) && isValidId(profileId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isVerifiedUser()
+          && isValidId(userId) && isValidId(profileId)
+          && isOwner(userId)
+          && isValidStreamProfile(incoming(), userId, profileId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser()
+          && isValidId(userId) && isValidId(profileId)
+          && isValidStreamProfile(incoming(), userId, profileId)
+          && incoming().id == existing().id
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() ||
+            (
+              isOwner(userId)
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'avatarId', 'avatarUrl', 'hasPin', 'pinHash',
+                'isKids', 'preferredTheme', 'preferredLanguage',
+                'preferredQuality', 'autoplayNext', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(profileId) && (isOwner(userId) || isAdmin());
       }
     }
 

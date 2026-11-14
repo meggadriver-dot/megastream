@@ -10,12 +10,13 @@ import {
   Settings,
   ShieldCheck,
   User,
+  Users,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 export function ProfilePage() {
-  const { firebaseUser, profile, favorites, history, logout } = useAuth();
+  const { firebaseUser, profile, activeProfile, openProfileGate, favorites, history, logout } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -25,36 +26,38 @@ export function ProfilePage() {
 
   if (!firebaseUser) {
     return (
-      <div className="max-w-2xl mx-auto ms-glass rounded-3xl p-8 text-center space-y-5">
-        <div
-          className="w-16 h-16 rounded-2xl mx-auto flex items-center justify-center text-white"
-          style={{ backgroundColor: 'var(--ms-accent)' }}
-        >
-          <User className="w-8 h-8" />
-        </div>
-        <div className="space-y-2">
-          <h1 className="font-display text-2xl font-extrabold text-white">
-            Área do Usuário MegaStream
-          </h1>
-          <p className="text-sm text-slate-300">
-            Entre com sua conta para sincronizar Minha Lista, Histórico de Reprodução, Planos e Configurações na nuvem.
-          </p>
-        </div>
-        <div className="flex flex-wrap justify-center gap-3">
-          <Link
-            to="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white ms-glow"
+      <div className="max-w-2xl mx-auto">
+        <div className="ms-glass rounded-3xl p-8 text-center space-y-5">
+          <div
+            className="w-16 h-16 rounded-2xl mx-auto flex items-center justify-center text-white"
             style={{ backgroundColor: 'var(--ms-accent)' }}
           >
-            <LogIn className="w-4 h-4" />
-            Entrar na Conta
-          </Link>
-          <Link
-            to="/register"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white ms-glass hover:bg-white/10"
-          >
-            Criar Conta
-          </Link>
+            <User className="w-8 h-8" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="font-display text-2xl font-extrabold text-white">
+              Área do Usuário MegaStream
+            </h1>
+            <p className="text-sm text-slate-300">
+              Entre com sua conta para sincronizar seus perfis, Minha Lista, Histórico de Reprodução, Planos e Configurações na nuvem.
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-3">
+            <Link
+              to="/login"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white ms-glow"
+              style={{ backgroundColor: 'var(--ms-accent)' }}
+            >
+              <LogIn className="w-4 h-4" />
+              Entrar na Conta
+            </Link>
+            <Link
+              to="/register"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white ms-glass hover:bg-white/10"
+            >
+              Criar Conta
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -120,18 +123,29 @@ export function ProfilePage() {
           <p className="text-sm text-slate-400">{firebaseUser.email}</p>
           <p className="text-xs font-semibold text-sky-300 pt-1">
             {planNames[profile?.plan ?? 'free']}
+            {activeProfile ? ` · Perfil ativo: ${activeProfile.name}` : ''}
             {profile?.role === 'admin' ? ' · Administrador' : ''}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-sm font-semibold text-red-200 hover:bg-red-500/25 cursor-pointer"
-        >
-          <LogOut className="w-4 h-4" />
-          Sair
-        </button>
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          <button
+            type="button"
+            onClick={openProfileGate}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 border border-white/15 text-sm font-semibold text-white hover:bg-white/15 cursor-pointer"
+          >
+            <Users className="w-4 h-4 text-sky-300" />
+            Trocar Perfil
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-sm font-semibold text-red-200 hover:bg-red-500/25 cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            Sair
+          </button>
+        </div>
       </section>
 
       <div className="ms-glass rounded-3xl divide-y" style={{ borderColor: 'var(--ms-border)' }}>
