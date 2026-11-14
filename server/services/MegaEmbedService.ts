@@ -4,9 +4,9 @@ import {
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
-} from '../../shared/playerUrl';
-import type { EmbedPlayResponse, MediaType } from '../../shared/types';
-import { playerConfigStore } from '../config/playerConfig';
+} from '../../shared/playerUrl.ts';
+import type { EmbedPlayResponse, MediaType } from '../../shared/types.ts';
+import { playerConfigStore } from '../config/playerConfig.ts';
 
 class MegaEmbedServiceImpl {
   getEmbedPayload(params: {

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
-import { AuthenticationService, type VerifiedIdentity } from '../services/AuthenticationService';
-import { repositoryStore } from '../repositories/interfaces';
+import { AuthenticationService, type VerifiedIdentity } from '../services/AuthenticationService.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 export interface AuthenticatedRequest extends Request {
   identity?: VerifiedIdentity;

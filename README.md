@@ -10,7 +10,7 @@ Plataforma profissional de streaming com catálogo TMDB, reprodução integrada 
   - `CatalogService` · `PlayerService` · `FavoritesService` · `HistoryService`
   - `RecommendationService` · `SubscriptionService` · `ChannelService` · `AdminService`
 - **Desenvolvimento local / AI Studio**: `server.ts` monta `server/app.ts` junto ao middleware Vite na porta `3000`.
-- **Produção Serverless (Vercel)**: `api/index.ts` exporta o handler Express de `server/app.ts` configurado via `vercel.json` (`/api/*` -> `/api/index`).
+- **Produção Serverless (Vercel)**: `server/vercel.ts` é empacotado via `npm run build:api` para `api/index.mjs` (ESM puro para Node.js) e roteado via `vercel.json` (`/api/*` -> `/api/index`).
 - **Banco de Dados**: Firebase Authentication + Cloud Firestore (`firestore.rules` endurecidas) + abstração de repositórios (`server/repositories/interfaces.ts`) e esquema SQL (`server/db/postgres-schema.sql`) pronto para migração futura para PostgreSQL.
 
 ## Variáveis de Ambiente (Secrets)

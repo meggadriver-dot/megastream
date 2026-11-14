@@ -3,8 +3,8 @@ import {
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
-} from '../../shared/playerUrl';
-import type { MegaEmbedDomain, MegaEmbedPlayer, PlayerConfig } from '../../shared/types';
+} from '../../shared/playerUrl.ts';
+import type { MegaEmbedDomain, MegaEmbedPlayer, PlayerConfig } from '../../shared/types.ts';
 
 class PlayerConfigStore {
   private config: PlayerConfig = { ...DEFAULT_PLAYER_CONFIG };

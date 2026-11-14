@@ -1,4 +1,4 @@
-import type { MediaItem, PlanId, SubscriptionPlan } from './types';
+import type { MediaItem, PlanId, SubscriptionPlan } from './types.ts';
 
 export interface CatalogFilterParams {
   mediaType?: 'all' | 'movie' | 'tv';

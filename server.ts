@@ -1,10 +1,10 @@
-import './server/env';
+import './server/env.ts';
 import express from 'express';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
-import { createApiApp } from './server/app';
-import { CatalogService } from './server/services/CatalogService';
-import { TMDBService } from './server/services/TMDBService';
+import { createApiApp } from './server/app.ts';
+import { CatalogService } from './server/services/CatalogService.ts';
+import { TMDBService } from './server/services/TMDBService.ts';
 
 async function startServer() {
   const app = createApiApp();

@@ -7,7 +7,7 @@ import type {
   SubscriptionRecord,
   SystemLogEntry,
   UserProfile,
-} from '../../shared/types';
+} from '../../shared/types.ts';
 
 export interface IRepositoryStore {
   getUsers(): UserProfile[];

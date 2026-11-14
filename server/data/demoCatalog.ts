@@ -1,4 +1,4 @@
-import type { GenreItem, MediaDetail, MediaItem, SeasonDetail } from '../../shared/types';
+import type { GenreItem, MediaDetail, MediaItem, SeasonDetail } from '../../shared/types.ts';
 
 export const DEMO_MOVIE_GENRES: GenreItem[] = [
   { id: 28, name: 'Ação' },

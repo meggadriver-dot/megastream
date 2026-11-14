@@ -1,6 +1,6 @@
-import { isValidStreamUrl, sanitizePlainText } from '../../shared/catalogUtils';
-import type { ChannelCategory, LiveChannel } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import { isValidStreamUrl, sanitizePlainText } from '../../shared/catalogUtils.ts';
+import type { ChannelCategory, LiveChannel } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 const VALID_CATEGORIES: ChannelCategory[] = [
   'Notícias',

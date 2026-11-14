@@ -1,7 +1,7 @@
-import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/types';
-import { playerConfigStore } from '../config/playerConfig';
-import { repositoryStore } from '../repositories/interfaces';
-import { MegaEmbedService } from './MegaEmbedService';
+import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/types.ts';
+import { playerConfigStore } from '../config/playerConfig.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
+import { MegaEmbedService } from './MegaEmbedService.ts';
 
 class PlayerServiceImpl {
   getConfig(): PlayerConfig {

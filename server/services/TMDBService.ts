@@ -1,5 +1,5 @@
-import { buildTmdbImageUrl } from '../../shared/playerUrl';
-import { deduplicateMediaByTmdbId, filterAndSortMedia } from '../../shared/catalogUtils';
+import { buildTmdbImageUrl } from '../../shared/playerUrl.ts';
+import { deduplicateMediaByTmdbId, filterAndSortMedia } from '../../shared/catalogUtils.ts';
 import type {
   CastMember,
   GenreItem,
@@ -9,16 +9,16 @@ import type {
   PaginatedCatalogResponse,
   SeasonDetail,
   VideoItem,
-} from '../../shared/types';
+} from '../../shared/types.ts';
 import {
   DEMO_MEDIA_CATALOG,
   DEMO_MOVIE_GENRES,
   DEMO_TV_GENRES,
   getDemoMediaDetail,
   getDemoSeasonDetail,
-} from '../data/demoCatalog';
-import { repositoryStore } from '../repositories/interfaces';
-import { CacheService } from './CacheService';
+} from '../data/demoCatalog.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
+import { CacheService } from './CacheService.ts';
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 

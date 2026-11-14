@@ -1,6 +1,6 @@
-import { getPlanById, SUBSCRIPTION_PLANS } from '../../shared/catalogUtils';
-import type { PlanId, SubscriptionPlan, SubscriptionRecord } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import { getPlanById, SUBSCRIPTION_PLANS } from '../../shared/catalogUtils.ts';
+import type { PlanId, SubscriptionPlan, SubscriptionRecord } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 class SubscriptionServiceImpl {
   getPlans(): SubscriptionPlan[] {

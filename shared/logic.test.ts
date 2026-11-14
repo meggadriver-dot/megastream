@@ -7,7 +7,7 @@ import {
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
-} from './playerUrl';
+} from './playerUrl.ts';
 import {
   deduplicateMediaByTmdbId,
   filterAndSortMedia,
@@ -15,9 +15,9 @@ import {
   getPlanById,
   isValidStreamUrl,
   sanitizePlainText,
-} from './catalogUtils';
-import { normalizeVercelApiUrl } from './vercelUtils';
-import type { MediaItem } from './types';
+} from './catalogUtils.ts';
+import { normalizeVercelApiUrl } from './vercelUtils.ts';
+import type { MediaItem } from './types.ts';
 
 test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragment', () => {
   const url = buildMegaEmbedUrl({

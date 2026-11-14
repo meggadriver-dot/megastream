@@ -1,7 +1,7 @@
-import { sanitizePlainText } from '../../shared/catalogUtils';
-import { normalizeTmdbId, validateMegaEmbedPlayer } from '../../shared/playerUrl';
-import type { HistoryItem, MediaType, MegaEmbedPlayer } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import { sanitizePlainText } from '../../shared/catalogUtils.ts';
+import { normalizeTmdbId, validateMegaEmbedPlayer } from '../../shared/playerUrl.ts';
+import type { HistoryItem, MediaType, MegaEmbedPlayer } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 class HistoryServiceImpl {
   list(userId: string): HistoryItem[] {

@@ -1,8 +1,8 @@
-import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils';
-import type { GenreItem, MediaItem } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
-import { CacheService } from './CacheService';
-import { TMDBService } from './TMDBService';
+import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils.ts';
+import type { GenreItem, MediaItem } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
+import { CacheService } from './CacheService.ts';
+import { TMDBService } from './TMDBService.ts';
 
 class CatalogServiceImpl {
   private syncedCatalog: MediaItem[] = [];

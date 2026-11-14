@@ -1,6 +1,6 @@
-import { sanitizePlainText } from '../../shared/catalogUtils';
-import type { PlanId, ThemeId, UserProfile } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import { sanitizePlainText } from '../../shared/catalogUtils.ts';
+import type { PlanId, ThemeId, UserProfile } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 const VALID_THEMES: ThemeId[] = [
   'cinematografico',

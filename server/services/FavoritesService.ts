@@ -1,7 +1,7 @@
-import { sanitizePlainText } from '../../shared/catalogUtils';
-import { normalizeTmdbId } from '../../shared/playerUrl';
-import type { FavoriteItem, MediaType } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import { sanitizePlainText } from '../../shared/catalogUtils.ts';
+import { normalizeTmdbId } from '../../shared/playerUrl.ts';
+import type { FavoriteItem, MediaType } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 class FavoritesServiceImpl {
   list(userId: string, mediaType?: 'all' | MediaType): FavoriteItem[] {

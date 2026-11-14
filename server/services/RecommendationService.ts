@@ -1,14 +1,14 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils';
+import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils.ts';
 import type {
   AIRecommendationResponse,
   FavoriteItem,
   HistoryItem,
   MediaItem,
-} from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
-import { CatalogService } from './CatalogService';
-import { TMDBService } from './TMDBService';
+} from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
+import { CatalogService } from './CatalogService.ts';
+import { TMDBService } from './TMDBService.ts';
 
 class RecommendationServiceImpl {
   isGeminiConfigured(): boolean {

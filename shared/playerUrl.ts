@@ -3,7 +3,7 @@ import type {
   MegaEmbedPlayer,
   MediaType,
   PlayerConfig,
-} from './types';
+} from './types.ts';
 
 export const ALLOWED_MEGAEMBED_DOMAINS: readonly MegaEmbedDomain[] = [
   'mgeb.lat',

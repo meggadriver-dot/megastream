@@ -1,9 +1,9 @@
-import type { AdminDashboardStats, IntegrationStatus, SystemLogEntry } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
-import { CacheService } from './CacheService';
-import { CatalogService } from './CatalogService';
-import { RecommendationService } from './RecommendationService';
-import { TMDBService } from './TMDBService';
+import type { AdminDashboardStats, IntegrationStatus, SystemLogEntry } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
+import { CacheService } from './CacheService.ts';
+import { CatalogService } from './CatalogService.ts';
+import { RecommendationService } from './RecommendationService.ts';
+import { TMDBService } from './TMDBService.ts';
 
 class AdminServiceImpl {
   async getDashboardStats(): Promise<AdminDashboardStats> {

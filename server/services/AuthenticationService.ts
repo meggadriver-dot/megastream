@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { UserProfile } from '../../shared/types';
-import { repositoryStore } from '../repositories/interfaces';
+import type { UserProfile } from '../../shared/types.ts';
+import { repositoryStore } from '../repositories/interfaces.ts';
 
 const ADMIN_EMAILS = new Set(['meggadriver@gmail.com']);
 

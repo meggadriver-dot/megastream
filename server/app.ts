@@ -1,6 +1,6 @@
-import './env';
+import './env.ts';
 import express, { type Express } from 'express';
-import { normalizeTmdbId } from '../shared/playerUrl';
+import { normalizeTmdbId } from '../shared/playerUrl.ts';
 import {
   type AuthenticatedRequest,
   globalErrorHandler,
@@ -8,18 +8,18 @@ import {
   rateLimitMiddleware,
   requireAdmin,
   requireAuth,
-} from './middleware/security';
-import { AdminService } from './services/AdminService';
-import { AuthenticationService } from './services/AuthenticationService';
-import { CatalogService } from './services/CatalogService';
-import { ChannelService } from './services/ChannelService';
-import { FavoritesService } from './services/FavoritesService';
-import { HistoryService } from './services/HistoryService';
-import { PlayerService } from './services/PlayerService';
-import { RecommendationService } from './services/RecommendationService';
-import { SubscriptionService } from './services/SubscriptionService';
-import { TMDBService } from './services/TMDBService';
-import { UserService } from './services/UserService';
+} from './middleware/security.ts';
+import { AdminService } from './services/AdminService.ts';
+import { AuthenticationService } from './services/AuthenticationService.ts';
+import { CatalogService } from './services/CatalogService.ts';
+import { ChannelService } from './services/ChannelService.ts';
+import { FavoritesService } from './services/FavoritesService.ts';
+import { HistoryService } from './services/HistoryService.ts';
+import { PlayerService } from './services/PlayerService.ts';
+import { RecommendationService } from './services/RecommendationService.ts';
+import { SubscriptionService } from './services/SubscriptionService.ts';
+import { TMDBService } from './services/TMDBService.ts';
+import { UserService } from './services/UserService.ts';
 
 export function createApiApp(): Express {
   const app = express();
