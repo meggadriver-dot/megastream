@@ -1,5 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { DEFAULT_SITE_CONFIG, sanitizeSiteConfig } from '../../shared/siteConfigUtils';
 import type { SiteConfig } from '../../shared/types';
 import { db } from '../lib/firebase';
@@ -10,7 +10,7 @@ interface SiteConfigContextValue {
   siteConfig: SiteConfig;
   loadingConfig: boolean;
   refreshSiteConfig: () => Promise<void>;
-  applySiteConfig: (next: SiteConfig) => void;
+  applySiteConfig: (next: SiteConfig, fromAdminSave?: boolean) => void;
 }
 
 const SiteConfigContext = createContext<SiteConfigContextValue | undefined>(undefined);
@@ -27,12 +27,13 @@ function hexToRgba(hex: string, alpha: number): string {
 export function SiteConfigProvider({ children }: { children: React.ReactNode }) {
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(DEFAULT_SITE_CONFIG);
   const [loadingConfig, setLoadingConfig] = useState(true);
-  const { setThemeIfUnset } = useTheme();
+  const latestUpdatedAtRef = useRef<number>(Date.parse(DEFAULT_SITE_CONFIG.updatedAt) || 0);
+  const { applySiteDefaultTheme } = useTheme();
 
   const syncVisualVariables = useCallback(
-    (cfg: SiteConfig) => {
+    (cfg: SiteConfig, fromAdminSave = false) => {
       document.title = `${cfg.siteName} — ${cfg.siteSlogan}`;
-      setThemeIfUnset(cfg.defaultTheme);
+      applySiteDefaultTheme(cfg.defaultTheme, cfg.updatedAt, fromAdminSave);
 
       const root = document.documentElement;
       if (cfg.accentColorHex && cfg.accentColorHex.length === 6) {
@@ -45,31 +46,55 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
         root.style.removeProperty('--ms-accent-glow');
       }
     },
-    [setThemeIfUnset]
+    [applySiteDefaultTheme]
   );
 
   const applySiteConfig = useCallback(
-    (next: SiteConfig) => {
+    (next: SiteConfig, fromAdminSave = false) => {
+      const ts = Date.parse(next.updatedAt || '') || 0;
+      if (!fromAdminSave && ts > 0 && ts < latestUpdatedAtRef.current) {
+        return;
+      }
+      if (ts > latestUpdatedAtRef.current) {
+        latestUpdatedAtRef.current = ts;
+      }
       setSiteConfig(next);
-      syncVisualVariables(next);
+      syncVisualVariables(next, fromAdminSave);
     },
     [syncVisualVariables]
   );
 
   const refreshSiteConfig = useCallback(async () => {
     try {
-      const apiCfg = await apiRequest<SiteConfig>('/api/site-config');
-      const normalized = sanitizeSiteConfig(apiCfg, DEFAULT_SITE_CONFIG);
-      applySiteConfig(normalized);
-    } catch {
-      try {
-        const snap = await getDoc(doc(db, 'siteConfig', 'global'));
-        if (snap.exists()) {
-          const data = snap.data() as Partial<SiteConfig>;
-          applySiteConfig(sanitizeSiteConfig(data, DEFAULT_SITE_CONFIG));
+      const [fsResult, apiResult] = await Promise.allSettled([
+        getDoc(doc(db, 'siteConfig', 'global')),
+        apiRequest<SiteConfig>('/api/site-config'),
+      ]);
+
+      let chosen: SiteConfig | null = null;
+      let chosenTs = 0;
+
+      if (fsResult.status === 'fulfilled' && fsResult.value.exists()) {
+        const fsCfg = sanitizeSiteConfig(
+          fsResult.value.data() as Partial<SiteConfig>,
+          DEFAULT_SITE_CONFIG,
+          true
+        );
+        const ts = Date.parse(fsCfg.updatedAt) || 0;
+        chosen = fsCfg;
+        chosenTs = ts;
+      }
+
+      if (apiResult.status === 'fulfilled' && apiResult.value) {
+        const apiCfg = sanitizeSiteConfig(apiResult.value, DEFAULT_SITE_CONFIG, true);
+        const ts = Date.parse(apiCfg.updatedAt) || 0;
+        if (!chosen || (ts > chosenTs && apiCfg.updatedAt !== DEFAULT_SITE_CONFIG.updatedAt)) {
+          chosen = apiCfg;
         }
-      } catch {
-        // Keep defaults on offline/startup fallback
+      }
+
+      if (chosen) {
+        applySiteConfig(chosen);
       }
     } finally {
       setLoadingConfig(false);
@@ -78,7 +103,27 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     void refreshSiteConfig();
-  }, [refreshSiteConfig]);
+
+    const unsub = onSnapshot(
+      doc(db, 'siteConfig', 'global'),
+      (snap) => {
+        if (snap.exists()) {
+          const fsCfg = sanitizeSiteConfig(
+            snap.data() as Partial<SiteConfig>,
+            DEFAULT_SITE_CONFIG,
+            true
+          );
+          applySiteConfig(fsCfg);
+        }
+        setLoadingConfig(false);
+      },
+      () => {
+        setLoadingConfig(false);
+      }
+    );
+
+    return () => unsub();
+  }, [applySiteConfig, refreshSiteConfig]);
 
   return (
     <SiteConfigContext.Provider

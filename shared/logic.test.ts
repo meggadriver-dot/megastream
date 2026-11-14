@@ -34,8 +34,27 @@ import {
   mergeCustomCatalogIntoList,
   sanitizeCustomMediaInput,
   sanitizeSiteConfig,
+  toIsoTimestamp,
 } from './siteConfigUtils.ts';
 import type { MediaItem } from './types.ts';
+
+test('toIsoTimestamp handles ISO strings, numbers, and Firestore-like Timestamp objects', () => {
+  assert.equal(toIsoTimestamp('2026-11-14T12:00:00Z'), '2026-11-14T12:00:00.000Z');
+  assert.equal(toIsoTimestamp({ seconds: 1700000000 }), new Date(1700000000 * 1000).toISOString());
+  assert.equal(
+    toIsoTimestamp({ toDate: () => new Date('2026-05-01T10:30:00.000Z') }),
+    '2026-05-01T10:30:00.000Z'
+  );
+  assert.equal(toIsoTimestamp('invalid-date', 'fallback'), 'fallback');
+
+  const preserved = sanitizeSiteConfig(
+    { siteName: 'CineAdmin', updatedAt: '2026-05-01T10:30:00.000Z' },
+    DEFAULT_SITE_CONFIG,
+    true
+  );
+  assert.equal(preserved.siteName, 'CineAdmin');
+  assert.equal(preserved.updatedAt, '2026-05-01T10:30:00.000Z');
+});
 
 test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragment', () => {
   const url = buildMegaEmbedUrl({

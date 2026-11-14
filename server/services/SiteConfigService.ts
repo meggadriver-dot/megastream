@@ -1,17 +1,85 @@
-import { sanitizeCustomMediaInput, sanitizeSiteConfig } from '../../shared/siteConfigUtils.ts';
+import {
+  DEFAULT_SITE_CONFIG,
+  sanitizeCustomMediaInput,
+  sanitizeSiteConfig,
+  toIsoTimestamp,
+} from '../../shared/siteConfigUtils.ts';
 import type { CustomMediaItem, MediaType, SiteConfig } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
+import { FirestoreRestService } from './FirestoreRestService.ts';
 
 class SiteConfigServiceImpl {
+  private lastHydratedAt = 0;
+  private readonly hydrationTtlMs = 20_000;
+
+  async ensureHydrated(force = false): Promise<void> {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+
+    const [remoteSite, remoteCustom] = await Promise.all([
+      FirestoreRestService.getDocument<Partial<SiteConfig>>('siteConfig/global'),
+      FirestoreRestService.queryActiveCollection<
+        Partial<CustomMediaItem> & { title?: string; mediaType?: string }
+      >('customCatalog'),
+    ]);
+
+    if (remoteSite) {
+      const local = repositoryStore.getSiteConfig();
+      const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
+      const remoteIso = toIsoTimestamp(remoteSite.updatedAt, '');
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
+
+      if (isLocalDefault || remoteTs >= localTs) {
+        const merged = sanitizeSiteConfig(remoteSite, local, true);
+        repositoryStore.saveSiteConfig(merged);
+      }
+    }
+
+    if (remoteCustom.length > 0) {
+      let changed = false;
+      const localList = repositoryStore.getCustomCatalog();
+      for (const raw of remoteCustom) {
+        try {
+          if (!raw.title) continue;
+          const existing = raw.id ? localList.find((c) => c.id === raw.id) : undefined;
+          const sanitized = sanitizeCustomMediaInput(raw, existing);
+          const remoteItemIso = toIsoTimestamp(raw.updatedAt, '');
+          if (remoteItemIso) {
+            sanitized.updatedAt = remoteItemIso;
+          }
+          if (!existing || existing.updatedAt !== sanitized.updatedAt) {
+            repositoryStore.upsertCustomMedia(sanitized);
+            changed = true;
+          }
+        } catch {
+          // Skip malformed remote item gracefully
+        }
+      }
+      if (changed) {
+        CacheService.clear('catalog:');
+      }
+    }
+
+    this.lastHydratedAt = Date.now();
+  }
+
   getConfig(): SiteConfig {
+    return repositoryStore.getSiteConfig();
+  }
+
+  async getConfigAsync(): Promise<SiteConfig> {
+    await this.ensureHydrated();
     return repositoryStore.getSiteConfig();
   }
 
   updateConfig(input: Partial<SiteConfig>): SiteConfig {
     const current = repositoryStore.getSiteConfig();
-    const next = sanitizeSiteConfig(input, current);
+    const next = sanitizeSiteConfig(input, current, false);
     repositoryStore.saveSiteConfig(next);
+    this.lastHydratedAt = Date.now();
     repositoryStore.addLog({
       level: 'info',
       service: 'SiteConfigService',
@@ -24,12 +92,22 @@ class SiteConfigServiceImpl {
     return repositoryStore.getCustomCatalog();
   }
 
+  async listCustomCatalogAsync(): Promise<CustomMediaItem[]> {
+    await this.ensureHydrated();
+    return repositoryStore.getCustomCatalog();
+  }
+
   getCustomMatch(tmdbId: number, mediaType: MediaType): CustomMediaItem | null {
     return (
       repositoryStore
         .getCustomCatalog()
         .find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType) ?? null
     );
+  }
+
+  async getCustomMatchAsync(tmdbId: number, mediaType: MediaType): Promise<CustomMediaItem | null> {
+    await this.ensureHydrated();
+    return this.getCustomMatch(tmdbId, mediaType);
   }
 
   upsertCustomMedia(
@@ -40,6 +118,7 @@ class SiteConfigServiceImpl {
       : undefined;
     const sanitized = sanitizeCustomMediaInput(input, existing);
     const saved = repositoryStore.upsertCustomMedia(sanitized);
+    this.lastHydratedAt = Date.now();
     CacheService.clear('catalog:');
     repositoryStore.addLog({
       level: 'info',
@@ -51,6 +130,7 @@ class SiteConfigServiceImpl {
 
   deleteCustomMedia(id: string): boolean {
     const ok = repositoryStore.deleteCustomMedia(id);
+    this.lastHydratedAt = Date.now();
     if (ok) {
       CacheService.clear('catalog:');
       repositoryStore.addLog({

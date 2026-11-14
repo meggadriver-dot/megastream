@@ -2,11 +2,14 @@ import type { AdminDashboardStats, IntegrationStatus, SystemLogEntry } from '../
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
 import { CatalogService } from './CatalogService.ts';
+import { ChannelService } from './ChannelService.ts';
 import { RecommendationService } from './RecommendationService.ts';
+import { SiteConfigService } from './SiteConfigService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class AdminServiceImpl {
   async getDashboardStats(): Promise<AdminDashboardStats> {
+    await Promise.all([ChannelService.ensureHydrated(), SiteConfigService.ensureHydrated()]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
     const synced = await CatalogService.getSyncedCatalog();

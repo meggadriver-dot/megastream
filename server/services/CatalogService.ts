@@ -3,6 +3,7 @@ import { customMediaToMediaItem, mergeCustomCatalogIntoList } from '../../shared
 import type { GenreItem, MediaItem } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
+import { SiteConfigService } from './SiteConfigService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class CatalogServiceImpl {
@@ -76,6 +77,7 @@ class CatalogServiceImpl {
   }
 
   async getHomeSections() {
+    await SiteConfigService.ensureHydrated();
     const cached = CacheService.get<Record<string, unknown>>('catalog:home');
     if (cached) return cached;
 

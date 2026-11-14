@@ -6,12 +6,20 @@ import type {
   FavoriteItem,
   HistoryItem,
   LiveChannel,
+  MegaEmbedDomain,
+  MegaEmbedPlayer,
   SiteConfig,
   StoredStreamProfile,
   SubscriptionRecord,
   SystemLogEntry,
   UserProfile,
 } from '../../shared/types.ts';
+
+export interface StoredPlayerSettings {
+  defaultDomain: MegaEmbedDomain;
+  defaultPlayer: MegaEmbedPlayer;
+  defaultColorHex: string;
+}
 
 export interface IRepositoryStore {
   getUsers(): UserProfile[];
@@ -33,6 +41,8 @@ export interface IRepositoryStore {
   getAllSubscriptions(): SubscriptionRecord[];
   getSiteConfig(): SiteConfig;
   saveSiteConfig(config: SiteConfig): SiteConfig;
+  getPlayerSettings(): StoredPlayerSettings | null;
+  savePlayerSettings(settings: StoredPlayerSettings): StoredPlayerSettings;
   getCustomCatalog(): CustomMediaItem[];
   upsertCustomMedia(item: CustomMediaItem): CustomMediaItem;
   deleteCustomMedia(id: string): boolean;
@@ -52,6 +62,7 @@ interface PersistedState {
   channels: Record<string, LiveChannel>;
   subscriptions: Record<string, SubscriptionRecord>;
   siteConfig?: SiteConfig;
+  playerSettings?: StoredPlayerSettings;
   customCatalog?: Record<string, CustomMediaItem>;
   logs: SystemLogEntry[];
   totalPlaybacks: number;
@@ -230,6 +241,16 @@ class JsonRepositoryStore implements IRepositoryStore {
     this.state.siteConfig = config;
     this.save();
     return config;
+  }
+
+  getPlayerSettings(): StoredPlayerSettings | null {
+    return this.state.playerSettings ?? null;
+  }
+
+  savePlayerSettings(settings: StoredPlayerSettings): StoredPlayerSettings {
+    this.state.playerSettings = settings;
+    this.save();
+    return settings;
   }
 
   getCustomCatalog(): CustomMediaItem[] {

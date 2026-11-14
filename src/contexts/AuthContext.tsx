@@ -189,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setActiveProfileId(nextProfile.id);
       localStorage.setItem(LOCAL_ACTIVE_PROFILE_KEY, nextProfile.id);
       if (nextProfile.preferredTheme) {
-        setTheme(nextProfile.preferredTheme);
+        setTheme(nextProfile.preferredTheme, storedProfiles.length > 1);
       }
       if (!isGuest && uid) {
         sessionStorage.setItem(SESSION_PROFILE_KEY, uid);
@@ -213,8 +213,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const me = await apiRequest<{ user: UserProfile }>('/api/users/me');
         setProfile(me.user);
-        if (me.user.preferredTheme) {
-          setTheme(me.user.preferredTheme as ThemeId);
+        if (me.user.preferredTheme && me.user.preferredTheme !== 'cinematografico') {
+          setTheme(me.user.preferredTheme as ThemeId, false);
         }
 
         // Sync user document in Firestore if verified
@@ -318,8 +318,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (nextActive) {
           setActiveProfileId(nextActive.id);
           localStorage.setItem(LOCAL_ACTIVE_PROFILE_KEY, nextActive.id);
-          if (nextActive.preferredTheme) {
-            setTheme(nextActive.preferredTheme);
+          if (nextActive.preferredTheme && mergedProfiles.length > 1) {
+            setTheme(nextActive.preferredTheme, false);
           }
         }
 
@@ -378,8 +378,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setActiveProfileId(active.id);
           setFavorites(readLocalJson<FavoriteItem[]>(getGuestFavoritesKey(active.id), []));
           setHistory(readLocalJson<HistoryItem[]>(getGuestHistoryKey(active.id), []));
-          if (active.preferredTheme) {
-            setTheme(active.preferredTheme);
+          if (active.preferredTheme && guestProfiles.length > 1) {
+            setTheme(active.preferredTheme, false);
           }
         }
       }

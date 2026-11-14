@@ -162,6 +162,18 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "tmdbId", "mediaType", "title", "overview", "featured", "active", "updatedAt"]
+    },
+    "PlayerSettings": {
+      "title": "PlayerSettings",
+      "description": "Server-side player engine, domain, and accent settings managed exclusively by administrators.",
+      "type": "object",
+      "properties": {
+        "defaultDomain": { "type": "string", "enum": ["mgeb.lat", "mgeb.space"] },
+        "defaultPlayer": { "type": "string", "enum": ["vidstack", "megaplay", "megatube", "clappr"] },
+        "defaultColorHex": { "type": "string", "minLength": 3, "maxLength": 12 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["defaultDomain", "defaultPlayer", "defaultColorHex", "updatedAt"]
     }
   },
   "firestore": {
@@ -200,6 +212,10 @@
     "/customCatalog/{mediaId}": {
       "schema": { "$ref": "#/entities/CustomMediaItem" },
       "description": "Custom or overridden catalog items managed exclusively by administrators."
+    },
+    "/playerSettings/{configId}": {
+      "schema": { "$ref": "#/entities/PlayerSettings" },
+      "description": "Global player domain, engine, and color settings managed exclusively by administrators."
     }
   }
 }

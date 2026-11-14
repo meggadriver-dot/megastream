@@ -36,9 +36,35 @@ export function sanitizeOptionalUrl(url: string | null | undefined, maxLength = 
   return isValidStreamUrl(trimmed) ? trimmed.slice(0, maxLength) : '';
 }
 
+export function toIsoTimestamp(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+    return fallback;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  if (value && typeof value === 'object') {
+    const maybe = value as { toDate?: () => Date; seconds?: number };
+    if (typeof maybe.toDate === 'function') {
+      try {
+        return maybe.toDate().toISOString();
+      } catch {
+        return fallback;
+      }
+    }
+    if (typeof maybe.seconds === 'number') {
+      return new Date(maybe.seconds * 1000).toISOString();
+    }
+  }
+  return fallback;
+}
+
 export function sanitizeSiteConfig(
   input: Partial<SiteConfig>,
-  current: SiteConfig = DEFAULT_SITE_CONFIG
+  current: SiteConfig = DEFAULT_SITE_CONFIG,
+  preserveUpdatedAt = false
 ): SiteConfig {
   const siteName =
     typeof input.siteName === 'string'
@@ -76,6 +102,10 @@ export function sanitizeSiteConfig(
       ? sanitizePlainText(input.footerText, 120) || current.footerText
       : current.footerText;
 
+  const preservedIso = preserveUpdatedAt
+    ? toIsoTimestamp(input.updatedAt, '')
+    : '';
+
   return {
     siteName,
     siteSlogan,
@@ -96,7 +126,7 @@ export function sanitizeSiteConfig(
     maintenanceMode:
       typeof input.maintenanceMode === 'boolean' ? input.maintenanceMode : current.maintenanceMode,
     footerText,
-    updatedAt: new Date().toISOString(),
+    updatedAt: preservedIso || new Date().toISOString(),
   };
 }
 

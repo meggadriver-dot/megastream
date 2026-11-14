@@ -190,6 +190,23 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPlayerSettings(data) {
+      return data.keys().hasAll(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
+        && data.keys().hasOnly(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
+        && data.defaultDomain in ['mgeb.lat', 'mgeb.space']
+        && data.defaultPlayer in ['vidstack', 'megaplay', 'megatube', 'clappr']
+        && data.defaultColorHex is string && data.defaultColorHex.size() >= 3 && data.defaultColorHex.size() <= 12
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminMarker(data, adminId) {
+      return data.keys().hasAll(['uid', 'email', 'grantedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'grantedAt'])
+        && data.uid is string && data.uid == adminId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 180
+        && data.grantedAt is timestamp;
+    }
+
     // Collection: /users/{userId}
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -331,7 +348,11 @@ service cloud.firestore {
     // Collection: /admins/{adminId}
     match /admins/{adminId} {
       allow get, list: if isAdmin();
-      allow create, update, delete: if false;
+      allow create, update: if isAdmin()
+        && isValidId(adminId)
+        && isValidAdminMarker(incoming(), adminId)
+        && incoming().grantedAt == request.time;
+      allow delete: if isAdmin() && isValidId(adminId) && request.auth.uid != adminId;
     }
 
     // Collection: /siteConfig/{configId}
@@ -341,6 +362,17 @@ service cloud.firestore {
       allow create, update: if isAdmin()
         && isValidId(configId)
         && isValidSiteConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // Collection: /playerSettings/{configId}
+    match /playerSettings/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(configId)
+        && isValidPlayerSettings(incoming())
         && incoming().updatedAt == request.time;
       allow delete: if isAdmin() && isValidId(configId);
     }

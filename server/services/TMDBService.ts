@@ -20,6 +20,7 @@ import {
 } from '../data/demoCatalog.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
+import { SiteConfigService } from './SiteConfigService.ts';
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
@@ -252,6 +253,7 @@ class TMDBServiceImpl {
     query?: string;
     page?: number;
   }): Promise<PaginatedCatalogResponse> {
+    await SiteConfigService.ensureHydrated();
     const page = Math.max(1, params.page ?? 1);
 
     if (!this.isConfigured()) {
@@ -397,6 +399,7 @@ class TMDBServiceImpl {
   }
 
   async getDetail(tmdbId: number, mediaType: MediaType): Promise<MediaDetail | null> {
+    await SiteConfigService.ensureHydrated();
     const customMatch = repositoryStore
       .getCustomCatalog()
       .find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);

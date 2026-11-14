@@ -95,13 +95,13 @@ function buildMegaEmbedUrl(params) {
   }
   return `https://${domain}/embed/${validId}?player=${encodeURIComponent(player)}#color:${color}`;
 }
-function buildTmdbImageUrl(path4, size = "w500", baseUrl = "https://image.tmdb.org/t/p/") {
-  if (!path4) return null;
-  if (path4.startsWith("http://") || path4.startsWith("https://") || path4.startsWith("/src/") || path4.startsWith("/assets/")) {
-    return path4;
+function buildTmdbImageUrl(path5, size = "w500", baseUrl = "https://image.tmdb.org/t/p/") {
+  if (!path5) return null;
+  if (path5.startsWith("http://") || path5.startsWith("https://") || path5.startsWith("/src/") || path5.startsWith("/assets/")) {
+    return path5;
   }
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-  const normalizedPath = path4.startsWith("/") ? path4 : `/${path4}`;
+  const normalizedPath = path5.startsWith("/") ? path5 : `/${path5}`;
   return `${normalizedBase}${size}${normalizedPath}`;
 }
 
@@ -265,7 +265,31 @@ function sanitizeOptionalUrl(url, maxLength = 500) {
   }
   return isValidStreamUrl(trimmed) ? trimmed.slice(0, maxLength) : "";
 }
-function sanitizeSiteConfig(input, current = DEFAULT_SITE_CONFIG) {
+function toIsoTimestamp(value, fallback = "") {
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+    return fallback;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  if (value && typeof value === "object") {
+    const maybe = value;
+    if (typeof maybe.toDate === "function") {
+      try {
+        return maybe.toDate().toISOString();
+      } catch {
+        return fallback;
+      }
+    }
+    if (typeof maybe.seconds === "number") {
+      return new Date(maybe.seconds * 1e3).toISOString();
+    }
+  }
+  return fallback;
+}
+function sanitizeSiteConfig(input, current = DEFAULT_SITE_CONFIG, preserveUpdatedAt = false) {
   const siteName = typeof input.siteName === "string" ? sanitizePlainText(input.siteName, 40) || current.siteName : current.siteName;
   const siteSlogan = typeof input.siteSlogan === "string" ? sanitizePlainText(input.siteSlogan, 100) || current.siteSlogan : current.siteSlogan;
   const logoUrl = input.logoUrl !== void 0 ? sanitizeOptionalUrl(input.logoUrl, 500) : current.logoUrl;
@@ -277,6 +301,7 @@ function sanitizeSiteConfig(input, current = DEFAULT_SITE_CONFIG) {
   }
   const announcementText = typeof input.announcementText === "string" ? sanitizePlainText(input.announcementText, 180) : current.announcementText;
   const footerText = typeof input.footerText === "string" ? sanitizePlainText(input.footerText, 120) || current.footerText : current.footerText;
+  const preservedIso = preserveUpdatedAt ? toIsoTimestamp(input.updatedAt, "") : "";
   return {
     siteName,
     siteSlogan,
@@ -290,7 +315,7 @@ function sanitizeSiteConfig(input, current = DEFAULT_SITE_CONFIG) {
     enablePlansPage: typeof input.enablePlansPage === "boolean" ? input.enablePlansPage : current.enablePlansPage,
     maintenanceMode: typeof input.maintenanceMode === "boolean" ? input.maintenanceMode : current.maintenanceMode,
     footerText,
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    updatedAt: preservedIso || (/* @__PURE__ */ new Date()).toISOString()
   };
 }
 function sanitizeCustomMediaInput(input, existing) {
@@ -509,6 +534,14 @@ var JsonRepositoryStore = class {
     this.state.siteConfig = config;
     this.save();
     return config;
+  }
+  getPlayerSettings() {
+    return this.state.playerSettings ?? null;
+  }
+  savePlayerSettings(settings) {
+    this.state.playerSettings = settings;
+    this.save();
+    return settings;
   }
   getCustomCatalog() {
     return Object.values(this.state.customCatalog ?? {}).sort(
@@ -760,6 +793,218 @@ var CacheServiceImpl = class {
   }
 };
 var CacheService = new CacheServiceImpl();
+
+// server/services/FirestoreRestService.ts
+import fs4 from "node:fs";
+import path4 from "node:path";
+function loadConfig() {
+  try {
+    const cfgPath = path4.resolve(process.cwd(), "firebase-applet-config.json");
+    if (fs4.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs4.readFileSync(cfgPath, "utf-8"));
+      if (parsed.projectId && parsed.firestoreDatabaseId) {
+        return {
+          projectId: parsed.projectId,
+          firestoreDatabaseId: parsed.firestoreDatabaseId
+        };
+      }
+    }
+  } catch {
+  }
+  return {
+    projectId: "gen-lang-client-0094430568",
+    firestoreDatabaseId: "ai-studio-7a3f426f-e541-4ad6-aab7-8258b241a13c"
+  };
+}
+function decodeValue(val) {
+  if ("stringValue" in val) return val.stringValue;
+  if ("booleanValue" in val) return val.booleanValue;
+  if ("integerValue" in val) return Number(val.integerValue);
+  if ("doubleValue" in val) return val.doubleValue;
+  if ("timestampValue" in val) return val.timestampValue;
+  if ("nullValue" in val) return null;
+  if ("arrayValue" in val) {
+    return (val.arrayValue.values ?? []).map(decodeValue);
+  }
+  if ("mapValue" in val) {
+    return decodeFields(val.mapValue.fields ?? {});
+  }
+  return null;
+}
+function decodeFields(fields) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields)) {
+    out[k] = decodeValue(v);
+  }
+  return out;
+}
+var FirestoreRestServiceImpl = class {
+  constructor() {
+    this.cfg = loadConfig();
+  }
+  get baseDocumentsUrl() {
+    return `https://firestore.googleapis.com/v1/projects/${this.cfg.projectId}/databases/${this.cfg.firestoreDatabaseId}/documents`;
+  }
+  async getDocument(docPath) {
+    try {
+      const res = await fetch(`${this.baseDocumentsUrl}/${docPath}`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!res.ok) return null;
+      const doc = await res.json();
+      if (!doc.fields) return null;
+      return decodeFields(doc.fields);
+    } catch {
+      return null;
+    }
+  }
+  async queryActiveCollection(collectionId) {
+    try {
+      const res = await fetch(`${this.baseDocumentsUrl}:runQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "active" },
+                op: "EQUAL",
+                value: { booleanValue: true }
+              }
+            }
+          }
+        }),
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!res.ok) return [];
+      const rows = await res.json();
+      const items = [];
+      for (const row of rows) {
+        if (row.document?.fields) {
+          items.push(decodeFields(row.document.fields));
+        }
+      }
+      return items;
+    } catch {
+      return [];
+    }
+  }
+};
+var FirestoreRestService = new FirestoreRestServiceImpl();
+
+// server/services/SiteConfigService.ts
+var SiteConfigServiceImpl = class {
+  constructor() {
+    this.lastHydratedAt = 0;
+    this.hydrationTtlMs = 2e4;
+  }
+  async ensureHydrated(force = false) {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+    const [remoteSite, remoteCustom] = await Promise.all([
+      FirestoreRestService.getDocument("siteConfig/global"),
+      FirestoreRestService.queryActiveCollection("customCatalog")
+    ]);
+    if (remoteSite) {
+      const local = repositoryStore.getSiteConfig();
+      const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
+      const remoteIso = toIsoTimestamp(remoteSite.updatedAt, "");
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
+      if (isLocalDefault || remoteTs >= localTs) {
+        const merged = sanitizeSiteConfig(remoteSite, local, true);
+        repositoryStore.saveSiteConfig(merged);
+      }
+    }
+    if (remoteCustom.length > 0) {
+      let changed = false;
+      const localList = repositoryStore.getCustomCatalog();
+      for (const raw of remoteCustom) {
+        try {
+          if (!raw.title) continue;
+          const existing = raw.id ? localList.find((c) => c.id === raw.id) : void 0;
+          const sanitized = sanitizeCustomMediaInput(raw, existing);
+          const remoteItemIso = toIsoTimestamp(raw.updatedAt, "");
+          if (remoteItemIso) {
+            sanitized.updatedAt = remoteItemIso;
+          }
+          if (!existing || existing.updatedAt !== sanitized.updatedAt) {
+            repositoryStore.upsertCustomMedia(sanitized);
+            changed = true;
+          }
+        } catch {
+        }
+      }
+      if (changed) {
+        CacheService.clear("catalog:");
+      }
+    }
+    this.lastHydratedAt = Date.now();
+  }
+  getConfig() {
+    return repositoryStore.getSiteConfig();
+  }
+  async getConfigAsync() {
+    await this.ensureHydrated();
+    return repositoryStore.getSiteConfig();
+  }
+  updateConfig(input) {
+    const current = repositoryStore.getSiteConfig();
+    const next = sanitizeSiteConfig(input, current, false);
+    repositoryStore.saveSiteConfig(next);
+    this.lastHydratedAt = Date.now();
+    repositoryStore.addLog({
+      level: "info",
+      service: "SiteConfigService",
+      message: `Configura\xE7\xF5es do site atualizadas pelo administrador (${next.siteName}).`
+    });
+    return next;
+  }
+  listCustomCatalog() {
+    return repositoryStore.getCustomCatalog();
+  }
+  async listCustomCatalogAsync() {
+    await this.ensureHydrated();
+    return repositoryStore.getCustomCatalog();
+  }
+  getCustomMatch(tmdbId, mediaType) {
+    return repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType) ?? null;
+  }
+  async getCustomMatchAsync(tmdbId, mediaType) {
+    await this.ensureHydrated();
+    return this.getCustomMatch(tmdbId, mediaType);
+  }
+  upsertCustomMedia(input) {
+    const existing = input.id ? repositoryStore.getCustomCatalog().find((c) => c.id === input.id) : void 0;
+    const sanitized = sanitizeCustomMediaInput(input, existing);
+    const saved = repositoryStore.upsertCustomMedia(sanitized);
+    this.lastHydratedAt = Date.now();
+    CacheService.clear("catalog:");
+    repositoryStore.addLog({
+      level: "info",
+      service: "CatalogAdminService",
+      message: `M\xEDdia personalizada salva: ${saved.title} (${saved.mediaType} #${saved.tmdbId}).`
+    });
+    return saved;
+  }
+  deleteCustomMedia(id) {
+    const ok = repositoryStore.deleteCustomMedia(id);
+    this.lastHydratedAt = Date.now();
+    if (ok) {
+      CacheService.clear("catalog:");
+      repositoryStore.addLog({
+        level: "warn",
+        service: "CatalogAdminService",
+        message: `M\xEDdia personalizada removida: ${id}.`
+      });
+    }
+    return ok;
+  }
+};
+var SiteConfigService = new SiteConfigServiceImpl();
 
 // server/data/demoCatalog.ts
 var DEMO_MOVIE_GENRES = [
@@ -1300,6 +1545,7 @@ var TMDBServiceImpl = class {
     };
   }
   async discover(params) {
+    await SiteConfigService.ensureHydrated();
     const page = Math.max(1, params.page ?? 1);
     if (!this.isConfigured()) {
       const customAsMedia = repositoryStore.getCustomCatalog().filter((c) => c.active).map(customMediaToMediaItem);
@@ -1399,6 +1645,7 @@ var TMDBServiceImpl = class {
     };
   }
   async getDetail(tmdbId, mediaType) {
+    await SiteConfigService.ensureHydrated();
     const customMatch = repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);
     if (!this.isConfigured()) {
       const demo = getDemoMediaDetail(tmdbId, mediaType);
@@ -1602,6 +1849,7 @@ var CatalogServiceImpl = class {
     return this.syncedCatalog;
   }
   async getHomeSections() {
+    await SiteConfigService.ensureHydrated();
     const cached = CacheService.get("catalog:home");
     if (cached) return cached;
     const [
@@ -1672,6 +1920,106 @@ var CatalogServiceImpl = class {
   }
 };
 var CatalogService = new CatalogServiceImpl();
+
+// server/services/ChannelService.ts
+var VALID_CATEGORIES = [
+  "Not\xEDcias",
+  "Esportes",
+  "Entretenimento",
+  "Filmes",
+  "Variedades",
+  "Infantil"
+];
+var ChannelServiceImpl = class {
+  constructor() {
+    this.lastHydratedAt = 0;
+    this.hydrationTtlMs = 2e4;
+  }
+  async ensureHydrated(force = false) {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+    const remoteChannels = await FirestoreRestService.queryActiveCollection("channels");
+    for (const raw of remoteChannels) {
+      if (!raw.id || !raw.name || !raw.category || !VALID_CATEGORIES.includes(raw.category) || !raw.streamUrl || !isValidStreamUrl(raw.streamUrl)) {
+        continue;
+      }
+      const normalized = {
+        id: String(raw.id),
+        name: sanitizePlainText(raw.name, 100),
+        category: raw.category,
+        streamUrl: String(raw.streamUrl).trim().slice(0, 500),
+        logoUrl: raw.logoUrl ? String(raw.logoUrl).trim().slice(0, 500) : void 0,
+        description: raw.description ? sanitizePlainText(raw.description, 300) : void 0,
+        active: raw.active !== false,
+        createdAt: toIsoTimestamp(raw.createdAt, (/* @__PURE__ */ new Date()).toISOString())
+      };
+      repositoryStore.upsertChannel(normalized);
+    }
+    this.lastHydratedAt = Date.now();
+  }
+  listPublic(category) {
+    const channels = repositoryStore.getChannels().filter((c) => c.active);
+    if (!category || category === "Todos") return channels;
+    return channels.filter((c) => c.category === category);
+  }
+  async listPublicAsync(category) {
+    await this.ensureHydrated();
+    return this.listPublic(category);
+  }
+  listAllAdmin() {
+    return repositoryStore.getChannels();
+  }
+  async listAllAdminAsync() {
+    await this.ensureHydrated();
+    return this.listAllAdmin();
+  }
+  createOrUpdate(payload) {
+    const name = sanitizePlainText(payload.name, 100);
+    if (!name) {
+      throw new Error("Nome do canal \xE9 obrigat\xF3rio.");
+    }
+    if (!VALID_CATEGORIES.includes(payload.category)) {
+      throw new Error("Categoria de canal inv\xE1lida.");
+    }
+    if (!isValidStreamUrl(payload.streamUrl)) {
+      throw new Error("URL de transmiss\xE3o autorizada inv\xE1lida (use http:// ou https://).");
+    }
+    const id = payload.id?.trim() || `ch_${Date.now()}`;
+    const existing = repositoryStore.getChannels().find((c) => c.id === id);
+    const channel = {
+      id,
+      name,
+      category: payload.category,
+      streamUrl: payload.streamUrl.trim().slice(0, 500),
+      logoUrl: payload.logoUrl ? payload.logoUrl.trim().slice(0, 500) : void 0,
+      description: payload.description ? sanitizePlainText(payload.description, 300) : void 0,
+      active: typeof payload.active === "boolean" ? payload.active : true,
+      createdAt: existing?.createdAt ?? (/* @__PURE__ */ new Date()).toISOString()
+    };
+    repositoryStore.upsertChannel(channel);
+    this.lastHydratedAt = Date.now();
+    repositoryStore.addLog({
+      level: "info",
+      service: "ChannelService",
+      message: `Canal autorizado salvo pelo admin: ${channel.name} (${channel.category}).`
+    });
+    return channel;
+  }
+  remove(id) {
+    const ok = repositoryStore.deleteChannel(id);
+    this.lastHydratedAt = Date.now();
+    if (ok) {
+      repositoryStore.addLog({
+        level: "warn",
+        service: "ChannelService",
+        message: `Canal removido pelo admin: ${id}.`
+      });
+    }
+    return ok;
+  }
+};
+var ChannelService = new ChannelServiceImpl();
 
 // server/services/RecommendationService.ts
 import { GoogleGenAI, Type } from "@google/genai";
@@ -1817,6 +2165,7 @@ var RecommendationService = new RecommendationServiceImpl();
 // server/services/AdminService.ts
 var AdminServiceImpl = class {
   async getDashboardStats() {
+    await Promise.all([ChannelService.ensureHydrated(), SiteConfigService.ensureHydrated()]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
     const synced = await CatalogService.getSyncedCatalog();
@@ -1873,69 +2222,6 @@ var AdminServiceImpl = class {
   }
 };
 var AdminService = new AdminServiceImpl();
-
-// server/services/ChannelService.ts
-var VALID_CATEGORIES = [
-  "Not\xEDcias",
-  "Esportes",
-  "Entretenimento",
-  "Filmes",
-  "Variedades",
-  "Infantil"
-];
-var ChannelServiceImpl = class {
-  listPublic(category) {
-    const channels = repositoryStore.getChannels().filter((c) => c.active);
-    if (!category || category === "Todos") return channels;
-    return channels.filter((c) => c.category === category);
-  }
-  listAllAdmin() {
-    return repositoryStore.getChannels();
-  }
-  createOrUpdate(payload) {
-    const name = sanitizePlainText(payload.name, 100);
-    if (!name) {
-      throw new Error("Nome do canal \xE9 obrigat\xF3rio.");
-    }
-    if (!VALID_CATEGORIES.includes(payload.category)) {
-      throw new Error("Categoria de canal inv\xE1lida.");
-    }
-    if (!isValidStreamUrl(payload.streamUrl)) {
-      throw new Error("URL de transmiss\xE3o autorizada inv\xE1lida (use http:// ou https://).");
-    }
-    const id = payload.id?.trim() || `ch_${Date.now()}`;
-    const existing = repositoryStore.getChannels().find((c) => c.id === id);
-    const channel = {
-      id,
-      name,
-      category: payload.category,
-      streamUrl: payload.streamUrl.trim().slice(0, 500),
-      logoUrl: payload.logoUrl ? payload.logoUrl.trim().slice(0, 500) : void 0,
-      description: payload.description ? sanitizePlainText(payload.description, 300) : void 0,
-      active: typeof payload.active === "boolean" ? payload.active : true,
-      createdAt: existing?.createdAt ?? (/* @__PURE__ */ new Date()).toISOString()
-    };
-    repositoryStore.upsertChannel(channel);
-    repositoryStore.addLog({
-      level: "info",
-      service: "ChannelService",
-      message: `Canal autorizado salvo pelo admin: ${channel.name} (${channel.category}).`
-    });
-    return channel;
-  }
-  remove(id) {
-    const ok = repositoryStore.deleteChannel(id);
-    if (ok) {
-      repositoryStore.addLog({
-        level: "warn",
-        service: "ChannelService",
-        message: `Canal removido pelo admin: ${id}.`
-      });
-    }
-    return ok;
-  }
-};
-var ChannelService = new ChannelServiceImpl();
 
 // server/services/FavoritesService.ts
 var FavoritesServiceImpl = class {
@@ -2003,23 +2289,32 @@ var HistoryService = new HistoryServiceImpl();
 
 // server/config/playerConfig.ts
 var PlayerConfigStore = class {
-  constructor() {
-    this.config = { ...DEFAULT_PLAYER_CONFIG };
+  getPersisted() {
+    const stored = repositoryStore.getPlayerSettings();
+    if (!stored) {
+      return { ...DEFAULT_PLAYER_CONFIG };
+    }
+    return {
+      ...DEFAULT_PLAYER_CONFIG,
+      defaultDomain: validateMegaEmbedDomain(stored.defaultDomain, DEFAULT_PLAYER_CONFIG.defaultDomain),
+      defaultPlayer: validateMegaEmbedPlayer(stored.defaultPlayer, DEFAULT_PLAYER_CONFIG.defaultPlayer),
+      defaultColorHex: sanitizeHexColor(stored.defaultColorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex)
+    };
   }
   getConfig() {
-    return { ...this.config };
+    return this.getPersisted();
   }
   updateConfig(partial) {
-    const nextDomain = partial.defaultDomain ? validateMegaEmbedDomain(partial.defaultDomain, this.config.defaultDomain) : this.config.defaultDomain;
-    const nextPlayer = partial.defaultPlayer ? validateMegaEmbedPlayer(partial.defaultPlayer, this.config.defaultPlayer) : this.config.defaultPlayer;
-    const nextColor = partial.defaultColorHex ? sanitizeHexColor(partial.defaultColorHex, this.config.defaultColorHex) : this.config.defaultColorHex;
-    this.config = {
-      ...this.config,
+    const current = this.getPersisted();
+    const nextDomain = partial.defaultDomain ? validateMegaEmbedDomain(partial.defaultDomain, current.defaultDomain) : current.defaultDomain;
+    const nextPlayer = partial.defaultPlayer ? validateMegaEmbedPlayer(partial.defaultPlayer, current.defaultPlayer) : current.defaultPlayer;
+    const nextColor = partial.defaultColorHex ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex) : current.defaultColorHex;
+    repositoryStore.savePlayerSettings({
       defaultDomain: nextDomain,
       defaultPlayer: nextPlayer,
       defaultColorHex: nextColor
-    };
-    return this.getConfig();
+    });
+    return this.getPersisted();
   }
 };
 var playerConfigStore = new PlayerConfigStore();
@@ -2063,68 +2358,46 @@ var MegaEmbedServiceImpl = class {
 };
 var MegaEmbedService = new MegaEmbedServiceImpl();
 
-// server/services/SiteConfigService.ts
-var SiteConfigServiceImpl = class {
-  getConfig() {
-    return repositoryStore.getSiteConfig();
-  }
-  updateConfig(input) {
-    const current = repositoryStore.getSiteConfig();
-    const next = sanitizeSiteConfig(input, current);
-    repositoryStore.saveSiteConfig(next);
-    repositoryStore.addLog({
-      level: "info",
-      service: "SiteConfigService",
-      message: `Configura\xE7\xF5es do site atualizadas pelo administrador (${next.siteName}).`
-    });
-    return next;
-  }
-  listCustomCatalog() {
-    return repositoryStore.getCustomCatalog();
-  }
-  getCustomMatch(tmdbId, mediaType) {
-    return repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType) ?? null;
-  }
-  upsertCustomMedia(input) {
-    const existing = input.id ? repositoryStore.getCustomCatalog().find((c) => c.id === input.id) : void 0;
-    const sanitized = sanitizeCustomMediaInput(input, existing);
-    const saved = repositoryStore.upsertCustomMedia(sanitized);
-    CacheService.clear("catalog:");
-    repositoryStore.addLog({
-      level: "info",
-      service: "CatalogAdminService",
-      message: `M\xEDdia personalizada salva: ${saved.title} (${saved.mediaType} #${saved.tmdbId}).`
-    });
-    return saved;
-  }
-  deleteCustomMedia(id) {
-    const ok = repositoryStore.deleteCustomMedia(id);
-    if (ok) {
-      CacheService.clear("catalog:");
-      repositoryStore.addLog({
-        level: "warn",
-        service: "CatalogAdminService",
-        message: `M\xEDdia personalizada removida: ${id}.`
-      });
-    }
-    return ok;
-  }
-};
-var SiteConfigService = new SiteConfigServiceImpl();
-
 // server/services/PlayerService.ts
 var PlayerServiceImpl = class {
+  constructor() {
+    this.lastHydratedAt = 0;
+    this.hydrationTtlMs = 2e4;
+  }
+  async ensureHydrated(force = false) {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+    const remote = await FirestoreRestService.getDocument("playerSettings/global");
+    if (remote) {
+      playerConfigStore.updateConfig({
+        defaultDomain: remote.defaultDomain,
+        defaultPlayer: remote.defaultPlayer,
+        defaultColorHex: remote.defaultColorHex
+      });
+    }
+    this.lastHydratedAt = Date.now();
+  }
   getConfig() {
+    return playerConfigStore.getConfig();
+  }
+  async getConfigAsync() {
+    await this.ensureHydrated();
     return playerConfigStore.getConfig();
   }
   updateConfig(partial) {
     const updated = playerConfigStore.updateConfig(partial);
+    this.lastHydratedAt = Date.now();
     repositoryStore.addLog({
       level: "info",
       service: "PlayerService",
       message: `Configura\xE7\xE3o do player atualizada: ${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`
     });
     return updated;
+  }
+  async resolveStreamAsync(params) {
+    await Promise.all([this.ensureHydrated(), SiteConfigService.ensureHydrated()]);
+    return this.resolveStream(params);
   }
   resolveStream(params) {
     const numericId = Number(params.tmdbId);
@@ -2532,8 +2805,12 @@ function createApiApp() {
       geminiConfigured: RecommendationService.isGeminiConfigured()
     });
   });
-  app2.get("/api/site-config", (_req, res) => {
-    res.json(SiteConfigService.getConfig());
+  app2.get("/api/site-config", async (_req, res, next) => {
+    try {
+      res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
   app2.get("/api/integrations/status", requireAdmin, async (_req, res, next) => {
     try {
@@ -2688,12 +2965,16 @@ function createApiApp() {
       next(err);
     }
   });
-  app2.get("/api/player/config", requireAdmin, (_req, res) => {
-    res.json(PlayerService.getConfig());
-  });
-  app2.get("/api/player/movie/:tmdbId", (req, res) => {
+  app2.get("/api/player/config", requireAdmin, async (_req, res, next) => {
     try {
-      const payload = PlayerService.resolveStream({
+      res.json(await PlayerService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app2.get("/api/player/movie/:tmdbId", async (req, res) => {
+    try {
+      const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: "movie"
       });
@@ -2706,11 +2987,11 @@ function createApiApp() {
       res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao carregar reprodu\xE7\xE3o." });
     }
   });
-  app2.get("/api/player/tv/:tmdbId", (req, res) => {
+  app2.get("/api/player/tv/:tmdbId", async (req, res) => {
     try {
       const seasonNumber = typeof req.query.season === "string" && req.query.season.trim() !== "" ? Number(req.query.season) : void 0;
       const episodeNumber = typeof req.query.episode === "string" && req.query.episode.trim() !== "" ? Number(req.query.episode) : void 0;
-      const payload = PlayerService.resolveStream({
+      const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: "tv",
         seasonNumber,
@@ -2727,9 +3008,13 @@ function createApiApp() {
       res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao carregar reprodu\xE7\xE3o." });
     }
   });
-  app2.get("/api/channels", (req, res) => {
-    const category = typeof req.query.category === "string" ? req.query.category : void 0;
-    res.json({ items: ChannelService.listPublic(category) });
+  app2.get("/api/channels", async (req, res, next) => {
+    try {
+      const category = typeof req.query.category === "string" ? req.query.category : void 0;
+      res.json({ items: await ChannelService.listPublicAsync(category) });
+    } catch (err) {
+      next(err);
+    }
   });
   app2.get("/api/plans", (_req, res) => {
     res.json({ items: SubscriptionService.getPlans() });
@@ -2876,8 +3161,12 @@ function createApiApp() {
     if (!updated) return res.status(404).json({ error: "Usu\xE1rio n\xE3o encontrado." });
     res.json(updated);
   });
-  app2.get("/api/admin/channels", requireAdmin, (_req, res) => {
-    res.json({ items: ChannelService.listAllAdmin() });
+  app2.get("/api/admin/channels", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json({ items: await ChannelService.listAllAdminAsync() });
+    } catch (err) {
+      next(err);
+    }
   });
   app2.post("/api/admin/channels", requireAdmin, (req, res) => {
     try {
@@ -2892,22 +3181,34 @@ function createApiApp() {
     if (!removed) return res.status(404).json({ error: "Canal n\xE3o encontrado." });
     res.json({ removed: true });
   });
-  app2.get("/api/admin/player-config", requireAdmin, (_req, res) => {
-    res.json(PlayerService.getConfig());
+  app2.get("/api/admin/player-config", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await PlayerService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
   app2.put("/api/admin/player-config", requireAdmin, (req, res) => {
     const updated = PlayerService.updateConfig(req.body ?? {});
     res.json(updated);
   });
-  app2.get("/api/admin/site-config", requireAdmin, (_req, res) => {
-    res.json(SiteConfigService.getConfig());
+  app2.get("/api/admin/site-config", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
   app2.put("/api/admin/site-config", requireAdmin, (req, res) => {
     const updated = SiteConfigService.updateConfig(req.body ?? {});
     res.json(updated);
   });
-  app2.get("/api/admin/catalog/custom", requireAdmin, (_req, res) => {
-    res.json({ items: SiteConfigService.listCustomCatalog() });
+  app2.get("/api/admin/catalog/custom", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json({ items: await SiteConfigService.listCustomCatalogAsync() });
+    } catch (err) {
+      next(err);
+    }
   });
   app2.post("/api/admin/catalog/custom", requireAdmin, (req, res) => {
     try {

@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { Play, Radio, ShieldAlert, Tv } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { toIsoTimestamp } from '../../shared/siteConfigUtils';
 import type { ChannelCategory, LiveChannel } from '../../shared/types';
+import { useAuth } from '../contexts/AuthContext';
+import { db } from '../lib/firebase';
 import { apiRequest } from '../services/apiClient';
 
 const CATEGORIES: Array<'Todos' | ChannelCategory> = [
@@ -15,21 +19,64 @@ const CATEGORIES: Array<'Todos' | ChannelCategory> = [
 ];
 
 export function ChannelsPage() {
+  const { profile } = useAuth();
   const [selectedCategory, setSelectedCategory] = useState<'Todos' | ChannelCategory>('Todos');
   const [channels, setChannels] = useState<LiveChannel[]>([]);
   const [activeChannel, setActiveChannel] = useState<LiveChannel | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     const q =
       selectedCategory === 'Todos'
         ? ''
         : `?category=${encodeURIComponent(selectedCategory)}`;
-    apiRequest<{ items: LiveChannel[] }>(`/api/channels${q}`)
-      .then((res) => setChannels(res.items))
-      .catch(() => setChannels([]))
-      .finally(() => setLoading(false));
+
+    Promise.allSettled([
+      apiRequest<{ items: LiveChannel[] }>(`/api/channels${q}`),
+      getDocs(query(collection(db, 'channels'), where('active', '==', true))),
+    ])
+      .then(([apiRes, fsRes]) => {
+        if (cancelled) return;
+        const map = new Map<string, LiveChannel>();
+
+        if (apiRes.status === 'fulfilled') {
+          for (const ch of apiRes.value.items) {
+            map.set(ch.id, ch);
+          }
+        }
+        if (fsRes.status === 'fulfilled') {
+          for (const docSnap of fsRes.value.docs) {
+            const data = docSnap.data();
+            const ch: LiveChannel = {
+              id: String(data.id || docSnap.id),
+              name: String(data.name || ''),
+              category: data.category as ChannelCategory,
+              streamUrl: String(data.streamUrl || ''),
+              logoUrl: typeof data.logoUrl === 'string' ? data.logoUrl : undefined,
+              description: typeof data.description === 'string' ? data.description : undefined,
+              active: data.active !== false,
+              createdAt: toIsoTimestamp(data.createdAt, new Date().toISOString()),
+            };
+            if (ch.name && ch.streamUrl) {
+              map.set(ch.id, ch);
+            }
+          }
+        }
+
+        const merged = Array.from(map.values()).filter(
+          (ch) => ch.active && (selectedCategory === 'Todos' || ch.category === selectedCategory)
+        );
+        setChannels(merged);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCategory]);
 
   return (
@@ -135,16 +182,18 @@ export function ChannelsPage() {
               Nenhum canal autorizado cadastrado nesta categoria
             </h2>
             <p className="text-sm text-slate-400">
-              Por conformidade e direitos de transmissão, o MegaStream não utiliza URLs fictícias. Administradores podem cadastrar URLs de transmissão autorizadas no Painel Administrativo.
+              Por conformidade e direitos de transmissão, exibimos apenas emissoras e transmissões oficiais cadastradas pela equipe da plataforma.
             </p>
           </div>
-          <Link
-            to="/admin"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
-            style={{ backgroundColor: 'var(--ms-accent)' }}
-          >
-            Cadastrar Canal no Painel Admin
-          </Link>
+          {profile?.role === 'admin' && (
+            <Link
+              to="/admin"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
+              style={{ backgroundColor: 'var(--ms-accent)' }}
+            >
+              Cadastrar Canal no Painel Admin
+            </Link>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

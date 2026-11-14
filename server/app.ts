@@ -42,8 +42,12 @@ export function createApiApp(): Express {
   });
 
   // --- Public Site Branding & Feature Config (No Server/Source Secrets) ---
-  app.get('/api/site-config', (_req, res) => {
-    res.json(SiteConfigService.getConfig());
+  app.get('/api/site-config', async (_req, res, next) => {
+    try {
+      res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
 
   // --- Integrations Status (Admin Only) ---
@@ -233,13 +237,17 @@ export function createApiApp(): Express {
   });
 
   // --- Player Stream Resolution (Clean Playback Response) ---
-  app.get('/api/player/config', requireAdmin, (_req, res) => {
-    res.json(PlayerService.getConfig());
+  app.get('/api/player/config', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await PlayerService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
 
-  app.get('/api/player/movie/:tmdbId', (req, res) => {
+  app.get('/api/player/movie/:tmdbId', async (req, res) => {
     try {
-      const payload = PlayerService.resolveStream({
+      const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: 'movie',
       });
@@ -253,7 +261,7 @@ export function createApiApp(): Express {
     }
   });
 
-  app.get('/api/player/tv/:tmdbId', (req, res) => {
+  app.get('/api/player/tv/:tmdbId', async (req, res) => {
     try {
       const seasonNumber =
         typeof req.query.season === 'string' && req.query.season.trim() !== ''
@@ -263,7 +271,7 @@ export function createApiApp(): Express {
         typeof req.query.episode === 'string' && req.query.episode.trim() !== ''
           ? Number(req.query.episode)
           : undefined;
-      const payload = PlayerService.resolveStream({
+      const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: 'tv',
         seasonNumber,
@@ -282,9 +290,13 @@ export function createApiApp(): Express {
   });
 
   // --- Channels & Plans ---
-  app.get('/api/channels', (req, res) => {
-    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
-    res.json({ items: ChannelService.listPublic(category) });
+  app.get('/api/channels', async (req, res, next) => {
+    try {
+      const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+      res.json({ items: await ChannelService.listPublicAsync(category) });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.get('/api/plans', (_req, res) => {
@@ -459,8 +471,12 @@ export function createApiApp(): Express {
     res.json(updated);
   });
 
-  app.get('/api/admin/channels', requireAdmin, (_req, res) => {
-    res.json({ items: ChannelService.listAllAdmin() });
+  app.get('/api/admin/channels', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json({ items: await ChannelService.listAllAdminAsync() });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post('/api/admin/channels', requireAdmin, (req, res) => {
@@ -478,8 +494,12 @@ export function createApiApp(): Express {
     res.json({ removed: true });
   });
 
-  app.get('/api/admin/player-config', requireAdmin, (_req, res) => {
-    res.json(PlayerService.getConfig());
+  app.get('/api/admin/player-config', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await PlayerService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.put('/api/admin/player-config', requireAdmin, (req, res) => {
@@ -487,8 +507,12 @@ export function createApiApp(): Express {
     res.json(updated);
   });
 
-  app.get('/api/admin/site-config', requireAdmin, (_req, res) => {
-    res.json(SiteConfigService.getConfig());
+  app.get('/api/admin/site-config', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.put('/api/admin/site-config', requireAdmin, (req, res) => {
@@ -496,8 +520,12 @@ export function createApiApp(): Express {
     res.json(updated);
   });
 
-  app.get('/api/admin/catalog/custom', requireAdmin, (_req, res) => {
-    res.json({ items: SiteConfigService.listCustomCatalog() });
+  app.get('/api/admin/catalog/custom', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json({ items: await SiteConfigService.listCustomCatalogAsync() });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post('/api/admin/catalog/custom', requireAdmin, (req, res) => {

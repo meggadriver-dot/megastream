@@ -1,7 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { doc, serverTimestamp, setDoc, deleteDoc } from 'firebase/firestore';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from 'firebase/firestore';
 import {
   Activity,
+  AlertTriangle,
   Check,
   Database,
   Edit3,
@@ -25,6 +35,12 @@ import {
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import {
+  DEFAULT_SITE_CONFIG,
+  sanitizeCustomMediaInput,
+  sanitizeSiteConfig,
+  toIsoTimestamp,
+} from '../../shared/siteConfigUtils';
 import type {
   AdminDashboardStats,
   AdminTab,
@@ -113,6 +129,7 @@ export function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   // User search
@@ -143,17 +160,49 @@ export function AdminPage() {
   const [mediaActive, setMediaActive] = useState(true);
 
   const showFeedback = (msg: string) => {
+    setErrorMsg(null);
     setActionMsg(msg);
     setTimeout(() => {
       setActionMsg((curr) => (curr === msg ? null : curr));
     }, 5000);
   };
 
+  const showError = (err: unknown, fallback: string) => {
+    setActionMsg(null);
+    let msg = err instanceof Error ? err.message : fallback;
+    if (msg.includes('permission-denied') || msg.includes('Missing or insufficient permissions')) {
+      msg = 'Permissão recusada no Firestore. Verifique se você está autenticado com a conta administradora verificada.';
+    }
+    setErrorMsg(msg);
+  };
+
+  const ensureVerifiedAdminSession = () => {
+    if (!firebaseUser) {
+      throw new Error('Sessão expirada. Entre novamente como administrador.');
+    }
+    if (!firebaseUser.emailVerified) {
+      throw new Error('Seu e-mail precisa estar verificado para salvar alterações na nuvem.');
+    }
+  };
+
   const loadAdminData = useCallback(async () => {
     setLoading(true);
     setAuthError(null);
     try {
-      const [dash, userRes, chanRes, pCfg, logRes, sCfg, customRes] = await Promise.all([
+      const [
+        dash,
+        userRes,
+        chanRes,
+        pCfg,
+        logRes,
+        sCfg,
+        customRes,
+        fsSiteSnap,
+        fsPlayerSnap,
+        fsCustomSnap,
+        fsChannelsSnap,
+        fsUsersSnap,
+      ] = await Promise.all([
         apiRequest<{ stats: AdminDashboardStats; integrations: IntegrationStatus }>(
           '/api/admin/dashboard'
         ),
@@ -163,15 +212,125 @@ export function AdminPage() {
         apiRequest<{ items: SystemLogEntry[] }>('/api/admin/logs'),
         apiRequest<SiteConfig>('/api/admin/site-config'),
         apiRequest<{ items: CustomMediaItem[] }>('/api/admin/catalog/custom'),
+        getDoc(doc(db, 'siteConfig', 'global')).catch(() => null),
+        getDoc(doc(db, 'playerSettings', 'global')).catch(() => null),
+        getDocs(collection(db, 'customCatalog')).catch(() => null),
+        getDocs(collection(db, 'channels')).catch(() => null),
+        getDocs(collection(db, 'users')).catch(() => null),
       ]);
+
+      // 1. Site Config (prefer newest between Firestore & API)
+      let effectiveSite = sanitizeSiteConfig(sCfg, DEFAULT_SITE_CONFIG, true);
+      if (fsSiteSnap?.exists()) {
+        const fsSite = sanitizeSiteConfig(
+          fsSiteSnap.data() as Partial<SiteConfig>,
+          DEFAULT_SITE_CONFIG,
+          true
+        );
+        const fsTs = Date.parse(fsSite.updatedAt) || 0;
+        const apiTs = Date.parse(effectiveSite.updatedAt) || 0;
+        if (effectiveSite.updatedAt === DEFAULT_SITE_CONFIG.updatedAt || fsTs >= apiTs) {
+          effectiveSite = fsSite;
+        }
+      }
+      setSiteDraft(effectiveSite);
+      applySiteConfig(effectiveSite);
+
+      // 2. Player Config (prefer Firestore if saved)
+      let effectivePlayer = pCfg;
+      if (fsPlayerSnap?.exists()) {
+        const fsData = fsPlayerSnap.data() as Partial<PlayerConfig>;
+        effectivePlayer = {
+          ...pCfg,
+          defaultDomain: (fsData.defaultDomain as MegaEmbedDomain) || pCfg.defaultDomain,
+          defaultPlayer: (fsData.defaultPlayer as MegaEmbedPlayer) || pCfg.defaultPlayer,
+          defaultColorHex:
+            typeof fsData.defaultColorHex === 'string' && fsData.defaultColorHex
+              ? fsData.defaultColorHex
+              : pCfg.defaultColorHex,
+        };
+      }
+      setPlayerConfig(effectivePlayer);
+
+      // 3. Custom Catalog (merge API + Firestore by id)
+      const customMap = new Map<string, CustomMediaItem>();
+      for (const item of customRes.items) {
+        customMap.set(item.id, item);
+      }
+      if (fsCustomSnap) {
+        for (const d of fsCustomSnap.docs) {
+          try {
+            const raw = d.data() as Partial<CustomMediaItem> & { title?: string; mediaType?: string };
+            if (!raw.title) continue;
+            const normalized = sanitizeCustomMediaInput({ ...raw, id: d.id });
+            const iso = toIsoTimestamp(raw.updatedAt, '');
+            if (iso) normalized.updatedAt = iso;
+            customMap.set(normalized.id, normalized);
+          } catch {
+            // Skip invalid doc
+          }
+        }
+      }
+      setCustomCatalog(Array.from(customMap.values()));
+
+      // 4. Channels (merge API + Firestore by id)
+      const channelMap = new Map<string, LiveChannel>();
+      for (const ch of chanRes.items) {
+        channelMap.set(ch.id, ch);
+      }
+      if (fsChannelsSnap) {
+        for (const d of fsChannelsSnap.docs) {
+          const data = d.data();
+          const ch: LiveChannel = {
+            id: String(data.id || d.id),
+            name: String(data.name || ''),
+            category: (data.category as ChannelCategory) || 'Notícias',
+            streamUrl: String(data.streamUrl || ''),
+            logoUrl: typeof data.logoUrl === 'string' ? data.logoUrl : undefined,
+            description: typeof data.description === 'string' ? data.description : undefined,
+            active: data.active !== false,
+            createdAt: toIsoTimestamp(data.createdAt, new Date().toISOString()),
+          };
+          if (ch.name && ch.streamUrl) {
+            channelMap.set(ch.id, ch);
+          }
+        }
+      }
+      setChannels(Array.from(channelMap.values()));
+
+      // 5. Users (merge API + Firestore by uid)
+      const userMap = new Map<string, UserProfile>();
+      for (const u of userRes.items) {
+        userMap.set(u.uid, u);
+      }
+      if (fsUsersSnap) {
+        for (const d of fsUsersSnap.docs) {
+          const data = d.data();
+          const uid = String(data.uid || d.id);
+          const existing = userMap.get(uid);
+          userMap.set(uid, {
+            uid,
+            name: String(data.name || existing?.name || 'Usuário'),
+            email: String(data.email || existing?.email || ''),
+            photoUrl: typeof data.photoUrl === 'string' ? data.photoUrl : existing?.photoUrl || '',
+            plan: (data.plan as PlanId) || existing?.plan || 'free',
+            role: data.role === 'admin' ? 'admin' : 'user',
+            blocked: Boolean(data.blocked),
+            preferredTheme: (data.preferredTheme as ThemeId) || existing?.preferredTheme || 'cinematografico',
+            preferredLanguage: String(data.preferredLanguage || existing?.preferredLanguage || 'pt-BR'),
+            preferredQuality: String(data.preferredQuality || existing?.preferredQuality || '1080p'),
+            parentalControl: Boolean(data.parentalControl ?? existing?.parentalControl),
+            notificationsEnabled: data.notificationsEnabled !== false,
+            createdAt: toIsoTimestamp(data.createdAt, existing?.createdAt || new Date().toISOString()),
+            updatedAt: toIsoTimestamp(data.updatedAt, existing?.updatedAt || new Date().toISOString()),
+          });
+        }
+      }
+      setUsers(Array.from(userMap.values()));
+
       setStats(dash.stats);
       setIntegrations(dash.integrations);
-      setUsers(userRes.items);
-      setChannels(chanRes.items);
-      setPlayerConfig(pCfg);
       setLogs(logRes.items);
-      setSiteDraft(sCfg);
-      setCustomCatalog(customRes.items);
     } catch (err) {
       setAuthError(
         err instanceof Error
@@ -181,7 +340,7 @@ export function AdminPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applySiteConfig]);
 
   useEffect(() => {
     if (firebaseUser) {
@@ -196,37 +355,33 @@ export function AdminPage() {
     e.preventDefault();
     setSaving(true);
     try {
+      ensureVerifiedAdminSession();
       const saved = await apiRequest<SiteConfig>('/api/admin/site-config', {
         method: 'PUT',
         body: JSON.stringify(siteDraft),
       });
+
+      await setDoc(doc(db, 'siteConfig', 'global'), {
+        siteName: saved.siteName,
+        siteSlogan: saved.siteSlogan,
+        logoUrl: saved.logoUrl,
+        defaultTheme: saved.defaultTheme,
+        accentColorHex: saved.accentColorHex,
+        announcementEnabled: saved.announcementEnabled,
+        announcementText: saved.announcementText,
+        enableChannels: saved.enableChannels,
+        enableAiPage: saved.enableAiPage,
+        enablePlansPage: saved.enablePlansPage,
+        maintenanceMode: saved.maintenanceMode,
+        footerText: saved.footerText,
+        updatedAt: serverTimestamp(),
+      });
+
       setSiteDraft(saved);
-      applySiteConfig(saved);
-
-      // Sync to Firestore /siteConfig/global cleanly for persistence
-      try {
-        await setDoc(doc(db, 'siteConfig', 'global'), {
-          siteName: saved.siteName,
-          siteSlogan: saved.siteSlogan,
-          logoUrl: saved.logoUrl,
-          defaultTheme: saved.defaultTheme,
-          accentColorHex: saved.accentColorHex,
-          announcementEnabled: saved.announcementEnabled,
-          announcementText: saved.announcementText,
-          enableChannels: saved.enableChannels,
-          enableAiPage: saved.enableAiPage,
-          enablePlansPage: saved.enablePlansPage,
-          maintenanceMode: saved.maintenanceMode,
-          footerText: saved.footerText,
-          updatedAt: serverTimestamp(),
-        });
-      } catch {
-        // Backend store already persisted config cleanly
-      }
-
-      showFeedback('Personalização e configurações do site salvas e aplicadas em tempo real.');
+      applySiteConfig(saved, true);
+      showFeedback('Personalização e configurações do site salvas na nuvem e aplicadas.');
     } catch (err) {
-      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar configurações do site.');
+      showError(err, 'Erro ao salvar configurações do site.');
     } finally {
       setSaving(false);
     }
@@ -269,6 +424,7 @@ export function AdminPage() {
     e.preventDefault();
     setSaving(true);
     try {
+      ensureVerifiedAdminSession();
       const saved = await apiRequest<CustomMediaItem>('/api/admin/catalog/custom', {
         method: 'POST',
         body: JSON.stringify({
@@ -288,53 +444,69 @@ export function AdminPage() {
         }),
       });
 
-      try {
-        await setDoc(doc(db, 'customCatalog', saved.id), {
-          id: saved.id,
-          tmdbId: saved.tmdbId,
-          mediaType: saved.mediaType,
-          title: saved.title,
-          originalTitle: saved.originalTitle,
-          overview: saved.overview,
-          posterPath: saved.posterPath,
-          backdropPath: saved.backdropPath,
-          releaseYear: saved.releaseYear,
-          voteAverage: saved.voteAverage,
-          ...(saved.customStreamUrl ? { customStreamUrl: saved.customStreamUrl } : {}),
-          featured: saved.featured,
-          active: saved.active,
-          updatedAt: serverTimestamp(),
-        });
-      } catch {
-        // Non-blocking Firestore mirror
-      }
+      await setDoc(doc(db, 'customCatalog', saved.id), {
+        id: saved.id,
+        tmdbId: saved.tmdbId,
+        mediaType: saved.mediaType,
+        title: saved.title,
+        originalTitle: saved.originalTitle,
+        overview: saved.overview,
+        posterPath: saved.posterPath,
+        backdropPath: saved.backdropPath,
+        releaseYear: saved.releaseYear,
+        voteAverage: saved.voteAverage,
+        ...(saved.customStreamUrl ? { customStreamUrl: saved.customStreamUrl } : {}),
+        featured: saved.featured,
+        active: saved.active,
+        updatedAt: serverTimestamp(),
+      });
 
       setCustomCatalog((prev) => {
         const exists = prev.some((x) => x.id === saved.id);
         return exists ? prev.map((x) => (x.id === saved.id ? saved : x)) : [saved, ...prev];
       });
       resetMediaForm();
-      showFeedback(`Título "${saved.title}" salvo no catálogo.`);
+      showFeedback(`Título "${saved.title}" salvo no catálogo e na nuvem.`);
     } catch (err) {
-      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar mídia.');
+      showError(err, 'Erro ao salvar mídia.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleDeleteCustomMedia = async (id: string) => {
-    await apiRequest(`/api/admin/catalog/custom/${id}`, { method: 'DELETE' });
-    setCustomCatalog((prev) => prev.filter((m) => m.id !== id));
+    setSaving(true);
     try {
+      ensureVerifiedAdminSession();
+      await apiRequest(`/api/admin/catalog/custom/${id}`, { method: 'DELETE' }).catch(() => null);
       await deleteDoc(doc(db, 'customCatalog', id));
-    } catch {
-      // Ignore if not in Firestore
+      setCustomCatalog((prev) => prev.filter((m) => m.id !== id));
+      if (editingMediaId === id) resetMediaForm();
+      showFeedback('Mídia personalizada removida.');
+    } catch (err) {
+      showError(err, 'Erro ao remover mídia personalizada.');
+    } finally {
+      setSaving(false);
     }
-    if (editingMediaId === id) resetMediaForm();
-    showFeedback('Mídia personalizada removida.');
   };
 
   // --- Channel Handlers ---
+  const persistChannelToFirestore = async (channel: LiveChannel) => {
+    const chRef = doc(db, 'channels', channel.id);
+    const existingSnap = await getDoc(chRef);
+    const payload: Record<string, unknown> = {
+      id: channel.id,
+      name: channel.name,
+      category: channel.category,
+      streamUrl: channel.streamUrl,
+      active: channel.active,
+      createdAt: existingSnap.exists() ? existingSnap.data().createdAt : serverTimestamp(),
+    };
+    if (channel.logoUrl) payload.logoUrl = channel.logoUrl;
+    if (channel.description) payload.description = channel.description;
+    await setDoc(chRef, payload);
+  };
+
   const resetChannelForm = () => {
     setEditingChannelId(null);
     setChName('');
@@ -357,7 +529,9 @@ export function AdminPage() {
 
   const handleSaveChannel = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaving(true);
     try {
+      ensureVerifiedAdminSession();
       const saved = await apiRequest<LiveChannel>('/api/admin/channels', {
         method: 'POST',
         body: JSON.stringify({
@@ -370,31 +544,52 @@ export function AdminPage() {
           active: chActive,
         }),
       });
+      await persistChannelToFirestore(saved);
       setChannels((prev) => {
         const exists = prev.some((c) => c.id === saved.id);
         return exists ? prev.map((c) => (c.id === saved.id ? saved : c)) : [saved, ...prev];
       });
       resetChannelForm();
-      showFeedback(`Canal "${saved.name}" salvo com sucesso.`);
+      showFeedback(`Canal "${saved.name}" salvo na nuvem com sucesso.`);
     } catch (err) {
-      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar canal.');
+      showError(err, 'Erro ao salvar canal.');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleToggleChannelActive = async (ch: LiveChannel) => {
-    const updated = await apiRequest<LiveChannel>('/api/admin/channels', {
-      method: 'POST',
-      body: JSON.stringify({ ...ch, active: !ch.active }),
-    });
-    setChannels((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-    showFeedback(`Canal "${updated.name}" ${updated.active ? 'ativado' : 'desativado'}.`);
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      const updated = await apiRequest<LiveChannel>('/api/admin/channels', {
+        method: 'POST',
+        body: JSON.stringify({ ...ch, active: !ch.active }),
+      });
+      await persistChannelToFirestore(updated);
+      setChannels((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      showFeedback(`Canal "${updated.name}" ${updated.active ? 'ativado' : 'desativado'}.`);
+    } catch (err) {
+      showError(err, 'Erro ao atualizar status do canal.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDeleteChannel = async (id: string) => {
-    await apiRequest(`/api/admin/channels/${id}`, { method: 'DELETE' });
-    setChannels((prev) => prev.filter((c) => c.id !== id));
-    if (editingChannelId === id) resetChannelForm();
-    showFeedback('Canal removido.');
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      await apiRequest(`/api/admin/channels/${id}`, { method: 'DELETE' }).catch(() => null);
+      await deleteDoc(doc(db, 'channels', id));
+      setChannels((prev) => prev.filter((c) => c.id !== id));
+      if (editingChannelId === id) resetChannelForm();
+      showFeedback('Canal removido.');
+    } catch (err) {
+      showError(err, 'Erro ao remover canal.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   // --- User Handlers ---
@@ -402,42 +597,104 @@ export function AdminPage() {
     u: UserProfile,
     updates: Partial<Pick<UserProfile, 'blocked' | 'role' | 'plan'>>
   ) => {
-    const updated = await apiRequest<UserProfile>(`/api/admin/users/${u.uid}`, {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    });
-    setUsers((prev) => prev.map((x) => (x.uid === updated.uid ? updated : x)));
-    showFeedback(`Conta ${updated.email} atualizada.`);
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      let updated: UserProfile = { ...u, ...updates };
+      try {
+        updated = await apiRequest<UserProfile>(`/api/admin/users/${u.uid}`, {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        });
+      } catch {
+        // User may exist only in Firestore after cold restart
+      }
+
+      const userRef = doc(db, 'users', u.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        await updateDoc(userRef, {
+          role: updated.role,
+          blocked: updated.blocked,
+          plan: updated.plan,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (updates.role) {
+        const adminRef = doc(db, 'admins', u.uid);
+        if (updates.role === 'admin') {
+          await setDoc(adminRef, {
+            uid: u.uid,
+            email: updated.email,
+            grantedAt: serverTimestamp(),
+          });
+        } else if (u.uid !== firebaseUser?.uid) {
+          await deleteDoc(adminRef).catch(() => null);
+        }
+      }
+
+      setUsers((prev) => prev.map((x) => (x.uid === updated.uid ? updated : x)));
+      showFeedback(`Conta ${updated.email} atualizada na nuvem.`);
+    } catch (err) {
+      showError(err, 'Erro ao atualizar conta de usuário.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   // --- Catalog Sync & Cache ---
   const handleSyncCatalog = async () => {
-    const res = await apiRequest<{ count: number; syncedAt: string; source: string }>(
-      '/api/admin/catalog/sync',
-      { method: 'POST' }
-    );
-    showFeedback(`Catálogo sincronizado: ${res.count} títulos atualizados.`);
-    await loadAdminData();
+    try {
+      const res = await apiRequest<{ count: number; syncedAt: string; source: string }>(
+        '/api/admin/catalog/sync',
+        { method: 'POST' }
+      );
+      showFeedback(`Catálogo sincronizado: ${res.count} títulos atualizados.`);
+      await loadAdminData();
+    } catch (err) {
+      showError(err, 'Erro ao sincronizar catálogo.');
+    }
   };
 
   const handleClearCache = async () => {
-    const res = await apiRequest<{ cleared: number }>('/api/admin/cache/clear', {
-      method: 'POST',
-    });
-    showFeedback(`Cache limpo: ${res.cleared} entradas removidas.`);
-    await loadAdminData();
+    try {
+      const res = await apiRequest<{ cleared: number }>('/api/admin/cache/clear', {
+        method: 'POST',
+      });
+      showFeedback(`Cache limpo: ${res.cleared} entradas removidas.`);
+      await loadAdminData();
+    } catch (err) {
+      showError(err, 'Erro ao limpar cache.');
+    }
   };
 
   // --- Player Config Handler (Admin Only) ---
   const handleSavePlayerConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!playerConfig) return;
-    const updated = await apiRequest<PlayerConfig>('/api/admin/player-config', {
-      method: 'PUT',
-      body: JSON.stringify(playerConfig),
-    });
-    setPlayerConfig(updated);
-    showFeedback('Configuração global de players e domínios atualizada.');
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      const updated = await apiRequest<PlayerConfig>('/api/admin/player-config', {
+        method: 'PUT',
+        body: JSON.stringify(playerConfig),
+      });
+
+      await setDoc(doc(db, 'playerSettings', 'global'), {
+        defaultDomain: updated.defaultDomain,
+        defaultPlayer: updated.defaultPlayer,
+        defaultColorHex: updated.defaultColorHex,
+        updatedAt: serverTimestamp(),
+      });
+
+      setPlayerConfig(updated);
+      showFeedback('Configuração global de players e domínios salva na nuvem.');
+    } catch (err) {
+      showError(err, 'Erro ao salvar configuração de players.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   // RESTRICTED ADMIN GATE (Separate Standalone View — Never leaks server/source/domain details!)
@@ -645,6 +902,26 @@ export function AdminPage() {
         </header>
 
         <main className="flex-1 p-4 sm:p-8 max-w-[1380px] w-full mx-auto space-y-6">
+          {errorMsg && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-500/40 bg-red-500/15 px-4 py-3 text-xs sm:text-sm text-red-200 flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setErrorMsg(null)}
+                aria-label="Fechar alerta"
+                className="text-red-300 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {actionMsg && (
             <div
               role="status"
@@ -1581,10 +1858,11 @@ export function AdminPage() {
 
                   <button
                     type="submit"
-                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                    disabled={saving}
+                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer disabled:opacity-60"
                     style={{ backgroundColor: 'var(--ms-accent)' }}
                   >
-                    Salvar Configuração de Players
+                    {saving ? 'Salvando...' : 'Salvar Configuração de Players'}
                   </button>
                 </form>
               )}

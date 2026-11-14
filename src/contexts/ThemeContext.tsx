@@ -49,13 +49,16 @@ export const MEGASTREAM_THEMES: ThemeMeta[] = [
 
 interface ThemeContextValue {
   theme: ThemeId;
-  setTheme: (next: ThemeId) => void;
+  setTheme: (next: ThemeId, isExplicitUserChoice?: boolean) => void;
   setThemeIfUnset: (next: ThemeId) => void;
+  applySiteDefaultTheme: (next: ThemeId, configVersion?: string, forceAdminOverride?: boolean) => void;
   themes: ThemeMeta[];
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 const THEME_STORAGE_KEY = 'megastream_theme';
+const THEME_EXPLICIT_KEY = 'megastream_user_theme_explicit';
+const SITE_THEME_VERSION_KEY = 'megastream_site_theme_version';
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>(() => {
@@ -70,20 +73,49 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  const setTheme = (next: ThemeId) => {
+  const setTheme = (next: ThemeId, isExplicitUserChoice = true) => {
+    if (!MEGASTREAM_THEMES.some((t) => t.id === next)) return;
     localStorage.setItem(THEME_STORAGE_KEY, next);
+    if (isExplicitUserChoice) {
+      localStorage.setItem(THEME_EXPLICIT_KEY, '1');
+    }
     setThemeState(next);
   };
 
   const setThemeIfUnset = (next: ThemeId) => {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
     if (!saved && MEGASTREAM_THEMES.some((t) => t.id === next)) {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+      setThemeState(next);
+    }
+  };
+
+  const applySiteDefaultTheme = (
+    next: ThemeId,
+    configVersion?: string,
+    forceAdminOverride = false
+  ) => {
+    if (!MEGASTREAM_THEMES.some((t) => t.id === next)) return;
+    const prevVersion = localStorage.getItem(SITE_THEME_VERSION_KEY);
+    const hasNewAdminVersion = Boolean(configVersion && configVersion !== prevVersion);
+    const isUserExplicit = localStorage.getItem(THEME_EXPLICIT_KEY) === '1';
+
+    if (forceAdminOverride || hasNewAdminVersion || !isUserExplicit) {
+      if (configVersion) {
+        localStorage.setItem(SITE_THEME_VERSION_KEY, configVersion);
+      }
+      if (forceAdminOverride || hasNewAdminVersion) {
+        localStorage.removeItem(THEME_EXPLICIT_KEY);
+      }
+      localStorage.setItem(THEME_STORAGE_KEY, next);
       setThemeState(next);
     }
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, setThemeIfUnset, themes: MEGASTREAM_THEMES }}>
+    <ThemeContext.Provider
+      value={{ theme, setTheme, setThemeIfUnset, applySiteDefaultTheme, themes: MEGASTREAM_THEMES }}
+    >
       {children}
     </ThemeContext.Provider>
   );
