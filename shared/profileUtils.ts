@@ -179,3 +179,27 @@ export function shouldShowProfileGate(params: {
   return !params.profileSelectedForSession;
 }
 
+export function deduplicateProfilesById<T extends { id: string }>(profiles: readonly T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const profile of profiles) {
+    if (!profile?.id || seen.has(profile.id)) continue;
+    seen.add(profile.id);
+    result.push(profile);
+  }
+  return result;
+}
+
+export function canDeleteProfile(
+  profiles: readonly { id: string }[],
+  profileId: string
+): { allowed: boolean; reason?: string } {
+  const unique = deduplicateProfilesById(profiles);
+  if (!unique.some((p) => p.id === profileId)) {
+    return { allowed: false, reason: 'Perfil não encontrado.' };
+  }
+  if (unique.length <= 1) {
+    return { allowed: false, reason: 'É necessário manter pelo menos um perfil ativo.' };
+  }
+  return { allowed: true };
+}

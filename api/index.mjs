@@ -2606,7 +2606,8 @@ var ProfileServiceImpl = class {
     if (current.length >= MAX_PROFILES_PER_ACCOUNT) {
       throw new Error(`Limite m\xE1ximo de ${MAX_PROFILES_PER_ACCOUNT} perfis por conta atingido.`);
     }
-    const profileId = `prof_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const requestedId = typeof payload.id === "string" && isValidProfileId(payload.id) && !current.some((p) => p.id === payload.id) ? payload.id : null;
+    const profileId = requestedId ?? `prof_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const preset = getAvatarPresetById(payload.avatarId);
     const avatarId = preset ? preset.id : "custom";

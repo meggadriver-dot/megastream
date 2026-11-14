@@ -19,7 +19,9 @@ import {
 import { normalizeVercelApiUrl } from './vercelUtils.ts';
 import {
   PROFILE_AVATAR_PRESETS,
+  canDeleteProfile,
   createDefaultProfiles,
+  deduplicateProfilesById,
   hashProfilePin,
   sanitizeAvatarUrl,
   sanitizeProfileName,
@@ -42,6 +44,11 @@ import {
   mergeFavoriteLists,
   mergeHistoryLists,
 } from './userLibraryUtils.ts';
+import {
+  isPlayerRoute,
+  isTrackableNonPlayerRoute,
+  resolvePlayerBackTarget,
+} from './playerNavigation.ts';
 import type { MediaItem } from './types.ts';
 
 test('buildFavoriteRecord and buildHistoryRecord clamp values and preserve order on merge', () => {
@@ -419,6 +426,69 @@ test('sanitizeCustomMediaInput and mergeCustomCatalogIntoList support adding and
   assert.equal(overridden?.title, 'Duna: Edição Especial Admin');
   assert.equal(overridden?.voteAverage, 9.8);
 });
+
+test('player navigation helpers never return another player route on back', () => {
+  assert.equal(isPlayerRoute('/watch/movie/550'), true);
+  assert.equal(isPlayerRoute('/watch/tv/1396?season=2&episode=3'), true);
+  assert.equal(isPlayerRoute('/series/1396'), false);
+
+  assert.equal(isTrackableNonPlayerRoute('/series/1396'), true);
+  assert.equal(isTrackableNonPlayerRoute('/explore'), true);
+  assert.equal(isTrackableNonPlayerRoute('/watch/tv/1396'), false);
+  assert.equal(isTrackableNonPlayerRoute('/profiles'), false);
+
+  assert.equal(
+    resolvePlayerBackTarget({
+      lastNonPlayerRoute: '/explore?type=tv',
+      mediaType: 'tv',
+      tmdbId: 1396,
+    }),
+    '/explore?type=tv'
+  );
+  assert.equal(
+    resolvePlayerBackTarget({
+      lastNonPlayerRoute: '/watch/movie/999',
+      mediaType: 'tv',
+      tmdbId: 1396,
+    }),
+    '/series/1396'
+  );
+  assert.equal(
+    resolvePlayerBackTarget({
+      lastNonPlayerRoute: null,
+      mediaType: 'movie',
+      tmdbId: 238,
+    }),
+    '/movie/238'
+  );
+  assert.equal(
+    resolvePlayerBackTarget({
+      lastNonPlayerRoute: '//evil.example.com',
+      mediaType: 'movie',
+      tmdbId: null,
+    }),
+    '/'
+  );
+});
+
+test('deduplicateProfilesById and canDeleteProfile handle duplicates and enforce minimum one profile', () => {
+  const deduped = deduplicateProfilesById([
+    { id: 'profile_main', name: 'A' },
+    { id: 'prof_2', name: 'B' },
+    { id: 'profile_main', name: 'A duplicado' },
+  ]);
+  assert.equal(deduped.length, 2);
+  assert.deepEqual(
+    deduped.map((p) => p.id),
+    ['profile_main', 'prof_2']
+  );
+
+  assert.equal(canDeleteProfile(deduped, 'prof_2').allowed, true);
+  assert.equal(canDeleteProfile(deduped, 'missing').allowed, false);
+  assert.equal(canDeleteProfile([{ id: 'profile_main' }], 'profile_main').allowed, false);
+});
+
+
 
 
 

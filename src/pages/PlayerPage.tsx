@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { formatRuntimeMinutes } from '../../shared/catalogUtils';
+import { PLAYER_LAST_ROUTE_KEY, resolvePlayerBackTarget } from '../../shared/playerNavigation';
 import type { MediaDetail, MediaType, SeasonDetail } from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
 import { apiRequest } from '../services/apiClient';
@@ -165,6 +166,21 @@ export function PlayerPage() {
       ? seasonDetail?.episodes.find((ep) => ep.episodeNumber === episodeParam) ?? null
       : null;
 
+  const handleExitPlayer = () => {
+    let lastNonPlayerRoute: string | null = null;
+    try {
+      lastNonPlayerRoute = sessionStorage.getItem(PLAYER_LAST_ROUTE_KEY);
+    } catch {
+      lastNonPlayerRoute = null;
+    }
+    const target = resolvePlayerBackTarget({
+      lastNonPlayerRoute,
+      mediaType,
+      tmdbId,
+    });
+    navigate(target, { replace: true });
+  };
+
   return (
     <div className="min-h-screen bg-[#03050e] text-white flex flex-col">
       {/* Clean Cinema Control Bar */}
@@ -175,7 +191,7 @@ export function PlayerPage() {
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
-            onClick={() => navigate(-1)}
+            onClick={handleExitPlayer}
             aria-label="Voltar"
             className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/15 cursor-pointer shrink-0"
           >
@@ -391,10 +407,13 @@ export function PlayerPage() {
                 <select
                   value={seasonParam}
                   onChange={(e) =>
-                    setSearchParams({
-                      season: e.target.value,
-                      episode: '1',
-                    })
+                    setSearchParams(
+                      {
+                        season: e.target.value,
+                        episode: '1',
+                      },
+                      { replace: true }
+                    )
                   }
                   aria-label="Selecionar temporada no player"
                   className="w-full h-9 px-3 rounded-xl bg-black/50 border text-xs text-white"
@@ -417,10 +436,13 @@ export function PlayerPage() {
                     key={ep.id}
                     type="button"
                     onClick={() =>
-                      setSearchParams({
-                        season: String(ep.seasonNumber),
-                        episode: String(ep.episodeNumber),
-                      })
+                      setSearchParams(
+                        {
+                          season: String(ep.seasonNumber),
+                          episode: String(ep.episodeNumber),
+                        },
+                        { replace: true }
+                      )
                     }
                     className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-center gap-2.5 ${
                       isCurrent ? 'text-white' : 'bg-white/5 text-slate-300 hover:bg-white/10'

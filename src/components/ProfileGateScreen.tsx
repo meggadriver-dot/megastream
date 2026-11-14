@@ -1,18 +1,26 @@
 import React, { useState } from 'react';
-import { Lock, LogOut, Pencil, Plus } from 'lucide-react';
+import { Lock, LogOut, Pencil, Plus, Trash2 } from 'lucide-react';
 import { MAX_PROFILES_PER_ACCOUNT } from '../../shared/profileUtils';
 import type { StreamProfile } from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveProfileAvatarUrl } from '../data/avatarPresets';
 import { Logo } from './Logo';
-import { ProfileEditorModal, ProfilePinModal } from './ProfileModals';
+import {
+  ProfileDeleteConfirmModal,
+  ProfileEditorModal,
+  ProfilePinModal,
+} from './ProfileModals';
 
 export function ProfileGateScreen() {
   const { profiles, selectProfile, verifyProfileAccess, logout } = useAuth();
   const [manageMode, setManageMode] = useState(false);
   const [pinTarget, setPinTarget] = useState<{
     profile: StreamProfile;
-    intent: 'switch' | 'edit';
+    intent: 'switch' | 'edit' | 'delete';
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    profile: StreamProfile;
+    verifiedPin?: string;
   } | null>(null);
   const [editorState, setEditorState] = useState<{
     open: boolean;
@@ -33,6 +41,15 @@ export function ProfileGateScreen() {
     const res = await selectProfile(prof.id);
     if (res.requiresPin) {
       setPinTarget({ profile: prof, intent: 'switch' });
+    }
+  };
+
+  const handleQuickDelete = (prof: StreamProfile) => {
+    if (profiles.length <= 1) return;
+    if (prof.hasPin) {
+      setPinTarget({ profile: prof, intent: 'delete' });
+    } else {
+      setDeleteTarget({ profile: prof });
     }
   };
 
@@ -70,50 +87,63 @@ export function ProfileGateScreen() {
           className="flex flex-wrap items-start justify-center gap-5 sm:gap-8 w-full"
         >
           {profiles.map((prof) => (
-            <button
-              key={prof.id}
-              type="button"
-              onClick={() => void handleTileClick(prof)}
-              className="group flex flex-col items-center w-28 sm:w-36 focus:outline-none cursor-pointer"
-            >
-              <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border-2 border-transparent group-hover:border-white group-focus-visible:border-sky-400 group-hover:scale-105 transition-all duration-200 bg-slate-900 shadow-2xl">
-                <img
-                  src={resolveProfileAvatarUrl(prof.avatarId, prof.avatarUrl)}
-                  alt={prof.name}
-                  referrerPolicy="no-referrer"
-                  className={`w-full h-full object-cover transition-opacity ${
-                    manageMode ? 'opacity-50' : 'opacity-100'
-                  }`}
-                />
+            <div key={prof.id} className="relative flex flex-col items-center w-28 sm:w-36">
+              <button
+                type="button"
+                onClick={() => void handleTileClick(prof)}
+                className="group w-full flex flex-col items-center focus:outline-none cursor-pointer"
+              >
+                <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border-2 border-transparent group-hover:border-white group-focus-visible:border-sky-400 group-hover:scale-105 transition-all duration-200 bg-slate-900 shadow-2xl">
+                  <img
+                    src={resolveProfileAvatarUrl(prof.avatarId, prof.avatarUrl)}
+                    alt={prof.name}
+                    referrerPolicy="no-referrer"
+                    className={`w-full h-full object-cover transition-opacity ${
+                      manageMode ? 'opacity-50' : 'opacity-100'
+                    }`}
+                  />
 
-                {manageMode && (
-                  <span className="absolute inset-0 bg-black/45 flex items-center justify-center">
-                    <span className="w-11 h-11 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
-                      <Pencil className="w-5 h-5 text-white" aria-hidden="true" />
+                  {manageMode && (
+                    <span className="absolute inset-0 bg-black/45 flex items-center justify-center">
+                      <span className="w-11 h-11 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
+                        <Pencil className="w-5 h-5 text-white" aria-hidden="true" />
+                      </span>
                     </span>
-                  </span>
-                )}
+                  )}
 
-                {prof.hasPin && (
-                  <span
-                    className="absolute bottom-2 right-2 w-7 h-7 rounded-lg bg-black/75 border border-white/20 flex items-center justify-center text-sky-300"
-                    title="Perfil protegido por senha"
-                  >
-                    <Lock className="w-3.5 h-3.5" aria-label="Com senha" />
-                  </span>
-                )}
-              </div>
+                  {prof.hasPin && (
+                    <span
+                      className="absolute bottom-2 right-2 w-7 h-7 rounded-lg bg-black/75 border border-white/20 flex items-center justify-center text-sky-300"
+                      title="Perfil protegido por senha"
+                    >
+                      <Lock className="w-3.5 h-3.5" aria-label="Com senha" />
+                    </span>
+                  )}
+                </div>
 
-              <span className="mt-3 text-sm sm:text-base font-medium text-slate-300 group-hover:text-white transition-colors truncate max-w-full text-center">
-                {prof.name}
-              </span>
-
-              {prof.isKids && (
-                <span className="mt-0.5 text-xs text-sky-400 font-medium">
-                  Infantil
+                <span className="mt-3 text-sm sm:text-base font-medium text-slate-300 group-hover:text-white transition-colors truncate max-w-full text-center">
+                  {prof.name}
                 </span>
+
+                {prof.isKids && (
+                  <span className="mt-0.5 text-xs text-sky-400 font-medium">
+                    Infantil
+                  </span>
+                )}
+              </button>
+
+              {manageMode && profiles.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => handleQuickDelete(prof)}
+                  aria-label={`Excluir perfil ${prof.name}`}
+                  title={`Excluir perfil ${prof.name}`}
+                  className="absolute -top-2 -right-2 z-10 w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 border-2 border-[#050814] text-white flex items-center justify-center shadow-lg cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" aria-hidden="true" />
+                </button>
               )}
-            </button>
+            </div>
           ))}
 
           {profiles.length < MAX_PROFILES_PER_ACCOUNT && (
@@ -152,7 +182,13 @@ export function ProfileGateScreen() {
 
       <ProfilePinModal
         targetProfile={pinTarget?.profile ?? null}
-        actionLabel={pinTarget?.intent === 'edit' ? 'Editar Perfil' : 'Entrar no Perfil'}
+        actionLabel={
+          pinTarget?.intent === 'delete'
+            ? 'Confirmar Exclusão'
+            : pinTarget?.intent === 'edit'
+              ? 'Editar Perfil'
+              : 'Entrar no Perfil'
+        }
         onClose={() => setPinTarget(null)}
         onVerified={async (pin) => {
           if (!pinTarget) return false;
@@ -167,12 +203,22 @@ export function ProfileGateScreen() {
           const ok = await verifyProfileAccess(pinTarget.profile.id, pin);
           if (ok) {
             const target = pinTarget.profile;
+            const intent = pinTarget.intent;
             setPinTarget(null);
-            setEditorState({ open: true, editing: target, verifiedPin: pin });
+            if (intent === 'delete') {
+              setDeleteTarget({ profile: target, verifiedPin: pin });
+            } else {
+              setEditorState({ open: true, editing: target, verifiedPin: pin });
+            }
             return true;
           }
           return false;
         }}
+      />
+
+      <ProfileDeleteConfirmModal
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
       />
 
       <ProfileEditorModal

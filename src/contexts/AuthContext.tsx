@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
@@ -23,7 +23,10 @@ import {
   where,
 } from 'firebase/firestore';
 import {
+  canDeleteProfile,
   createDefaultProfiles,
+  deduplicateProfilesById,
+  getAvatarPresetById,
   hashProfilePin,
   MAX_PROFILES_PER_ACCOUNT,
   sanitizeAvatarUrl,
@@ -66,6 +69,7 @@ const LOCAL_FAVS_KEY = 'megastream_guest_favorites';
 const LOCAL_HISTORY_KEY = 'megastream_guest_history';
 const USER_FAVS_PREFIX = 'megastream_user_favs_v1_';
 const USER_HISTORY_PREFIX = 'megastream_user_hist_v1_';
+const USER_PROFILES_PREFIX = 'megastream_user_profiles_v1_';
 const LOCAL_PROFILES_KEY = 'megastream_guest_profiles_v1';
 const LOCAL_ACTIVE_PROFILE_KEY = 'megastream_active_profile_v1';
 const SESSION_PROFILE_KEY = 'megastream_session_profile_uid_v1';
@@ -165,6 +169,10 @@ function getUserHistoryKey(uid: string): string {
   return `${USER_HISTORY_PREFIX}${uid}`;
 }
 
+function getUserProfilesKey(uid: string): string {
+  return `${USER_PROFILES_PREFIX}${uid}`;
+}
+
 function loadGuestProfiles(): StoredStreamProfile[] {
   const saved = readLocalJson<StoredStreamProfile[]>(LOCAL_PROFILES_KEY, []);
   if (Array.isArray(saved) && saved.length > 0) {
@@ -198,6 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     readLocalJson<HistoryItem[]>(getGuestHistoryKey(activeProfileId), [])
   );
   const { setTheme } = useTheme();
+  const syncInFlightRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
 
   const profiles: StreamProfile[] = useMemo(
     () =>
@@ -228,7 +237,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setHistory(readLocalJson<HistoryItem[]>(getGuestHistoryKey(nextProfile.id), []));
       }
     },
-    [setTheme]
+    [setTheme, storedProfiles.length]
   );
 
   const openProfileGate = useCallback(() => {
@@ -238,198 +247,249 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const syncUserFromServerAndFirestore = useCallback(
     async (user: FirebaseUser) => {
-      // Hydrate user cache immediately so reloading never flashes empty
-      const cachedFavs = readLocalJson<FavoriteItem[]>(getUserFavoritesKey(user.uid), []);
-      const cachedHist = readLocalJson<HistoryItem[]>(getUserHistoryKey(user.uid), []);
-      if (cachedFavs.length > 0) setFavorites(cachedFavs);
-      if (cachedHist.length > 0) setHistory(cachedHist);
+      if (syncInFlightRef.current?.uid === user.uid) {
+        return syncInFlightRef.current.promise;
+      }
 
-      try {
-        const me = await apiRequest<{ user: UserProfile }>('/api/users/me');
-        setProfile(me.user);
-        if (me.user.preferredTheme && me.user.preferredTheme !== 'cinematografico') {
-          setTheme(me.user.preferredTheme as ThemeId, false);
-        }
+      const run = (async () => {
+        // Hydrate user caches immediately so reloading never flashes empty
+        const cachedProfiles = readLocalJson<StoredStreamProfile[]>(
+          getUserProfilesKey(user.uid),
+          []
+        );
+        const cachedFavs = readLocalJson<FavoriteItem[]>(getUserFavoritesKey(user.uid), []);
+        const cachedHist = readLocalJson<HistoryItem[]>(getUserHistoryKey(user.uid), []);
+        if (cachedProfiles.length > 0) setStoredProfiles(deduplicateProfilesById(cachedProfiles));
+        if (cachedFavs.length > 0) setFavorites(cachedFavs);
+        if (cachedHist.length > 0) setHistory(cachedHist);
 
-        // Sync user document in Firestore (works for both Google & Email/Password accounts)
-        const userRef = doc(db, 'users', user.uid);
         try {
-          const snap = await getDoc(userRef);
-          if (!snap.exists()) {
-            await setDoc(userRef, {
-              uid: user.uid,
-              name: (user.displayName || me.user.name || 'Usuário').slice(0, 120),
-              email: (user.email || me.user.email || 'user@megastream.app').slice(0, 180),
-              photoUrl: (user.photoURL || '').slice(0, 500),
-              plan: 'free',
-              role: 'user',
-              blocked: false,
-              preferredTheme: me.user.preferredTheme,
-              preferredLanguage: me.user.preferredLanguage,
-              preferredQuality: me.user.preferredQuality,
-              parentalControl: me.user.parentalControl,
-              notificationsEnabled: me.user.notificationsEnabled,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
+          const me = await apiRequest<{ user: UserProfile }>('/api/users/me');
+          setProfile(me.user);
+          if (me.user.preferredTheme && me.user.preferredTheme !== 'cinematografico') {
+            setTheme(me.user.preferredTheme as ThemeId, false);
+          }
+
+          // Sync user document in Firestore (works for both Google & Email/Password accounts)
+          const userRef = doc(db, 'users', user.uid);
+          try {
+            const snap = await getDoc(userRef);
+            if (!snap.exists()) {
+              await setDoc(userRef, {
+                uid: user.uid,
+                name: (user.displayName || me.user.name || 'Usuário').slice(0, 120),
+                email: (user.email || me.user.email || 'user@megastream.app').slice(0, 180),
+                photoUrl: (user.photoURL || '').slice(0, 500),
+                plan: 'free',
+                role: 'user',
+                blocked: false,
+                preferredTheme: me.user.preferredTheme,
+                preferredLanguage: me.user.preferredLanguage,
+                preferredQuality: me.user.preferredQuality,
+                parentalControl: me.user.parentalControl,
+                notificationsEnabled: me.user.notificationsEnabled,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          } catch (err) {
+            console.error('Erro ao sincronizar documento do usuário no Firestore:', err);
+          }
+
+          // Load multi-profiles, favorites & history from backend + Firestore in parallel
+          const [profRes, favRes, histRes, fsProfResult, fsFavResult, fsHistResult] =
+            await Promise.all([
+              apiRequest<{ items: StreamProfile[] }>('/api/users/profiles').catch(() => ({
+                items: [],
+              })),
+              apiRequest<{ items: FavoriteItem[] }>('/api/users/favorites').catch(() => ({
+                items: [],
+              })),
+              apiRequest<{ items: HistoryItem[] }>('/api/users/history').catch(() => ({
+                items: [],
+              })),
+              getDocs(
+                query(collection(db, 'users', user.uid, 'profiles'), where('userId', '==', user.uid))
+              ).catch((err) => {
+                console.error('Erro ao carregar perfis do Firestore:', err);
+                return null;
+              }),
+              getDocs(
+                query(
+                  collection(db, 'users', user.uid, 'favorites'),
+                  where('userId', '==', user.uid)
+                )
+              ).catch((err) => {
+                console.error('Erro ao carregar favoritos do Firestore:', err);
+                return null;
+              }),
+              getDocs(
+                query(collection(db, 'users', user.uid, 'history'), where('userId', '==', user.uid))
+              ).catch((err) => {
+                console.error('Erro ao carregar histórico do Firestore:', err);
+                return null;
+              }),
+            ]);
+
+          let mergedProfiles: StoredStreamProfile[] = deduplicateProfilesById(
+            profRes.items.map((p) => ({ ...p }))
+          );
+
+          if (fsProfResult && !fsProfResult.empty) {
+            // Firestore is canonical whenever docs exist (use real doc.id so deleteDoc always targets it)
+            const fsProfiles: StoredStreamProfile[] = fsProfResult.docs.map((d) => {
+              const data = d.data();
+              return {
+                id: d.id,
+                userId: user.uid,
+                name: String(data.name || 'Perfil'),
+                avatarId: String(data.avatarId || 'avatar_movie_astronaut'),
+                avatarUrl: String(data.avatarUrl || ''),
+                hasPin: Boolean(data.hasPin),
+                pinHash: typeof data.pinHash === 'string' ? data.pinHash : '',
+                isKids: Boolean(data.isKids),
+                preferredTheme: sanitizeProfileTheme(data.preferredTheme, 'cinematografico'),
+                preferredLanguage: String(data.preferredLanguage || 'pt-BR'),
+                preferredQuality: String(data.preferredQuality || '1080p'),
+                autoplayNext: data.autoplayNext !== false,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
             });
+            mergedProfiles = deduplicateProfilesById(fsProfiles);
+          } else if (fsProfResult && fsProfResult.empty) {
+            const seedSource =
+              cachedProfiles.length > 0
+                ? deduplicateProfilesById(cachedProfiles)
+                : mergedProfiles.length > 0
+                  ? mergedProfiles
+                  : createDefaultProfiles(user.uid, me.user.name);
+            mergedProfiles = seedSource;
+            const first = seedSource[0];
+            if (first) {
+              await setDoc(doc(db, 'users', user.uid, 'profiles', first.id), {
+                id: first.id,
+                userId: user.uid,
+                name: first.name.slice(0, 40),
+                avatarId: first.avatarId.slice(0, 64),
+                avatarUrl: (
+                  first.avatarUrl || '/src/assets/images/avatar_movie_astronaut_1794675753848.jpg'
+                ).slice(0, 45000),
+                hasPin: Boolean(first.hasPin),
+                pinHash: typeof first.pinHash === 'string' ? first.pinHash : '',
+                isKids: Boolean(first.isKids),
+                preferredTheme: first.preferredTheme,
+                preferredLanguage: first.preferredLanguage,
+                preferredQuality: first.preferredQuality,
+                autoplayNext: Boolean(first.autoplayNext),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              }).catch(() => null);
+            }
           }
+
+          if (mergedProfiles.length === 0) {
+            mergedProfiles =
+              cachedProfiles.length > 0
+                ? deduplicateProfilesById(cachedProfiles)
+                : createDefaultProfiles(user.uid, me.user.name);
+          }
+
+          setStoredProfiles(mergedProfiles);
+          writeLocalJson(getUserProfilesKey(user.uid), mergedProfiles);
+          const savedActive = localStorage.getItem(LOCAL_ACTIVE_PROFILE_KEY);
+          const nextActive =
+            mergedProfiles.find((p) => p.id === savedActive && !p.hasPin) ??
+            mergedProfiles.find((p) => !p.hasPin) ??
+            mergedProfiles[0];
+          if (nextActive) {
+            setActiveProfileId(nextActive.id);
+            localStorage.setItem(LOCAL_ACTIVE_PROFILE_KEY, nextActive.id);
+            if (nextActive.preferredTheme && mergedProfiles.length > 1) {
+              setTheme(nextActive.preferredTheme, false);
+            }
+          }
+
+          // Favorites: Firestore is canonical cloud store; merge local/API when Firestore had no docs yet
+          const fsFavs = fsFavResult
+            ? fsFavResult.docs.map((d) => {
+                const data = d.data();
+                return buildFavoriteRecord(user.uid, {
+                  tmdbId: Number(data.tmdbId),
+                  mediaType: data.mediaType === 'tv' ? 'tv' : 'movie',
+                  title: String(data.title || 'Título'),
+                  posterPath:
+                    typeof data.posterPath === 'string' && data.posterPath
+                      ? data.posterPath
+                      : null,
+                  voteAverage: Number(data.voteAverage ?? 0),
+                  releaseYear: String(data.releaseYear ?? ''),
+                  createdAt: data.createdAt,
+                });
+              })
+            : null;
+
+          let mergedFavs: FavoriteItem[];
+          if (fsFavs !== null) {
+            mergedFavs =
+              fsFavs.length > 0
+                ? mergeFavoriteLists(fsFavs, [])
+                : mergeFavoriteLists(favRes.items, cachedFavs);
+          } else {
+            mergedFavs = mergeFavoriteLists(favRes.items, cachedFavs);
+          }
+
+          // History: Firestore is canonical cloud store; fallback cleanly to API + user cache
+          const fsHist = fsHistResult
+            ? fsHistResult.docs.map((d) => {
+                const data = d.data();
+                return buildHistoryRecord(user.uid, {
+                  tmdbId: Number(data.tmdbId),
+                  mediaType: data.mediaType === 'tv' ? 'tv' : 'movie',
+                  title: String(data.title || 'Título'),
+                  posterPath:
+                    typeof data.posterPath === 'string' && data.posterPath
+                      ? data.posterPath
+                      : null,
+                  backdropPath:
+                    typeof data.backdropPath === 'string' && data.backdropPath
+                      ? data.backdropPath
+                      : null,
+                  progressPercent: Number(data.progressPercent ?? 15),
+                  seasonNumber: Number(data.seasonNumber ?? 0) || undefined,
+                  episodeNumber: Number(data.episodeNumber ?? 0) || undefined,
+                  playerProvider: data.playerProvider as MegaEmbedPlayer | undefined,
+                  watchedAt: data.watchedAt,
+                });
+              })
+            : null;
+
+          let mergedHist: HistoryItem[];
+          if (fsHist !== null) {
+            mergedHist =
+              fsHist.length > 0
+                ? mergeHistoryLists(fsHist, [])
+                : mergeHistoryLists(histRes.items, cachedHist);
+          } else {
+            mergedHist = mergeHistoryLists(histRes.items, cachedHist);
+          }
+
+          setFavorites(mergedFavs);
+          setHistory(mergedHist);
+          writeLocalJson(getUserFavoritesKey(user.uid), mergedFavs);
+          writeLocalJson(getUserHistoryKey(user.uid), mergedHist);
         } catch (err) {
-          console.error('Erro ao sincronizar documento do usuário no Firestore:', err);
+          console.error('Erro ao sincronizar perfil:', err);
         }
+      })();
 
-        // Load multi-profiles, favorites & history from backend + Firestore in parallel
-        const [profRes, favRes, histRes, fsProfResult, fsFavResult, fsHistResult] =
-          await Promise.all([
-            apiRequest<{ items: StreamProfile[] }>('/api/users/profiles').catch(() => ({ items: [] })),
-            apiRequest<{ items: FavoriteItem[] }>('/api/users/favorites').catch(() => ({ items: [] })),
-            apiRequest<{ items: HistoryItem[] }>('/api/users/history').catch(() => ({ items: [] })),
-            getDocs(
-              query(collection(db, 'users', user.uid, 'profiles'), where('userId', '==', user.uid))
-            ).catch((err) => {
-              console.error('Erro ao carregar perfis do Firestore:', err);
-              return null;
-            }),
-            getDocs(
-              query(collection(db, 'users', user.uid, 'favorites'), where('userId', '==', user.uid))
-            ).catch((err) => {
-              console.error('Erro ao carregar favoritos do Firestore:', err);
-              return null;
-            }),
-            getDocs(
-              query(collection(db, 'users', user.uid, 'history'), where('userId', '==', user.uid))
-            ).catch((err) => {
-              console.error('Erro ao carregar histórico do Firestore:', err);
-              return null;
-            }),
-          ]);
-
-        let mergedProfiles: StoredStreamProfile[] = profRes.items.map((p) => ({ ...p }));
-
-        if (fsProfResult && !fsProfResult.empty) {
-          const fsProfiles: StoredStreamProfile[] = fsProfResult.docs.map((d) => {
-            const data = d.data();
-            return {
-              id: String(data.id || d.id),
-              userId: user.uid,
-              name: String(data.name || 'Perfil'),
-              avatarId: String(data.avatarId || 'avatar_movie_astronaut'),
-              avatarUrl: String(data.avatarUrl || ''),
-              hasPin: Boolean(data.hasPin),
-              pinHash: typeof data.pinHash === 'string' ? data.pinHash : '',
-              isKids: Boolean(data.isKids),
-              preferredTheme: sanitizeProfileTheme(data.preferredTheme, 'cinematografico'),
-              preferredLanguage: String(data.preferredLanguage || 'pt-BR'),
-              preferredQuality: String(data.preferredQuality || '1080p'),
-              autoplayNext: data.autoplayNext !== false,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-          });
-          if (fsProfiles.length >= mergedProfiles.length) {
-            mergedProfiles = fsProfiles;
-          }
-        } else if (fsProfResult && fsProfResult.empty && mergedProfiles.length > 0) {
-          const first = mergedProfiles[0];
-          await setDoc(doc(db, 'users', user.uid, 'profiles', first.id), {
-            id: first.id,
-            userId: user.uid,
-            name: first.name.slice(0, 40),
-            avatarId: first.avatarId.slice(0, 64),
-            avatarUrl: (
-              first.avatarUrl || '/src/assets/images/avatar_movie_astronaut_1794675753848.jpg'
-            ).slice(0, 45000),
-            hasPin: Boolean(first.hasPin),
-            pinHash: '',
-            isKids: Boolean(first.isKids),
-            preferredTheme: first.preferredTheme,
-            preferredLanguage: first.preferredLanguage,
-            preferredQuality: first.preferredQuality,
-            autoplayNext: Boolean(first.autoplayNext),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          }).catch(() => null);
+      syncInFlightRef.current = { uid: user.uid, promise: run };
+      try {
+        await run;
+      } finally {
+        if (syncInFlightRef.current?.promise === run) {
+          syncInFlightRef.current = null;
         }
-
-        if (mergedProfiles.length === 0) {
-          mergedProfiles = createDefaultProfiles(user.uid, me.user.name);
-        }
-
-        setStoredProfiles(mergedProfiles);
-        const savedActive = localStorage.getItem(LOCAL_ACTIVE_PROFILE_KEY);
-        const nextActive =
-          mergedProfiles.find((p) => p.id === savedActive && !p.hasPin) ??
-          mergedProfiles.find((p) => !p.hasPin) ??
-          mergedProfiles[0];
-        if (nextActive) {
-          setActiveProfileId(nextActive.id);
-          localStorage.setItem(LOCAL_ACTIVE_PROFILE_KEY, nextActive.id);
-          if (nextActive.preferredTheme && mergedProfiles.length > 1) {
-            setTheme(nextActive.preferredTheme, false);
-          }
-        }
-
-        // Favorites: Firestore is canonical cloud store; merge local/API when Firestore had no docs yet
-        const fsFavs = fsFavResult
-          ? fsFavResult.docs.map((d) => {
-              const data = d.data();
-              return buildFavoriteRecord(user.uid, {
-                tmdbId: Number(data.tmdbId),
-                mediaType: data.mediaType === 'tv' ? 'tv' : 'movie',
-                title: String(data.title || 'Título'),
-                posterPath: typeof data.posterPath === 'string' && data.posterPath ? data.posterPath : null,
-                voteAverage: Number(data.voteAverage ?? 0),
-                releaseYear: String(data.releaseYear ?? ''),
-                createdAt: data.createdAt,
-              });
-            })
-          : null;
-
-        let mergedFavs: FavoriteItem[];
-        if (fsFavs !== null) {
-          mergedFavs =
-            fsFavs.length > 0
-              ? mergeFavoriteLists(fsFavs, [])
-              : mergeFavoriteLists(favRes.items, cachedFavs);
-        } else {
-          mergedFavs = mergeFavoriteLists(favRes.items, cachedFavs);
-        }
-
-        // History: Firestore is canonical cloud store; fallback cleanly to API + user cache
-        const fsHist = fsHistResult
-          ? fsHistResult.docs.map((d) => {
-              const data = d.data();
-              return buildHistoryRecord(user.uid, {
-                tmdbId: Number(data.tmdbId),
-                mediaType: data.mediaType === 'tv' ? 'tv' : 'movie',
-                title: String(data.title || 'Título'),
-                posterPath: typeof data.posterPath === 'string' && data.posterPath ? data.posterPath : null,
-                backdropPath:
-                  typeof data.backdropPath === 'string' && data.backdropPath ? data.backdropPath : null,
-                progressPercent: Number(data.progressPercent ?? 15),
-                seasonNumber: Number(data.seasonNumber ?? 0) || undefined,
-                episodeNumber: Number(data.episodeNumber ?? 0) || undefined,
-                playerProvider: data.playerProvider as MegaEmbedPlayer | undefined,
-                watchedAt: data.watchedAt,
-              });
-            })
-          : null;
-
-        let mergedHist: HistoryItem[];
-        if (fsHist !== null) {
-          mergedHist =
-            fsHist.length > 0
-              ? mergeHistoryLists(fsHist, [])
-              : mergeHistoryLists(histRes.items, cachedHist);
-        } else {
-          mergedHist = mergeHistoryLists(histRes.items, cachedHist);
-        }
-
-        setFavorites(mergedFavs);
-        setHistory(mergedHist);
-        writeLocalJson(getUserFavoritesKey(user.uid), mergedFavs);
-        writeLocalJson(getUserHistoryKey(user.uid), mergedHist);
-      } catch (err) {
-        console.error('Erro ao sincronizar perfil:', err);
       }
     },
     [setTheme]
@@ -465,11 +525,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, [setTheme, syncUserFromServerAndFirestore]);
 
-  // Real-time Firestore sync for Favorites & Continue Watching when authenticated
+  // Real-time Firestore sync for Profiles, Favorites & Continue Watching when authenticated
   useEffect(() => {
     if (!firebaseUser) return;
     const uid = firebaseUser.uid;
 
+    const profQuery = query(
+      collection(db, 'users', uid, 'profiles'),
+      where('userId', '==', uid)
+    );
     const favQuery = query(
       collection(db, 'users', uid, 'favorites'),
       where('userId', '==', uid)
@@ -477,6 +541,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const histQuery = query(
       collection(db, 'users', uid, 'history'),
       where('userId', '==', uid)
+    );
+
+    const unsubProf = onSnapshot(
+      profQuery,
+      (snap) => {
+        if (snap.metadata.fromCache && snap.empty) return;
+        if (snap.empty) return;
+        const items = deduplicateProfilesById(
+          snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              userId: uid,
+              name: String(data.name || 'Perfil'),
+              avatarId: String(data.avatarId || 'avatar_movie_astronaut'),
+              avatarUrl: String(data.avatarUrl || ''),
+              hasPin: Boolean(data.hasPin),
+              pinHash: typeof data.pinHash === 'string' ? data.pinHash : '',
+              isKids: Boolean(data.isKids),
+              preferredTheme: sanitizeProfileTheme(data.preferredTheme, 'cinematografico'),
+              preferredLanguage: String(data.preferredLanguage || 'pt-BR'),
+              preferredQuality: String(data.preferredQuality || '1080p'),
+              autoplayNext: data.autoplayNext !== false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+          })
+        );
+        setStoredProfiles(items);
+        writeLocalJson(getUserProfilesKey(uid), items);
+      },
+      (err) => {
+        console.error('Erro no listener de perfis:', err);
+      }
     );
 
     const unsubFav = onSnapshot(
@@ -540,6 +638,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => {
+      unsubProf();
       unsubFav();
       unsubHist();
     };
@@ -590,7 +689,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!target) return false;
       if (!target.hasPin) return true;
 
+      if (target.pinHash) {
+        const localOk = await verifyProfilePin(profileId, pin, target.pinHash);
+        if (localOk) return true;
+      }
+
       if (firebaseUser) {
+        try {
+          const snap = await getDoc(doc(db, 'users', firebaseUser.uid, 'profiles', profileId));
+          const remoteHash = snap.exists() ? String(snap.data().pinHash ?? '') : '';
+          if (remoteHash && (await verifyProfilePin(profileId, pin, remoteHash))) {
+            return true;
+          }
+        } catch {
+          // Fall back to API verification if Firestore read fails
+        }
         try {
           const res = await apiRequest<{ verified: boolean }>(
             `/api/users/profiles/${profileId}/verify-pin`,
@@ -601,19 +714,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           );
           if (res.verified) return true;
         } catch {
-          // Fallback to Firestore pinHash if serverless instance was cold
-        }
-        if (target.pinHash) {
-          return verifyProfilePin(profileId, pin, target.pinHash);
-        }
-        if (firebaseUser.emailVerified) {
-          try {
-            const snap = await getDoc(doc(db, 'users', firebaseUser.uid, 'profiles', profileId));
-            const remoteHash = snap.exists() ? String(snap.data().pinHash ?? '') : '';
-            return verifyProfilePin(profileId, pin, remoteHash);
-          } catch {
-            return false;
-          }
+          // Ignore cold-start failure
         }
         return false;
       }
@@ -633,7 +734,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: 'Perfil não encontrado.' };
       }
 
-      if (target.hasPin && (target.id !== activeProfileId || (Boolean(firebaseUser) && !profileSelectedForSession))) {
+      if (
+        target.hasPin &&
+        (target.id !== activeProfileId || (Boolean(firebaseUser) && !profileSelectedForSession))
+      ) {
         if (!pin) {
           return { ok: false, requiresPin: true };
         }
@@ -665,67 +769,83 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error('A senha do perfil deve ter entre 4 e 12 caracteres sem espaços.');
     }
 
-    if (firebaseUser) {
-      const created = await apiRequest<StreamProfile>('/api/users/profiles', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
-      const pinHash = cleanPin ? await hashProfilePin(created.id, cleanPin) : '';
-      const stored: StoredStreamProfile = { ...created, pinHash };
-
-      if (firebaseUser.emailVerified) {
-        const docRef = doc(db, 'users', firebaseUser.uid, 'profiles', created.id);
-        try {
-          await setDoc(docRef, {
-            id: created.id,
-            userId: firebaseUser.uid,
-            name: created.name.slice(0, 40),
-            avatarId: created.avatarId.slice(0, 64),
-            avatarUrl: sanitizeAvatarUrl(input.avatarUrl || created.avatarUrl),
-            hasPin: created.hasPin,
-            pinHash,
-            isKids: created.isKids,
-            preferredTheme: created.preferredTheme,
-            preferredLanguage: created.preferredLanguage,
-            preferredQuality: created.preferredQuality,
-            autoplayNext: created.autoplayNext,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          handleFirestoreError(
-            err,
-            OperationType.CREATE,
-            `users/${firebaseUser.uid}/profiles/${created.id}`
-          );
-        }
-      }
-
-      setStoredProfiles((prev) => [...prev, stored]);
-      if (profileSelectedForSession) {
-        applyActiveProfileSelection(
-          { ...created, avatarUrl: resolveProfileAvatarUrl(created.avatarId, created.avatarUrl) },
-          false,
-          firebaseUser.uid
-        );
-      }
-      return created;
-    }
-
-    // Guest mode local persistence
     const id = `prof_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
     const pinHash = cleanPin ? await hashProfilePin(id, cleanPin) : '';
-    const avatarUrl =
-      input.avatarId === 'custom'
-        ? sanitizeAvatarUrl(input.avatarUrl)
-        : resolveProfileAvatarUrl(input.avatarId, input.avatarUrl);
+    const preset = getAvatarPresetById(input.avatarId);
+    const avatarId = preset ? preset.id : 'custom';
+    const avatarUrl = preset
+      ? preset.fallbackPath
+      : sanitizeAvatarUrl(input.avatarUrl);
 
+    if (firebaseUser) {
+      const uid = firebaseUser.uid;
+      const stored: StoredStreamProfile = {
+        id,
+        userId: uid,
+        name: sanitizeProfileName(input.name, 'Novo Perfil'),
+        avatarId,
+        avatarUrl,
+        hasPin: Boolean(cleanPin),
+        pinHash,
+        isKids: Boolean(input.isKids),
+        preferredTheme: sanitizeProfileTheme(input.preferredTheme, 'cinematografico'),
+        preferredLanguage: input.preferredLanguage || 'pt-BR',
+        preferredQuality: input.preferredQuality || '1080p',
+        autoplayNext: Boolean(input.autoplayNext),
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const nextList = deduplicateProfilesById([...storedProfiles, stored]);
+      setStoredProfiles(nextList);
+      writeLocalJson(getUserProfilesKey(uid), nextList);
+
+      const docRef = doc(db, 'users', uid, 'profiles', id);
+      try {
+        await setDoc(docRef, {
+          id,
+          userId: uid,
+          name: stored.name.slice(0, 40),
+          avatarId: stored.avatarId.slice(0, 64),
+          avatarUrl: stored.avatarUrl.slice(0, 45000),
+          hasPin: stored.hasPin,
+          pinHash,
+          isKids: stored.isKids,
+          preferredTheme: stored.preferredTheme,
+          preferredLanguage: stored.preferredLanguage.slice(0, 16),
+          preferredQuality: stored.preferredQuality.slice(0, 16),
+          autoplayNext: stored.autoplayNext,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        setStoredProfiles(storedProfiles);
+        writeLocalJson(getUserProfilesKey(uid), storedProfiles);
+        handleFirestoreError(err, OperationType.CREATE, `users/${uid}/profiles/${id}`);
+      }
+
+      apiRequest<StreamProfile>('/api/users/profiles', {
+        method: 'POST',
+        body: JSON.stringify({ ...input, id }),
+      }).catch(() => null);
+
+      const pub: StreamProfile = {
+        ...toPublicStreamProfile(stored),
+        avatarUrl: resolveProfileAvatarUrl(stored.avatarId, stored.avatarUrl),
+      };
+      if (profileSelectedForSession) {
+        applyActiveProfileSelection(pub, false, uid);
+      }
+      return pub;
+    }
+
+    // Guest mode local persistence
     const newProfile: StoredStreamProfile = {
       id,
       userId: 'guest',
       name: sanitizeProfileName(input.name, 'Novo Perfil'),
-      avatarId: input.avatarId || 'avatar_cartoon_hero',
+      avatarId,
       avatarUrl,
       hasPin: Boolean(cleanPin),
       pinHash,
@@ -738,7 +858,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       updatedAt: now,
     };
 
-    const next = [...storedProfiles, newProfile];
+    const next = deduplicateProfilesById([...storedProfiles, newProfile]);
     setStoredProfiles(next);
     localStorage.setItem(LOCAL_PROFILES_KEY, JSON.stringify(next));
     const pub = {
@@ -763,55 +883,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error('A senha do perfil deve ter entre 4 e 12 caracteres sem espaços.');
     }
 
-    if (firebaseUser) {
-      const updated = await apiRequest<StreamProfile>(`/api/users/profiles/${profileId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(input),
-      });
-
-      let nextPinHash = existing.pinHash ?? '';
-      if (input.removePin) {
-        nextPinHash = '';
-      } else if (cleanPin.length > 0) {
-        nextPinHash = await hashProfilePin(profileId, cleanPin);
-      }
-
-      if (firebaseUser.emailVerified) {
-        const docRef = doc(db, 'users', firebaseUser.uid, 'profiles', profileId);
-        try {
-          await updateDoc(docRef, {
-            name: updated.name.slice(0, 40),
-            avatarId: updated.avatarId.slice(0, 64),
-            avatarUrl: sanitizeAvatarUrl(input.avatarUrl || updated.avatarUrl),
-            hasPin: updated.hasPin,
-            pinHash: nextPinHash,
-            isKids: updated.isKids,
-            preferredTheme: updated.preferredTheme,
-            preferredLanguage: updated.preferredLanguage,
-            preferredQuality: updated.preferredQuality,
-            autoplayNext: updated.autoplayNext,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          handleFirestoreError(
-            err,
-            OperationType.UPDATE,
-            `users/${firebaseUser.uid}/profiles/${profileId}`
-          );
-        }
-      }
-
-      const nextStored: StoredStreamProfile = { ...updated, pinHash: nextPinHash };
-      setStoredProfiles((prev) => prev.map((p) => (p.id === profileId ? nextStored : p)));
-      if (activeProfileId === profileId && updated.preferredTheme) {
-        setTheme(updated.preferredTheme);
-      }
-      return updated;
-    }
-
-    // Guest mode update
     if (existing.hasPin && (cleanPin.length > 0 || input.removePin)) {
-      const verified = await verifyProfilePin(profileId, input.currentPin ?? '', existing.pinHash);
+      const verified = await verifyProfileAccess(profileId, input.currentPin ?? '');
       if (!verified) {
         throw new Error('Senha atual do perfil incorreta.');
       }
@@ -827,15 +900,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       nextPinHash = await hashProfilePin(profileId, cleanPin);
     }
 
-    const avatarUrl =
-      input.avatarId === 'custom'
-        ? sanitizeAvatarUrl(input.avatarUrl)
-        : resolveProfileAvatarUrl(input.avatarId, input.avatarUrl);
+    const preset = getAvatarPresetById(input.avatarId);
+    const avatarId = input.avatarId ? (preset ? preset.id : 'custom') : existing.avatarId;
+    const avatarUrl = preset
+      ? preset.fallbackPath
+      : sanitizeAvatarUrl(input.avatarUrl ?? existing.avatarUrl);
 
     const nextStored: StoredStreamProfile = {
       ...existing,
       name: sanitizeProfileName(input.name, existing.name),
-      avatarId: input.avatarId || existing.avatarId,
+      avatarId,
       avatarUrl,
       hasPin: nextHasPin,
       pinHash: nextPinHash,
@@ -846,6 +920,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       autoplayNext: Boolean(input.autoplayNext),
       updatedAt: new Date().toISOString(),
     };
+
+    if (firebaseUser) {
+      const uid = firebaseUser.uid;
+      const nextList = storedProfiles.map((p) => (p.id === profileId ? nextStored : p));
+      setStoredProfiles(nextList);
+      writeLocalJson(getUserProfilesKey(uid), nextList);
+
+      const docRef = doc(db, 'users', uid, 'profiles', profileId);
+      try {
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          await updateDoc(docRef, {
+            name: nextStored.name.slice(0, 40),
+            avatarId: nextStored.avatarId.slice(0, 64),
+            avatarUrl: nextStored.avatarUrl.slice(0, 45000),
+            hasPin: nextStored.hasPin,
+            pinHash: nextPinHash,
+            isKids: nextStored.isKids,
+            preferredTheme: nextStored.preferredTheme,
+            preferredLanguage: nextStored.preferredLanguage.slice(0, 16),
+            preferredQuality: nextStored.preferredQuality.slice(0, 16),
+            autoplayNext: nextStored.autoplayNext,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(docRef, {
+            id: profileId,
+            userId: uid,
+            name: nextStored.name.slice(0, 40),
+            avatarId: nextStored.avatarId.slice(0, 64),
+            avatarUrl: nextStored.avatarUrl.slice(0, 45000),
+            hasPin: nextStored.hasPin,
+            pinHash: nextPinHash,
+            isKids: nextStored.isKids,
+            preferredTheme: nextStored.preferredTheme,
+            preferredLanguage: nextStored.preferredLanguage.slice(0, 16),
+            preferredQuality: nextStored.preferredQuality.slice(0, 16),
+            autoplayNext: nextStored.autoplayNext,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        setStoredProfiles(storedProfiles);
+        writeLocalJson(getUserProfilesKey(uid), storedProfiles);
+        handleFirestoreError(err, OperationType.UPDATE, `users/${uid}/profiles/${profileId}`);
+      }
+
+      apiRequest<StreamProfile>(`/api/users/profiles/${profileId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }).catch(() => null);
+
+      if (activeProfileId === profileId && nextStored.preferredTheme) {
+        setTheme(nextStored.preferredTheme);
+      }
+      return {
+        ...toPublicStreamProfile(nextStored),
+        avatarUrl: resolveProfileAvatarUrl(nextStored.avatarId, nextStored.avatarUrl),
+      };
+    }
 
     const nextList = storedProfiles.map((p) => (p.id === profileId ? nextStored : p));
     setStoredProfiles(nextList);
@@ -860,44 +995,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deleteProfileItem = async (profileId: string, currentPin?: string): Promise<void> => {
-    if (storedProfiles.length <= 1) {
-      throw new Error('É necessário manter pelo menos um perfil ativo.');
+    const check = canDeleteProfile(storedProfiles, profileId);
+    if (!check.allowed) {
+      throw new Error(check.reason || 'Não foi possível excluir este perfil.');
     }
     const target = storedProfiles.find((p) => p.id === profileId);
-    if (!target) return;
-
-    if (firebaseUser) {
-      await apiRequest(`/api/users/profiles/${profileId}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ currentPin }),
-      });
-      if (firebaseUser.emailVerified) {
-        try {
-          await deleteDoc(doc(db, 'users', firebaseUser.uid, 'profiles', profileId));
-        } catch (err) {
-          handleFirestoreError(
-            err,
-            OperationType.DELETE,
-            `users/${firebaseUser.uid}/profiles/${profileId}`
-          );
-        }
-      }
-      const next = storedProfiles.filter((p) => p.id !== profileId);
-      setStoredProfiles(next);
-      if (activeProfileId === profileId && next[0]) {
-        applyActiveProfileSelection(
-          { ...toPublicStreamProfile(next[0]), avatarUrl: resolveProfileAvatarUrl(next[0].avatarId, next[0].avatarUrl) },
-          false
-        );
-      }
-      return;
+    if (!target) {
+      throw new Error('Perfil não encontrado.');
     }
 
     if (target.hasPin) {
-      const ok = await verifyProfilePin(profileId, currentPin ?? '', target.pinHash);
+      const ok = await verifyProfileAccess(profileId, currentPin ?? '');
       if (!ok) {
         throw new Error('Informe a senha atual do perfil para excluí-lo.');
       }
+    }
+
+    if (firebaseUser) {
+      const uid = firebaseUser.uid;
+      const next = storedProfiles.filter((p) => p.id !== profileId);
+      setStoredProfiles(next);
+      writeLocalJson(getUserProfilesKey(uid), next);
+
+      if (activeProfileId === profileId && next[0]) {
+        applyActiveProfileSelection(
+          {
+            ...toPublicStreamProfile(next[0]),
+            avatarUrl: resolveProfileAvatarUrl(next[0].avatarId, next[0].avatarUrl),
+          },
+          false,
+          uid
+        );
+      }
+
+      try {
+        await deleteDoc(doc(db, 'users', uid, 'profiles', profileId));
+      } catch (err) {
+        setStoredProfiles(storedProfiles);
+        writeLocalJson(getUserProfilesKey(uid), storedProfiles);
+        handleFirestoreError(err, OperationType.DELETE, `users/${uid}/profiles/${profileId}`);
+      }
+
+      apiRequest(`/api/users/profiles/${profileId}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ currentPin }),
+      }).catch(() => null);
+      return;
     }
 
     const next = storedProfiles.filter((p) => p.id !== profileId);
@@ -907,7 +1050,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(getGuestHistoryKey(profileId));
     if (activeProfileId === profileId && next[0]) {
       applyActiveProfileSelection(
-        { ...toPublicStreamProfile(next[0]), avatarUrl: resolveProfileAvatarUrl(next[0].avatarId, next[0].avatarUrl) },
+        {
+          ...toPublicStreamProfile(next[0]),
+          avatarUrl: resolveProfileAvatarUrl(next[0].avatarId, next[0].avatarUrl),
+        },
         true
       );
     }

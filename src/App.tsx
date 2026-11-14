@@ -1,5 +1,6 @@
-import React from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { isTrackableNonPlayerRoute, PLAYER_LAST_ROUTE_KEY } from '../shared/playerNavigation';
 import { AppShell } from './components/AppShell';
 import { ProfileGateScreen } from './components/ProfileGateScreen';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -22,6 +23,21 @@ import { SettingsPage } from './pages/SettingsPage';
 
 function AppRoutes() {
   const { firebaseUser, loading, showProfileGate } = useAuth();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (showProfileGate) return;
+    if (isTrackableNonPlayerRoute(location.pathname)) {
+      try {
+        sessionStorage.setItem(
+          PLAYER_LAST_ROUTE_KEY,
+          `${location.pathname}${location.search}`
+        );
+      } catch {
+        // Ignore sessionStorage restrictions
+      }
+    }
+  }, [location.pathname, location.search, showProfileGate]);
 
   if (showProfileGate) {
     return <ProfileGateScreen />;

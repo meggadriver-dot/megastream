@@ -16,6 +16,7 @@ import type { StoredStreamProfile, StreamProfile } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 
 export interface UpsertProfilePayload {
+  id?: string;
   name?: string;
   avatarId?: string;
   avatarUrl?: string;
@@ -50,7 +51,14 @@ class ProfileServiceImpl {
       throw new Error(`Limite máximo de ${MAX_PROFILES_PER_ACCOUNT} perfis por conta atingido.`);
     }
 
-    const profileId = `prof_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const requestedId =
+      typeof payload.id === 'string' &&
+      isValidProfileId(payload.id) &&
+      !current.some((p) => p.id === payload.id)
+        ? payload.id
+        : null;
+    const profileId =
+      requestedId ?? `prof_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const now = new Date().toISOString();
     const preset = getAvatarPresetById(payload.avatarId);
     const avatarId = preset ? preset.id : 'custom';

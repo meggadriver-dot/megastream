@@ -812,6 +812,98 @@ export function ProfileEditorModal({
   );
 }
 
+interface ProfileDeleteConfirmModalProps {
+  target: { profile: StreamProfile; verifiedPin?: string } | null;
+  onClose: () => void;
+}
+
+export function ProfileDeleteConfirmModal({
+  target,
+  onClose,
+}: ProfileDeleteConfirmModalProps) {
+  const { deleteProfileItem } = useAuth();
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setError(null);
+    setDeleting(false);
+  }, [target?.profile.id]);
+
+  if (!target) return null;
+
+  const handleConfirm = async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteProfileItem(target.profile.id, target.verifiedPin);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível excluir este perfil.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Confirmar exclusão do perfil ${target.profile.name}`}
+      className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+    >
+      <div
+        className="w-full max-w-md ms-glass rounded-3xl p-6 space-y-5 border shadow-2xl"
+        style={{ borderColor: 'var(--ms-border)' }}
+      >
+        <div className="flex items-center gap-3.5">
+          <img
+            src={resolveProfileAvatarUrl(target.profile.avatarId, target.profile.avatarUrl)}
+            alt={target.profile.name}
+            referrerPolicy="no-referrer"
+            className="w-14 h-14 rounded-2xl object-cover border border-red-400/50"
+          />
+          <div>
+            <h2 className="font-display text-lg font-bold text-white">Excluir perfil?</h2>
+            <p className="text-xs text-slate-300">
+              Tem certeza que deseja excluir <strong className="text-white">{target.profile.name}</strong>?
+            </p>
+          </div>
+        </div>
+
+        {error && (
+          <p
+            role="alert"
+            className="text-xs text-red-300 bg-red-500/15 border border-red-500/30 rounded-xl px-3.5 py-2.5"
+          >
+            {error}
+          </p>
+        )}
+
+        <div className="flex items-center justify-end gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleting}
+            className="px-4 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-white/10 cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleConfirm()}
+            disabled={deleting}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-sm font-semibold text-white cursor-pointer disabled:opacity-60"
+          >
+            <Trash2 className="w-4 h-4" aria-hidden="true" />
+            {deleting ? 'Excluindo...' : 'Sim, excluir'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface ProfileSelectorModalProps {
   open: boolean;
   onClose: () => void;
@@ -822,7 +914,11 @@ export function ProfileSelectorModal({ open, onClose }: ProfileSelectorModalProp
   const [manageMode, setManageMode] = useState(false);
   const [pinTarget, setPinTarget] = useState<{
     profile: StreamProfile;
-    intent: 'switch' | 'edit';
+    intent: 'switch' | 'edit' | 'delete';
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    profile: StreamProfile;
+    verifiedPin?: string;
   } | null>(null);
   const [editorState, setEditorState] = useState<{
     open: boolean;
@@ -849,6 +945,15 @@ export function ProfileSelectorModal({ open, onClose }: ProfileSelectorModalProp
     }
     if (res.ok) {
       onClose();
+    }
+  };
+
+  const handleQuickDelete = (prof: StreamProfile) => {
+    if (profiles.length <= 1) return;
+    if (prof.hasPin) {
+      setPinTarget({ profile: prof, intent: 'delete' });
+    } else {
+      setDeleteTarget({ profile: prof });
     }
   };
 
@@ -889,44 +994,57 @@ export function ProfileSelectorModal({ open, onClose }: ProfileSelectorModalProp
             {profiles.map((prof) => {
               const isActive = prof.id === activeProfile?.id;
               return (
-                <button
-                  key={prof.id}
-                  type="button"
-                  onClick={() => void handleCardClick(prof)}
-                  className={`group rounded-2xl p-3 flex flex-col items-center gap-2.5 text-center transition-all cursor-pointer border ${
-                    isActive
-                      ? 'bg-sky-500/15 border-sky-400/70 ring-2 ring-sky-400/50'
-                      : 'bg-black/35 border-white/10 hover:bg-white/10 hover:border-sky-400/40'
-                  }`}
-                >
-                  <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border border-white/15">
-                    <img
-                      src={resolveProfileAvatarUrl(prof.avatarId, prof.avatarUrl)}
-                      alt={prof.name}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                    {manageMode && (
-                      <div className="absolute inset-0 bg-black/55 flex items-center justify-center">
-                        <Pencil className="w-6 h-6 text-white" />
-                      </div>
-                    )}
-                    {prof.hasPin && !manageMode && (
-                      <span
-                        title="Protegido por senha"
-                        className="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-lg bg-black/80 border border-white/20 flex items-center justify-center text-sky-300"
-                      >
-                        <Lock className="w-3.5 h-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="w-full min-w-0">
-                    <p className="text-sm font-bold text-white truncate">{prof.name}</p>
-                    <p className="text-[11px] text-slate-400 truncate">
-                      {prof.isKids ? 'Infantil' : isActive ? 'Perfil ativo' : 'Selecionar'}
-                    </p>
-                  </div>
-                </button>
+                <div key={prof.id} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => void handleCardClick(prof)}
+                    className={`w-full group rounded-2xl p-3 flex flex-col items-center gap-2.5 text-center transition-all cursor-pointer border ${
+                      isActive
+                        ? 'bg-sky-500/15 border-sky-400/70 ring-2 ring-sky-400/50'
+                        : 'bg-black/35 border-white/10 hover:bg-white/10 hover:border-sky-400/40'
+                    }`}
+                  >
+                    <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border border-white/15">
+                      <img
+                        src={resolveProfileAvatarUrl(prof.avatarId, prof.avatarUrl)}
+                        alt={prof.name}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                      />
+                      {manageMode && (
+                        <div className="absolute inset-0 bg-black/55 flex items-center justify-center">
+                          <Pencil className="w-6 h-6 text-white" />
+                        </div>
+                      )}
+                      {prof.hasPin && !manageMode && (
+                        <span
+                          title="Protegido por senha"
+                          className="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-lg bg-black/80 border border-white/20 flex items-center justify-center text-sky-300"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="w-full min-w-0">
+                      <p className="text-sm font-bold text-white truncate">{prof.name}</p>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {prof.isKids ? 'Infantil' : isActive ? 'Perfil ativo' : 'Selecionar'}
+                      </p>
+                    </div>
+                  </button>
+
+                  {manageMode && profiles.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickDelete(prof)}
+                      aria-label={`Excluir perfil ${prof.name}`}
+                      title={`Excluir perfil ${prof.name}`}
+                      className="absolute -top-2 -right-2 z-10 w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 border border-white/20 text-white flex items-center justify-center shadow-lg cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               );
             })}
 
@@ -974,7 +1092,13 @@ export function ProfileSelectorModal({ open, onClose }: ProfileSelectorModalProp
 
       <ProfilePinModal
         targetProfile={pinTarget?.profile ?? null}
-        actionLabel={pinTarget?.intent === 'edit' ? 'Editar Perfil' : 'Entrar no Perfil'}
+        actionLabel={
+          pinTarget?.intent === 'delete'
+            ? 'Confirmar Exclusão'
+            : pinTarget?.intent === 'edit'
+              ? 'Editar Perfil'
+              : 'Entrar no Perfil'
+        }
         onClose={() => setPinTarget(null)}
         onVerified={async (pin) => {
           if (!pinTarget) return false;
@@ -990,12 +1114,22 @@ export function ProfileSelectorModal({ open, onClose }: ProfileSelectorModalProp
           const ok = await verifyProfileAccess(pinTarget.profile.id, pin);
           if (ok) {
             const target = pinTarget.profile;
+            const intent = pinTarget.intent;
             setPinTarget(null);
-            setEditorState({ open: true, editing: target, verifiedPin: pin });
+            if (intent === 'delete') {
+              setDeleteTarget({ profile: target, verifiedPin: pin });
+            } else {
+              setEditorState({ open: true, editing: target, verifiedPin: pin });
+            }
             return true;
           }
           return false;
         }}
+      />
+
+      <ProfileDeleteConfirmModal
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
       />
 
       <ProfileEditorModal
