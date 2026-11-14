@@ -83,6 +83,7 @@ class TMDBServiceImpl {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
       },
+      signal: AbortSignal.timeout(12_000),
     });
 
     if (!response.ok) {

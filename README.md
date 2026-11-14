@@ -2,18 +2,20 @@
 
 Plataforma profissional de streaming com catálogo TMDB, reprodução integrada via MegaEmbed, Inteligência Artificial (Gemini no servidor), autenticação Firebase, Cloud Firestore e painel administrativo.
 
-## Arquitetura Modular
+## Arquitetura Modular e Vercel
 
-- **Frontend**: React, TypeScript, Tailwind CSS, React Router, Lucide Icons, Motion.
-- **Backend (`server.ts` + `server/services/`)**: Node.js + Express + TypeScript com módulos independentes:
+- **Frontend**: React, TypeScript, Tailwind CSS, React Router, Lucide Icons, Motion (`vite build` -> `dist/`).
+- **Backend (`server/app.ts` + `server/services/`)**: Node.js + Express + TypeScript com módulos independentes:
   - `AuthenticationService` · `UserService` · `TMDBService` · `MegaEmbedService`
   - `CatalogService` · `PlayerService` · `FavoritesService` · `HistoryService`
   - `RecommendationService` · `SubscriptionService` · `ChannelService` · `AdminService`
+- **Desenvolvimento local / AI Studio**: `server.ts` monta `server/app.ts` junto ao middleware Vite na porta `3000`.
+- **Produção Serverless (Vercel)**: `api/index.ts` exporta o handler Express de `server/app.ts` configurado via `vercel.json` (`/api/*` -> `/api/index`).
 - **Banco de Dados**: Firebase Authentication + Cloud Firestore (`firestore.rules` endurecidas) + abstração de repositórios (`server/repositories/interfaces.ts`) e esquema SQL (`server/db/postgres-schema.sql`) pronto para migração futura para PostgreSQL.
 
 ## Variáveis de Ambiente (Secrets)
 
-Configure no painel **Settings > Secrets** do servidor (nunca no frontend):
+Configure no painel **Settings > Secrets** (ou **Project Settings > Environment Variables** na Vercel — nunca exponha no frontend):
 
 - `TMDB_ACCESS_TOKEN`: Token Bearer da API v3 do TMDB (`https://developer.themoviedb.org/`). Enquanto não configurado, o aplicativo opera em **Modo Demonstração** claramente sinalizado.
 - `GEMINI_API_KEY`: Chave da Gemini API usada exclusivamente pelo backend em `/api/ai/recommend`.

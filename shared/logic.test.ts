@@ -16,6 +16,7 @@ import {
   isValidStreamUrl,
   sanitizePlainText,
 } from './catalogUtils';
+import { normalizeVercelApiUrl } from './vercelUtils';
 import type { MediaItem } from './types';
 
 test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragment', () => {
@@ -151,4 +152,18 @@ test('validation and formatting helpers work accurately', () => {
   assert.equal(isValidStreamUrl('javascript:alert(1)'), false);
   assert.equal(sanitizePlainText('<script>Oi</script>  Mundo  '), 'scriptOi/script Mundo');
   assert.equal(getPlanById('quarterly')?.priceBrl, 59.9);
+});
+
+test('normalizeVercelApiUrl reconstructs /api/* paths from Vercel rewrites cleanly', () => {
+  assert.equal(normalizeVercelApiUrl('/api/index?__path=catalog/home'), '/api/catalog/home');
+  assert.equal(
+    normalizeVercelApiUrl('/api/index?__path=series/82856/seasons&season=1'),
+    '/api/series/82856/seasons?season=1'
+  );
+  assert.equal(
+    normalizeVercelApiUrl('/api/index?__path=discover&type=movie&page=2&q=duna'),
+    '/api/discover?type=movie&page=2&q=duna'
+  );
+  assert.equal(normalizeVercelApiUrl('/api/catalog/home'), '/api/catalog/home');
+  assert.equal(normalizeVercelApiUrl('/api/index'), '/api');
 });

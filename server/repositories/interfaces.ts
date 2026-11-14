@@ -43,7 +43,9 @@ interface PersistedState {
   lastSyncAt: string | null;
 }
 
-const DATA_FILE = path.resolve(process.cwd(), '.megastream-store.json');
+const DATA_FILE = process.env.VERCEL
+  ? '/tmp/.megastream-store.json'
+  : path.resolve(process.cwd(), '.megastream-store.json');
 
 class JsonRepositoryStore implements IRepositoryStore {
   private state: PersistedState;
