@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { ProfileGateScreen } from './components/ProfileGateScreen';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { SiteConfigProvider } from './contexts/SiteConfigContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { AdminPage } from './pages/AdminPage';
 import { AISmartPage } from './pages/AISmartPage';
@@ -40,6 +41,7 @@ function AppRoutes() {
           )
         }
       />
+      <Route path="/admin" element={<AdminPage />} />
       <Route
         path="/watch/:type/:tmdbId"
         element={
@@ -66,7 +68,6 @@ function AppRoutes() {
               <Route path="/plans" element={<PlansPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/ai" element={<AISmartPage />} />
-              <Route path="/admin" element={<AdminPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </AppShell>
@@ -79,11 +80,13 @@ function AppRoutes() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
-      </AuthProvider>
+      <SiteConfigProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </AuthProvider>
+      </SiteConfigProvider>
     </ThemeProvider>
   );
 }

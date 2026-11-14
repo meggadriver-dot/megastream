@@ -90,7 +90,7 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
     return (
       <div className="ms-glass rounded-2xl p-8 text-center space-y-3">
         <h1 className="font-display text-xl font-bold text-white">Conteúdo não encontrado</h1>
-        <p className="text-sm text-slate-400">Verifique o identificador TMDB ou explore o catálogo.</p>
+        <p className="text-sm text-slate-400">Verifique o endereço ou explore o catálogo disponível.</p>
         <Link
           to="/explore"
           className="inline-block px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
@@ -156,7 +156,7 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
               <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-slate-300 font-mono-tabular">
                 <span className="inline-flex items-center gap-1 text-amber-400 font-semibold">
                   <Star className="w-4 h-4 fill-amber-400" aria-hidden="true" />
-                  {detail.voteAverage.toFixed(1)}/10 TMDB
+                  {detail.voteAverage.toFixed(1)}/10
                 </span>
                 <span aria-hidden="true">·</span>
                 <span>{detail.releaseYear || '—'}</span>
@@ -297,8 +297,14 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
             </p>
           </div>
           <div className="ms-glass rounded-2xl p-4 space-y-1">
-            <p className="text-xs text-slate-400">Identificador TMDB</p>
-            <p className="text-sm font-semibold text-sky-300 font-mono-tabular">#{detail.tmdbId}</p>
+            <p className="text-xs text-slate-400">
+              {detail.mediaType === 'tv' ? 'Temporadas' : 'Disponibilidade'}
+            </p>
+            <p className="text-sm font-semibold text-sky-300 font-mono-tabular">
+              {detail.mediaType === 'tv'
+                ? `${detail.numberOfSeasons || detail.seasons?.length || 1} temporada(s)`
+                : detail.status || 'Disponível'}
+            </p>
           </div>
         </section>
       )}

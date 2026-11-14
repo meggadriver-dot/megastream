@@ -112,6 +112,259 @@ import path3 from "node:path";
 // server/repositories/interfaces.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
+
+// shared/catalogUtils.ts
+var SUBSCRIPTION_PLANS = [
+  {
+    id: "monthly",
+    name: "Mensal",
+    subtitle: "Flexibilidade total para come\xE7ar",
+    priceBrl: 29.9,
+    billingLabel: "R$ 29,90 / m\xEAs",
+    periodDays: 30,
+    benefits: [
+      "Acesso completo ao cat\xE1logo de filmes e s\xE9ries",
+      "IA Inteligente com recomenda\xE7\xF5es personalizadas",
+      "Sincroniza\xE7\xE3o de Minha Lista e Hist\xF3rico na nuvem",
+      "Sem fidelidade \u2014 cancele quando desejar"
+    ]
+  },
+  {
+    id: "quarterly",
+    name: "Trimestral",
+    subtitle: "Mais popular \xB7 Melhor custo-benef\xEDcio",
+    priceBrl: 59.9,
+    billingLabel: "R$ 59,90 / 3 meses",
+    periodDays: 90,
+    popular: true,
+    benefits: [
+      "Economize 33% comparado ao plano mensal",
+      "Acesso completo em smartphones, tablets e TVs",
+      "Listas personalizadas ilimitadas com IA",
+      "Prioridade nos novos recursos da plataforma"
+    ]
+  },
+  {
+    id: "annual",
+    name: "Anual",
+    subtitle: "Experi\xEAncia definitiva o ano inteiro",
+    priceBrl: 199.9,
+    billingLabel: "R$ 199,90 / ano",
+    periodDays: 365,
+    benefits: [
+      "Equivalente a mais de 2 meses gr\xE1tis no ano",
+      "Todos os 5 temas exclusivos desbloqueados",
+      "Suporte priorit\xE1rio e canais autorizados ao vivo",
+      "Controle parental e m\xFAltiplos perfis de acesso"
+    ]
+  }
+];
+function getPlanById(planId) {
+  return SUBSCRIPTION_PLANS.find((p) => p.id === planId) ?? null;
+}
+function sanitizePlainText(value, maxLength = 200) {
+  return value.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+function isValidStreamUrl(url) {
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+function filterAndSortMedia(items, filters) {
+  const query = (filters.query ?? "").trim().toLowerCase();
+  const pageSize = Math.max(1, Math.min(40, filters.pageSize ?? 20));
+  const requestedPage = Math.max(1, filters.page ?? 1);
+  const filtered = items.filter((item) => {
+    if (filters.mediaType && filters.mediaType !== "all" && item.mediaType !== filters.mediaType) {
+      return false;
+    }
+    if (filters.genreId && !item.genreIds.includes(filters.genreId)) {
+      return false;
+    }
+    if (filters.year && Number(item.releaseYear) !== filters.year) {
+      return false;
+    }
+    if (typeof filters.minRating === "number" && filters.minRating > 0 && item.voteAverage < filters.minRating) {
+      return false;
+    }
+    if (filters.language && filters.language !== "all" && item.originalLanguage !== filters.language) {
+      return false;
+    }
+    if (filters.country && filters.country !== "all" && !(item.originCountry ?? []).includes(filters.country)) {
+      return false;
+    }
+    if (query) {
+      const hay = `${item.title} ${item.originalTitle} ${item.overview}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    if (filters.sortBy === "rating") {
+      return b.voteAverage - a.voteAverage;
+    }
+    if (filters.sortBy === "release_date") {
+      return (b.releaseDate || "").localeCompare(a.releaseDate || "");
+    }
+    return b.popularity - a.popularity;
+  });
+  const totalResults = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const start = (page - 1) * pageSize;
+  return {
+    items: sorted.slice(start, start + pageSize),
+    totalResults,
+    totalPages,
+    page
+  };
+}
+function deduplicateMediaByTmdbId(items) {
+  const seen = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    const key = `${item.mediaType}:${item.tmdbId}`;
+    if (!seen.has(key)) {
+      seen.set(key, item);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+// shared/siteConfigUtils.ts
+var VALID_THEMES = [
+  "cinematografico",
+  "neon-roxo",
+  "minimalista",
+  "gold-premium",
+  "3d-glass"
+];
+var DEFAULT_SITE_CONFIG = {
+  siteName: "MegaStream",
+  siteSlogan: "Sua divers\xE3o em um s\xF3 lugar!",
+  logoUrl: "",
+  defaultTheme: "cinematografico",
+  accentColorHex: "",
+  announcementEnabled: false,
+  announcementText: "",
+  enableChannels: true,
+  enableAiPage: true,
+  enablePlansPage: true,
+  maintenanceMode: false,
+  footerText: "MegaStream \xB7 Sua divers\xE3o em um s\xF3 lugar!",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+};
+function sanitizeOptionalUrl(url, maxLength = 500) {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("/")) {
+    return trimmed.slice(0, maxLength);
+  }
+  return isValidStreamUrl(trimmed) ? trimmed.slice(0, maxLength) : "";
+}
+function sanitizeSiteConfig(input, current = DEFAULT_SITE_CONFIG) {
+  const siteName = typeof input.siteName === "string" ? sanitizePlainText(input.siteName, 40) || current.siteName : current.siteName;
+  const siteSlogan = typeof input.siteSlogan === "string" ? sanitizePlainText(input.siteSlogan, 100) || current.siteSlogan : current.siteSlogan;
+  const logoUrl = input.logoUrl !== void 0 ? sanitizeOptionalUrl(input.logoUrl, 500) : current.logoUrl;
+  const defaultTheme = input.defaultTheme && VALID_THEMES.includes(input.defaultTheme) ? input.defaultTheme : current.defaultTheme;
+  let accentColorHex = current.accentColorHex;
+  if (input.accentColorHex !== void 0) {
+    const raw = input.accentColorHex.trim();
+    accentColorHex = raw === "" ? "" : sanitizeHexColor(raw, "");
+  }
+  const announcementText = typeof input.announcementText === "string" ? sanitizePlainText(input.announcementText, 180) : current.announcementText;
+  const footerText = typeof input.footerText === "string" ? sanitizePlainText(input.footerText, 120) || current.footerText : current.footerText;
+  return {
+    siteName,
+    siteSlogan,
+    logoUrl,
+    defaultTheme,
+    accentColorHex,
+    announcementEnabled: typeof input.announcementEnabled === "boolean" ? input.announcementEnabled : current.announcementEnabled,
+    announcementText,
+    enableChannels: typeof input.enableChannels === "boolean" ? input.enableChannels : current.enableChannels,
+    enableAiPage: typeof input.enableAiPage === "boolean" ? input.enableAiPage : current.enableAiPage,
+    enablePlansPage: typeof input.enablePlansPage === "boolean" ? input.enablePlansPage : current.enablePlansPage,
+    maintenanceMode: typeof input.maintenanceMode === "boolean" ? input.maintenanceMode : current.maintenanceMode,
+    footerText,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function sanitizeCustomMediaInput(input, existing) {
+  const mediaType = input.mediaType === "tv" ? "tv" : input.mediaType === "movie" ? "movie" : existing?.mediaType ?? "movie";
+  const title = sanitizePlainText(input.title ?? existing?.title ?? "", 160);
+  if (!title) {
+    throw new Error("T\xEDtulo do filme ou s\xE9rie \xE9 obrigat\xF3rio.");
+  }
+  const rawTmdb = Number(input.tmdbId ?? existing?.tmdbId);
+  const tmdbId = Number.isInteger(rawTmdb) && rawTmdb > 0 ? rawTmdb : Math.floor(9e6 + Date.now() % 9e5);
+  const id = existing?.id || (input.id && /^[a-zA-Z0-9_-]{1,64}$/.test(input.id.trim()) ? input.id.trim() : `custom_${mediaType}_${tmdbId}`);
+  const overview = typeof input.overview === "string" ? sanitizePlainText(input.overview, 1e3) || "Conte\xFAdo adicionado pela administra\xE7\xE3o." : existing?.overview ?? "Conte\xFAdo adicionado pela administra\xE7\xE3o.";
+  const posterRaw = input.posterPath !== void 0 ? sanitizeOptionalUrl(input.posterPath, 500) : existing?.posterPath ?? null;
+  const backdropRaw = input.backdropPath !== void 0 ? sanitizeOptionalUrl(input.backdropPath, 500) : existing?.backdropPath ?? null;
+  const customStreamUrl = input.customStreamUrl !== void 0 ? sanitizeOptionalUrl(input.customStreamUrl, 500) || void 0 : existing?.customStreamUrl;
+  const rawYear = typeof input.releaseYear === "string" ? input.releaseYear.replace(/[^0-9]/g, "").slice(0, 4) : existing?.releaseYear ?? String((/* @__PURE__ */ new Date()).getFullYear());
+  const rawVote = Number(input.voteAverage ?? existing?.voteAverage ?? 8.5);
+  const voteAverage = Number.isFinite(rawVote) ? Math.max(0, Math.min(10, Number(rawVote.toFixed(1)))) : 8.5;
+  const genreIds = Array.isArray(input.genreIds) ? input.genreIds.map((g) => Number(g)).filter((g) => Number.isInteger(g) && g > 0) : existing?.genreIds ?? [];
+  return {
+    id,
+    tmdbId,
+    mediaType,
+    title,
+    originalTitle: sanitizePlainText(input.originalTitle ?? existing?.originalTitle ?? title, 160) || title,
+    overview,
+    posterPath: posterRaw || null,
+    backdropPath: backdropRaw || null,
+    releaseYear: rawYear || String((/* @__PURE__ */ new Date()).getFullYear()),
+    voteAverage,
+    genreIds,
+    customStreamUrl,
+    featured: typeof input.featured === "boolean" ? input.featured : existing?.featured ?? false,
+    active: typeof input.active === "boolean" ? input.active : existing?.active ?? true,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function customMediaToMediaItem(item) {
+  return {
+    id: item.tmdbId,
+    tmdbId: item.tmdbId,
+    mediaType: item.mediaType,
+    title: item.title,
+    originalTitle: item.originalTitle || item.title,
+    overview: item.overview,
+    posterPath: item.posterPath,
+    backdropPath: item.backdropPath,
+    releaseDate: item.releaseYear ? `${item.releaseYear}-01-01` : "",
+    releaseYear: item.releaseYear,
+    voteAverage: item.voteAverage,
+    voteCount: 100,
+    popularity: item.featured ? 9999 : 500,
+    genreIds: item.genreIds,
+    originalLanguage: "pt",
+    originCountry: ["BR"],
+    source: "tmdb"
+  };
+}
+function mergeCustomCatalogIntoList(baseItems, customItems, mediaTypeFilter) {
+  const activeCustom = customItems.filter(
+    (c) => c.active && (!mediaTypeFilter || c.mediaType === mediaTypeFilter)
+  );
+  if (activeCustom.length === 0) return baseItems;
+  const overrideMap = /* @__PURE__ */ new Map();
+  for (const c of activeCustom) {
+    overrideMap.set(`${c.mediaType}:${c.tmdbId}`, customMediaToMediaItem(c));
+  }
+  const replaced = baseItems.map((m) => overrideMap.get(`${m.mediaType}:${m.tmdbId}`) ?? m);
+  const existingKeys = new Set(replaced.map((m) => `${m.mediaType}:${m.tmdbId}`));
+  const newCustoms = activeCustom.filter((c) => !existingKeys.has(`${c.mediaType}:${c.tmdbId}`)).map(customMediaToMediaItem);
+  return [...newCustoms, ...replaced];
+}
+
+// server/repositories/interfaces.ts
 var DATA_FILE = process.env.VERCEL ? "/tmp/.megastream-store.json" : path2.resolve(process.cwd(), ".megastream-store.json");
 var JsonRepositoryStore = class {
   constructor() {
@@ -132,6 +385,8 @@ var JsonRepositoryStore = class {
       history: {},
       channels: {},
       subscriptions: {},
+      siteConfig: { ...DEFAULT_SITE_CONFIG },
+      customCatalog: {},
       logs: [
         {
           id: "boot-1",
@@ -246,6 +501,31 @@ var JsonRepositoryStore = class {
   }
   getAllSubscriptions() {
     return Object.values(this.state.subscriptions);
+  }
+  getSiteConfig() {
+    return this.state.siteConfig ?? { ...DEFAULT_SITE_CONFIG };
+  }
+  saveSiteConfig(config) {
+    this.state.siteConfig = config;
+    this.save();
+    return config;
+  }
+  getCustomCatalog() {
+    return Object.values(this.state.customCatalog ?? {}).sort(
+      (a, b) => b.updatedAt.localeCompare(a.updatedAt)
+    );
+  }
+  upsertCustomMedia(item) {
+    if (!this.state.customCatalog) this.state.customCatalog = {};
+    this.state.customCatalog[item.id] = item;
+    this.save();
+    return item;
+  }
+  deleteCustomMedia(id) {
+    if (!this.state.customCatalog?.[id]) return false;
+    delete this.state.customCatalog[id];
+    this.save();
+    return true;
   }
   addLog(entry) {
     const log = {
@@ -480,126 +760,6 @@ var CacheServiceImpl = class {
   }
 };
 var CacheService = new CacheServiceImpl();
-
-// shared/catalogUtils.ts
-var SUBSCRIPTION_PLANS = [
-  {
-    id: "monthly",
-    name: "Mensal",
-    subtitle: "Flexibilidade total para come\xE7ar",
-    priceBrl: 29.9,
-    billingLabel: "R$ 29,90 / m\xEAs",
-    periodDays: 30,
-    benefits: [
-      "Acesso completo ao cat\xE1logo de filmes e s\xE9ries",
-      "IA Inteligente com recomenda\xE7\xF5es personalizadas",
-      "Sincroniza\xE7\xE3o de Minha Lista e Hist\xF3rico na nuvem",
-      "Sem fidelidade \u2014 cancele quando desejar"
-    ]
-  },
-  {
-    id: "quarterly",
-    name: "Trimestral",
-    subtitle: "Mais popular \xB7 Melhor custo-benef\xEDcio",
-    priceBrl: 59.9,
-    billingLabel: "R$ 59,90 / 3 meses",
-    periodDays: 90,
-    popular: true,
-    benefits: [
-      "Economize 33% comparado ao plano mensal",
-      "Acesso completo em smartphones, tablets e TVs",
-      "Listas personalizadas ilimitadas com IA",
-      "Prioridade nos novos recursos da plataforma"
-    ]
-  },
-  {
-    id: "annual",
-    name: "Anual",
-    subtitle: "Experi\xEAncia definitiva o ano inteiro",
-    priceBrl: 199.9,
-    billingLabel: "R$ 199,90 / ano",
-    periodDays: 365,
-    benefits: [
-      "Equivalente a mais de 2 meses gr\xE1tis no ano",
-      "Todos os 5 temas exclusivos desbloqueados",
-      "Suporte priorit\xE1rio e canais autorizados ao vivo",
-      "Controle parental e m\xFAltiplos perfis de acesso"
-    ]
-  }
-];
-function getPlanById(planId) {
-  return SUBSCRIPTION_PLANS.find((p) => p.id === planId) ?? null;
-}
-function sanitizePlainText(value, maxLength = 200) {
-  return value.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, maxLength);
-}
-function isValidStreamUrl(url) {
-  try {
-    const parsed = new URL(url.trim());
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-function filterAndSortMedia(items, filters) {
-  const query = (filters.query ?? "").trim().toLowerCase();
-  const pageSize = Math.max(1, Math.min(40, filters.pageSize ?? 20));
-  const requestedPage = Math.max(1, filters.page ?? 1);
-  const filtered = items.filter((item) => {
-    if (filters.mediaType && filters.mediaType !== "all" && item.mediaType !== filters.mediaType) {
-      return false;
-    }
-    if (filters.genreId && !item.genreIds.includes(filters.genreId)) {
-      return false;
-    }
-    if (filters.year && Number(item.releaseYear) !== filters.year) {
-      return false;
-    }
-    if (typeof filters.minRating === "number" && filters.minRating > 0 && item.voteAverage < filters.minRating) {
-      return false;
-    }
-    if (filters.language && filters.language !== "all" && item.originalLanguage !== filters.language) {
-      return false;
-    }
-    if (filters.country && filters.country !== "all" && !(item.originCountry ?? []).includes(filters.country)) {
-      return false;
-    }
-    if (query) {
-      const hay = `${item.title} ${item.originalTitle} ${item.overview}`.toLowerCase();
-      if (!hay.includes(query)) return false;
-    }
-    return true;
-  });
-  const sorted = [...filtered].sort((a, b) => {
-    if (filters.sortBy === "rating") {
-      return b.voteAverage - a.voteAverage;
-    }
-    if (filters.sortBy === "release_date") {
-      return (b.releaseDate || "").localeCompare(a.releaseDate || "");
-    }
-    return b.popularity - a.popularity;
-  });
-  const totalResults = sorted.length;
-  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
-  const page = Math.min(requestedPage, totalPages);
-  const start = (page - 1) * pageSize;
-  return {
-    items: sorted.slice(start, start + pageSize),
-    totalResults,
-    totalPages,
-    page
-  };
-}
-function deduplicateMediaByTmdbId(items) {
-  const seen = /* @__PURE__ */ new Map();
-  for (const item of items) {
-    const key = `${item.mediaType}:${item.tmdbId}`;
-    if (!seen.has(key)) {
-      seen.set(key, item);
-    }
-  }
-  return Array.from(seen.values());
-}
 
 // server/data/demoCatalog.ts
 var DEMO_MOVIE_GENRES = [
@@ -1142,11 +1302,15 @@ var TMDBServiceImpl = class {
   async discover(params) {
     const page = Math.max(1, params.page ?? 1);
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
-        ...params,
-        page,
-        pageSize: 20
-      });
+      const customAsMedia = repositoryStore.getCustomCatalog().filter((c) => c.active).map(customMediaToMediaItem);
+      const subset = filterAndSortMedia(
+        deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]),
+        {
+          ...params,
+          page,
+          pageSize: 20
+        }
+      );
       return { ...subset, source: "demo", demoMode: true };
     }
     await this.ensureImageConfig();
@@ -1235,13 +1399,62 @@ var TMDBServiceImpl = class {
     };
   }
   async getDetail(tmdbId, mediaType) {
+    const customMatch = repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);
     if (!this.isConfigured()) {
-      return getDemoMediaDetail(tmdbId, mediaType);
+      const demo = getDemoMediaDetail(tmdbId, mediaType);
+      if (customMatch) {
+        const baseCustom = customMediaToMediaItem(customMatch);
+        if (!demo) {
+          return {
+            ...baseCustom,
+            runtime: null,
+            status: "Dispon\xEDvel",
+            tagline: "",
+            director: null,
+            cast: [],
+            videos: [],
+            recommendations: DEMO_MEDIA_CATALOG.slice(0, 6),
+            similar: DEMO_MEDIA_CATALOG.slice(6, 12),
+            seasons: mediaType === "tv" ? [{ id: 1, seasonNumber: 1, name: "Temporada 1", overview: "", posterPath: baseCustom.posterPath, episodeCount: 1, airDate: "" }] : void 0
+          };
+        }
+        return {
+          ...demo,
+          title: customMatch.title,
+          originalTitle: customMatch.originalTitle || demo.originalTitle,
+          overview: customMatch.overview || demo.overview,
+          posterPath: customMatch.posterPath ?? demo.posterPath,
+          backdropPath: customMatch.backdropPath ?? demo.backdropPath,
+          releaseYear: customMatch.releaseYear || demo.releaseYear,
+          voteAverage: customMatch.voteAverage
+        };
+      }
+      return demo;
     }
     await this.ensureImageConfig();
-    const raw = await this.request(`/${mediaType}/${tmdbId}`, {
-      append_to_response: "credits,videos,recommendations,similar"
-    });
+    let raw;
+    try {
+      raw = await this.request(`/${mediaType}/${tmdbId}`, {
+        append_to_response: "credits,videos,recommendations,similar"
+      });
+    } catch (err) {
+      if (customMatch) {
+        const baseCustom = customMediaToMediaItem(customMatch);
+        return {
+          ...baseCustom,
+          runtime: null,
+          status: "Dispon\xEDvel",
+          tagline: "",
+          director: null,
+          cast: [],
+          videos: [],
+          recommendations: [],
+          similar: [],
+          seasons: mediaType === "tv" ? [{ id: 1, seasonNumber: 1, name: "Temporada 1", overview: "", posterPath: baseCustom.posterPath, episodeCount: 1, airDate: "" }] : void 0
+        };
+      }
+      throw err;
+    }
     const base = this.mapMedia(raw, mediaType);
     const director = raw.credits?.crew?.find((c) => c.job === "Director" || c.job === "Creator")?.name ?? null;
     const cast = (raw.credits?.cast ?? []).slice(0, 14).map((c) => ({
@@ -1257,7 +1470,7 @@ var TMDBServiceImpl = class {
     const similar = deduplicateMediaByTmdbId(
       (raw.similar?.results ?? []).map((r) => this.mapMedia(r, mediaType))
     );
-    return {
+    const detail = {
       ...base,
       runtime: raw.runtime ?? raw.episode_run_time?.[0] ?? null,
       status: raw.status ?? "",
@@ -1279,6 +1492,19 @@ var TMDBServiceImpl = class {
         airDate: s.air_date ?? ""
       }))
     };
+    if (customMatch) {
+      return {
+        ...detail,
+        title: customMatch.title,
+        originalTitle: customMatch.originalTitle || detail.originalTitle,
+        overview: customMatch.overview || detail.overview,
+        posterPath: customMatch.posterPath ?? detail.posterPath,
+        backdropPath: customMatch.backdropPath ?? detail.backdropPath,
+        releaseYear: customMatch.releaseYear || detail.releaseYear,
+        voteAverage: customMatch.voteAverage
+      };
+    }
+    return detail;
   }
   async getSeasonEpisodes(tmdbId, seasonNumber) {
     if (!this.isConfigured()) {
@@ -1401,10 +1627,18 @@ var CatalogServiceImpl = class {
       TMDBService.getGenres("movie"),
       TMDBService.getGenres("tv")
     ]);
+    const customItems = repositoryStore.getCustomCatalog().filter((c) => c.active);
+    const featuredCustoms = customItems.filter((c) => c.featured).map(customMediaToMediaItem);
+    const mergedTrending = deduplicateMediaByTmdbId([
+      ...featuredCustoms,
+      ...mergeCustomCatalogIntoList(trending.items, customItems)
+    ]);
+    const mergedPopularMovies = mergeCustomCatalogIntoList(popularMovies.items, customItems, "movie");
+    const mergedPopularSeries = mergeCustomCatalogIntoList(popularSeries.items, customItems, "tv");
     const combined = deduplicateMediaByTmdbId([
-      ...trending.items,
-      ...popularMovies.items,
-      ...popularSeries.items,
+      ...mergedTrending,
+      ...mergedPopularMovies,
+      ...mergedPopularSeries,
       ...nowPlayingMovies.items,
       ...topRatedMovies.items,
       ...upcomingMovies.items,
@@ -1414,13 +1648,13 @@ var CatalogServiceImpl = class {
     this.syncedCatalog = deduplicateMediaByTmdbId([...this.syncedCatalog, ...combined]);
     this.syncedGenres = { movie: movieGenres, tv: tvGenres };
     const payload = {
-      featured: trending.items[0] ?? popularMovies.items[0] ?? null,
-      trending: trending.items,
-      popularMovies: popularMovies.items,
+      featured: featuredCustoms[0] ?? mergedTrending[0] ?? mergedPopularMovies[0] ?? null,
+      trending: mergedTrending,
+      popularMovies: mergedPopularMovies,
       nowPlayingMovies: nowPlayingMovies.items,
       topRatedMovies: topRatedMovies.items,
       upcomingMovies: upcomingMovies.items,
-      popularSeries: popularSeries.items,
+      popularSeries: mergedPopularSeries,
       topRatedSeries: topRatedSeries.items,
       onAirSeries: onAirSeries.items,
       genres: {
@@ -1829,6 +2063,55 @@ var MegaEmbedServiceImpl = class {
 };
 var MegaEmbedService = new MegaEmbedServiceImpl();
 
+// server/services/SiteConfigService.ts
+var SiteConfigServiceImpl = class {
+  getConfig() {
+    return repositoryStore.getSiteConfig();
+  }
+  updateConfig(input) {
+    const current = repositoryStore.getSiteConfig();
+    const next = sanitizeSiteConfig(input, current);
+    repositoryStore.saveSiteConfig(next);
+    repositoryStore.addLog({
+      level: "info",
+      service: "SiteConfigService",
+      message: `Configura\xE7\xF5es do site atualizadas pelo administrador (${next.siteName}).`
+    });
+    return next;
+  }
+  listCustomCatalog() {
+    return repositoryStore.getCustomCatalog();
+  }
+  getCustomMatch(tmdbId, mediaType) {
+    return repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType) ?? null;
+  }
+  upsertCustomMedia(input) {
+    const existing = input.id ? repositoryStore.getCustomCatalog().find((c) => c.id === input.id) : void 0;
+    const sanitized = sanitizeCustomMediaInput(input, existing);
+    const saved = repositoryStore.upsertCustomMedia(sanitized);
+    CacheService.clear("catalog:");
+    repositoryStore.addLog({
+      level: "info",
+      service: "CatalogAdminService",
+      message: `M\xEDdia personalizada salva: ${saved.title} (${saved.mediaType} #${saved.tmdbId}).`
+    });
+    return saved;
+  }
+  deleteCustomMedia(id) {
+    const ok = repositoryStore.deleteCustomMedia(id);
+    if (ok) {
+      CacheService.clear("catalog:");
+      repositoryStore.addLog({
+        level: "warn",
+        service: "CatalogAdminService",
+        message: `M\xEDdia personalizada removida: ${id}.`
+      });
+    }
+    return ok;
+  }
+};
+var SiteConfigService = new SiteConfigServiceImpl();
+
 // server/services/PlayerService.ts
 var PlayerServiceImpl = class {
   getConfig() {
@@ -1844,6 +2127,22 @@ var PlayerServiceImpl = class {
     return updated;
   }
   resolveStream(params) {
+    const numericId = Number(params.tmdbId);
+    const customMatch = Number.isInteger(numericId) && numericId > 0 ? SiteConfigService.getCustomMatch(numericId, params.mediaType) : null;
+    if (customMatch?.customStreamUrl) {
+      const cfg = playerConfigStore.getConfig();
+      repositoryStore.incrementPlaybackCounter();
+      return {
+        tmdbId: numericId,
+        mediaType: params.mediaType,
+        embedUrl: customMatch.customStreamUrl,
+        domain: cfg.defaultDomain,
+        player: cfg.defaultPlayer,
+        colorHex: cfg.defaultColorHex,
+        seasonNumber: params.mediaType === "tv" ? params.seasonNumber ?? 1 : void 0,
+        episodeNumber: params.mediaType === "tv" ? params.episodeNumber ?? 1 : void 0
+      };
+    }
     const result = MegaEmbedService.getEmbedPayload(params);
     repositoryStore.incrementPlaybackCounter();
     return result;
@@ -2166,7 +2465,7 @@ var SubscriptionServiceImpl = class {
 var SubscriptionService = new SubscriptionServiceImpl();
 
 // server/services/UserService.ts
-var VALID_THEMES = [
+var VALID_THEMES2 = [
   "cinematografico",
   "neon-roxo",
   "minimalista",
@@ -2187,7 +2486,7 @@ var UserServiceImpl = class {
       ...user,
       name: updates.name ? sanitizePlainText(updates.name, 120) : user.name,
       photoUrl: updates.photoUrl !== void 0 ? sanitizePlainText(updates.photoUrl, 500) : user.photoUrl,
-      preferredTheme: updates.preferredTheme && VALID_THEMES.includes(updates.preferredTheme) ? updates.preferredTheme : user.preferredTheme,
+      preferredTheme: updates.preferredTheme && VALID_THEMES2.includes(updates.preferredTheme) ? updates.preferredTheme : user.preferredTheme,
       preferredLanguage: updates.preferredLanguage ? sanitizePlainText(updates.preferredLanguage, 16) : user.preferredLanguage,
       preferredQuality: updates.preferredQuality ? sanitizePlainText(updates.preferredQuality, 16) : user.preferredQuality,
       parentalControl: typeof updates.parentalControl === "boolean" ? updates.parentalControl : user.parentalControl,
@@ -2233,7 +2532,10 @@ function createApiApp() {
       geminiConfigured: RecommendationService.isGeminiConfigured()
     });
   });
-  app2.get("/api/integrations/status", async (_req, res, next) => {
+  app2.get("/api/site-config", (_req, res) => {
+    res.json(SiteConfigService.getConfig());
+  });
+  app2.get("/api/integrations/status", requireAdmin, async (_req, res, next) => {
     try {
       const status = await AdminService.getIntegrationStatus();
       res.json(status);
@@ -2386,21 +2688,22 @@ function createApiApp() {
       next(err);
     }
   });
-  app2.get("/api/player/config", (_req, res) => {
+  app2.get("/api/player/config", requireAdmin, (_req, res) => {
     res.json(PlayerService.getConfig());
   });
   app2.get("/api/player/movie/:tmdbId", (req, res) => {
     try {
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
-        mediaType: "movie",
-        domain: typeof req.query.domain === "string" ? req.query.domain : void 0,
-        player: typeof req.query.player === "string" ? req.query.player : void 0,
-        colorHex: typeof req.query.color === "string" ? req.query.color : void 0
+        mediaType: "movie"
       });
-      res.json(payload);
+      res.json({
+        tmdbId: payload.tmdbId,
+        mediaType: payload.mediaType,
+        embedUrl: payload.embedUrl
+      });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Erro no player." });
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao carregar reprodu\xE7\xE3o." });
     }
   });
   app2.get("/api/player/tv/:tmdbId", (req, res) => {
@@ -2410,15 +2713,18 @@ function createApiApp() {
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
         mediaType: "tv",
-        domain: typeof req.query.domain === "string" ? req.query.domain : void 0,
-        player: typeof req.query.player === "string" ? req.query.player : void 0,
-        colorHex: typeof req.query.color === "string" ? req.query.color : void 0,
         seasonNumber,
         episodeNumber
       });
-      res.json(payload);
+      res.json({
+        tmdbId: payload.tmdbId,
+        mediaType: payload.mediaType,
+        embedUrl: payload.embedUrl,
+        seasonNumber: payload.seasonNumber,
+        episodeNumber: payload.episodeNumber
+      });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Erro no player." });
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao carregar reprodu\xE7\xE3o." });
     }
   });
   app2.get("/api/channels", (req, res) => {
@@ -2586,9 +2892,35 @@ function createApiApp() {
     if (!removed) return res.status(404).json({ error: "Canal n\xE3o encontrado." });
     res.json({ removed: true });
   });
+  app2.get("/api/admin/player-config", requireAdmin, (_req, res) => {
+    res.json(PlayerService.getConfig());
+  });
   app2.put("/api/admin/player-config", requireAdmin, (req, res) => {
     const updated = PlayerService.updateConfig(req.body ?? {});
     res.json(updated);
+  });
+  app2.get("/api/admin/site-config", requireAdmin, (_req, res) => {
+    res.json(SiteConfigService.getConfig());
+  });
+  app2.put("/api/admin/site-config", requireAdmin, (req, res) => {
+    const updated = SiteConfigService.updateConfig(req.body ?? {});
+    res.json(updated);
+  });
+  app2.get("/api/admin/catalog/custom", requireAdmin, (_req, res) => {
+    res.json({ items: SiteConfigService.listCustomCatalog() });
+  });
+  app2.post("/api/admin/catalog/custom", requireAdmin, (req, res) => {
+    try {
+      const saved = SiteConfigService.upsertCustomMedia(req.body ?? {});
+      res.status(201).json(saved);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao salvar m\xEDdia." });
+    }
+  });
+  app2.delete("/api/admin/catalog/custom/:id", requireAdmin, (req, res) => {
+    const removed = SiteConfigService.deleteCustomMedia(req.params.id);
+    if (!removed) return res.status(404).json({ error: "M\xEDdia personalizada n\xE3o encontrada." });
+    res.json({ removed: true });
   });
   app2.post("/api/admin/catalog/sync", requireAdmin, async (_req, res, next) => {
     try {

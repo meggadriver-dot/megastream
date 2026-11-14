@@ -119,6 +119,49 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "name", "avatarId", "avatarUrl", "hasPin", "isKids", "preferredTheme", "preferredLanguage", "preferredQuality", "autoplayNext", "createdAt", "updatedAt"]
+    },
+    "SiteConfig": {
+      "title": "SiteConfig",
+      "description": "Global site customization, branding, feature toggles, and announcement settings managed by admins.",
+      "type": "object",
+      "properties": {
+        "siteName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "siteSlogan": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "logoUrl": { "type": "string", "maxLength": 500 },
+        "defaultTheme": { "type": "string", "enum": ["cinematografico", "neon-roxo", "minimalista", "gold-premium", "3d-glass"] },
+        "accentColorHex": { "type": "string", "maxLength": 12 },
+        "announcementEnabled": { "type": "boolean" },
+        "announcementText": { "type": "string", "maxLength": 180 },
+        "enableChannels": { "type": "boolean" },
+        "enableAiPage": { "type": "boolean" },
+        "enablePlansPage": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "footerText": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["siteName", "siteSlogan", "defaultTheme", "announcementEnabled", "enableChannels", "enableAiPage", "enablePlansPage", "maintenanceMode", "footerText", "updatedAt"]
+    },
+    "CustomMediaItem": {
+      "title": "CustomMediaItem",
+      "description": "Admin-added or modified movie/series entry or custom stream override.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tmdbId": { "type": "number" },
+        "mediaType": { "type": "string", "enum": ["movie", "tv"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "originalTitle": { "type": "string", "maxLength": 160 },
+        "overview": { "type": "string", "maxLength": 1000 },
+        "posterPath": { "type": "string", "maxLength": 500 },
+        "backdropPath": { "type": "string", "maxLength": 500 },
+        "releaseYear": { "type": "string", "maxLength": 8 },
+        "voteAverage": { "type": "number" },
+        "customStreamUrl": { "type": "string", "maxLength": 500 },
+        "featured": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "tmdbId", "mediaType", "title", "overview", "featured", "active", "updatedAt"]
     }
   },
   "firestore": {
@@ -149,6 +192,14 @@
     "/admins/{adminId}": {
       "schema": { "$ref": "#/entities/AdminMarker" },
       "description": "Trusted administrator lookup collection."
+    },
+    "/siteConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SiteConfig" },
+      "description": "Global site customization managed exclusively by administrators."
+    },
+    "/customCatalog/{mediaId}": {
+      "schema": { "$ref": "#/entities/CustomMediaItem" },
+      "description": "Custom or overridden catalog items managed exclusively by administrators."
     }
   }
 }

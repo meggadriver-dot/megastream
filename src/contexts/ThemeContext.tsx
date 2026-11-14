@@ -50,6 +50,7 @@ export const MEGASTREAM_THEMES: ThemeMeta[] = [
 interface ThemeContextValue {
   theme: ThemeId;
   setTheme: (next: ThemeId) => void;
+  setThemeIfUnset: (next: ThemeId) => void;
   themes: ThemeMeta[];
 }
 
@@ -67,15 +68,22 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   const setTheme = (next: ThemeId) => {
+    localStorage.setItem(THEME_STORAGE_KEY, next);
     setThemeState(next);
   };
 
+  const setThemeIfUnset = (next: ThemeId) => {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    if (!saved && MEGASTREAM_THEMES.some((t) => t.id === next)) {
+      setThemeState(next);
+    }
+  };
+
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, themes: MEGASTREAM_THEMES }}>
+    <ThemeContext.Provider value={{ theme, setTheme, setThemeIfUnset, themes: MEGASTREAM_THEMES }}>
       {children}
     </ThemeContext.Provider>
   );

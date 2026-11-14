@@ -1,77 +1,168 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { doc, serverTimestamp, setDoc, deleteDoc } from 'firebase/firestore';
 import {
   Activity,
+  Check,
   Database,
+  Edit3,
+  ExternalLink,
   FileText,
   Film,
+  Globe,
   Layers,
   Lock,
+  LogOut,
+  Menu,
+  Palette,
   Play,
+  Plus,
   RefreshCw,
-  Settings,
   ShieldCheck,
   Sliders,
   Trash2,
   Tv,
   Users,
+  X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type {
   AdminDashboardStats,
+  AdminTab,
   ChannelCategory,
+  CustomMediaItem,
   IntegrationStatus,
   LiveChannel,
+  MediaType,
   MegaEmbedDomain,
   MegaEmbedPlayer,
+  PlanId,
   PlayerConfig,
+  SiteConfig,
   SystemLogEntry,
+  ThemeId,
   UserProfile,
 } from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
+import { useTheme } from '../contexts/ThemeContext';
+import { db } from '../lib/firebase';
 import { apiRequest } from '../services/apiClient';
 
-type AdminTab =
-  | 'dashboard'
-  | 'users'
-  | 'catalog'
-  | 'channels'
-  | 'players'
-  | 'logs'
-  | 'integrations';
+interface NavGroup {
+  group: string;
+  items: Array<{
+    id: AdminTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }>;
+}
+
+const ADMIN_NAV_GROUPS: NavGroup[] = [
+  {
+    group: 'Visão Geral',
+    items: [{ id: 'dashboard', label: 'Dashboard', icon: Activity }],
+  },
+  {
+    group: 'Site & Aparência',
+    items: [{ id: 'site', label: 'Personalizar Site', icon: Palette }],
+  },
+  {
+    group: 'Conteúdo',
+    items: [
+      { id: 'catalog', label: 'Catálogo & Mídias', icon: Film },
+      { id: 'channels', label: 'Canais Ao Vivo', icon: Tv },
+    ],
+  },
+  {
+    group: 'Sistema & Acesso',
+    items: [
+      { id: 'players', label: 'Players & Fontes', icon: Play },
+      { id: 'users', label: 'Usuários & Planos', icon: Users },
+      { id: 'logs', label: 'Logs & Integrações', icon: FileText },
+    ],
+  },
+];
+
+const TAB_TITLES: Record<AdminTab, string> = {
+  dashboard: 'Dashboard Geral',
+  site: 'Personalização do Site',
+  catalog: 'Catálogo & Mídias',
+  channels: 'Canais Ao Vivo',
+  players: 'Players, Fontes e Domínios',
+  users: 'Usuários & Assinaturas',
+  logs: 'Logs & Integrações',
+};
 
 export function AdminPage() {
-  const { firebaseUser, profile, signInWithGoogle } = useAuth();
+  const { firebaseUser, profile, signInWithGoogle, logout } = useAuth();
+  const { siteConfig, applySiteConfig } = useSiteConfig();
+  const { themes } = useTheme();
+
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [stats, setStats] = useState<AdminDashboardStats | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [channels, setChannels] = useState<LiveChannel[]>([]);
+  const [customCatalog, setCustomCatalog] = useState<CustomMediaItem[]>([]);
   const [playerConfig, setPlayerConfig] = useState<PlayerConfig | null>(null);
+  const [siteDraft, setSiteDraft] = useState<SiteConfig>(siteConfig);
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  // Channel form
+  // User search
+  const [userSearch, setUserSearch] = useState('');
+
+  // Channel form (create or edit)
+  const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [chName, setChName] = useState('');
   const [chCategory, setChCategory] = useState<ChannelCategory>('Notícias');
   const [chUrl, setChUrl] = useState('');
+  const [chLogo, setChLogo] = useState('');
   const [chDesc, setChDesc] = useState('');
+  const [chActive, setChActive] = useState(true);
+
+  // Custom Media form (create or edit)
+  const [editingMediaId, setEditingMediaId] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<MediaType>('movie');
+  const [mediaTmdbId, setMediaTmdbId] = useState('');
+  const [mediaTitle, setMediaTitle] = useState('');
+  const [mediaOriginalTitle, setMediaOriginalTitle] = useState('');
+  const [mediaYear, setMediaYear] = useState(String(new Date().getFullYear()));
+  const [mediaVote, setMediaVote] = useState('8.5');
+  const [mediaPoster, setMediaPoster] = useState('');
+  const [mediaBackdrop, setMediaBackdrop] = useState('');
+  const [mediaOverview, setMediaOverview] = useState('');
+  const [mediaStreamUrl, setMediaStreamUrl] = useState('');
+  const [mediaFeatured, setMediaFeatured] = useState(false);
+  const [mediaActive, setMediaActive] = useState(true);
+
+  const showFeedback = (msg: string) => {
+    setActionMsg(msg);
+    setTimeout(() => {
+      setActionMsg((curr) => (curr === msg ? null : curr));
+    }, 5000);
+  };
 
   const loadAdminData = useCallback(async () => {
     setLoading(true);
     setAuthError(null);
     try {
-      const [dash, userRes, chanRes, pCfg, logRes] = await Promise.all([
+      const [dash, userRes, chanRes, pCfg, logRes, sCfg, customRes] = await Promise.all([
         apiRequest<{ stats: AdminDashboardStats; integrations: IntegrationStatus }>(
           '/api/admin/dashboard'
         ),
         apiRequest<{ items: UserProfile[] }>('/api/admin/users'),
         apiRequest<{ items: LiveChannel[] }>('/api/admin/channels'),
-        apiRequest<PlayerConfig>('/api/player/config'),
+        apiRequest<PlayerConfig>('/api/admin/player-config'),
         apiRequest<{ items: SystemLogEntry[] }>('/api/admin/logs'),
+        apiRequest<SiteConfig>('/api/admin/site-config'),
+        apiRequest<{ items: CustomMediaItem[] }>('/api/admin/catalog/custom'),
       ]);
       setStats(dash.stats);
       setIntegrations(dash.integrations);
@@ -79,6 +170,8 @@ export function AdminPage() {
       setChannels(chanRes.items);
       setPlayerConfig(pCfg);
       setLogs(logRes.items);
+      setSiteDraft(sCfg);
+      setCustomCatalog(customRes.items);
     } catch (err) {
       setAuthError(
         err instanceof Error
@@ -95,66 +188,235 @@ export function AdminPage() {
       void loadAdminData();
     } else {
       setLoading(false);
-      // Still fetch public integration status for visibility
-      apiRequest<IntegrationStatus>('/api/integrations/status')
-        .then(setIntegrations)
-        .catch(() => {});
     }
   }, [firebaseUser, loadAdminData]);
 
-  const handleToggleBlock = async (u: UserProfile) => {
-    const updated = await apiRequest<UserProfile>(`/api/admin/users/${u.uid}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ blocked: !u.blocked }),
-    });
-    setUsers((prev) => prev.map((x) => (x.uid === updated.uid ? updated : x)));
-    setActionMsg(`Conta de ${updated.email} ${updated.blocked ? 'bloqueada' : 'desbloqueada'}.`);
-  };
-
-  const handleRoleChange = async (u: UserProfile, role: 'user' | 'admin') => {
-    const updated = await apiRequest<UserProfile>(`/api/admin/users/${u.uid}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role }),
-    });
-    setUsers((prev) => prev.map((x) => (x.uid === updated.uid ? updated : x)));
-    setActionMsg(`Permissão de ${updated.email} alterada para ${role}.`);
-  };
-
-  const handleCreateChannel = async (e: React.FormEvent) => {
+  // --- Site Customization Handlers ---
+  const handleSaveSiteConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    setActionMsg(null);
+    setSaving(true);
     try {
-      const created = await apiRequest<LiveChannel>('/api/admin/channels', {
+      const saved = await apiRequest<SiteConfig>('/api/admin/site-config', {
+        method: 'PUT',
+        body: JSON.stringify(siteDraft),
+      });
+      setSiteDraft(saved);
+      applySiteConfig(saved);
+
+      // Sync to Firestore /siteConfig/global cleanly for persistence
+      try {
+        await setDoc(doc(db, 'siteConfig', 'global'), {
+          siteName: saved.siteName,
+          siteSlogan: saved.siteSlogan,
+          logoUrl: saved.logoUrl,
+          defaultTheme: saved.defaultTheme,
+          accentColorHex: saved.accentColorHex,
+          announcementEnabled: saved.announcementEnabled,
+          announcementText: saved.announcementText,
+          enableChannels: saved.enableChannels,
+          enableAiPage: saved.enableAiPage,
+          enablePlansPage: saved.enablePlansPage,
+          maintenanceMode: saved.maintenanceMode,
+          footerText: saved.footerText,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Backend store already persisted config cleanly
+      }
+
+      showFeedback('Personalização e configurações do site salvas e aplicadas em tempo real.');
+    } catch (err) {
+      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar configurações do site.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // --- Custom Catalog Handlers ---
+  const resetMediaForm = () => {
+    setEditingMediaId(null);
+    setMediaType('movie');
+    setMediaTmdbId('');
+    setMediaTitle('');
+    setMediaOriginalTitle('');
+    setMediaYear(String(new Date().getFullYear()));
+    setMediaVote('8.5');
+    setMediaPoster('');
+    setMediaBackdrop('');
+    setMediaOverview('');
+    setMediaStreamUrl('');
+    setMediaFeatured(false);
+    setMediaActive(true);
+  };
+
+  const handleEditCustomMedia = (item: CustomMediaItem) => {
+    setEditingMediaId(item.id);
+    setMediaType(item.mediaType);
+    setMediaTmdbId(String(item.tmdbId));
+    setMediaTitle(item.title);
+    setMediaOriginalTitle(item.originalTitle);
+    setMediaYear(item.releaseYear);
+    setMediaVote(String(item.voteAverage));
+    setMediaPoster(item.posterPath || '');
+    setMediaBackdrop(item.backdropPath || '');
+    setMediaOverview(item.overview);
+    setMediaStreamUrl(item.customStreamUrl || '');
+    setMediaFeatured(item.featured);
+    setMediaActive(item.active);
+  };
+
+  const handleSaveCustomMedia = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const saved = await apiRequest<CustomMediaItem>('/api/admin/catalog/custom', {
         method: 'POST',
         body: JSON.stringify({
+          id: editingMediaId || undefined,
+          mediaType,
+          tmdbId: mediaTmdbId ? Number(mediaTmdbId) : undefined,
+          title: mediaTitle,
+          originalTitle: mediaOriginalTitle || mediaTitle,
+          releaseYear: mediaYear,
+          voteAverage: Number(mediaVote),
+          posterPath: mediaPoster,
+          backdropPath: mediaBackdrop,
+          overview: mediaOverview,
+          customStreamUrl: mediaStreamUrl,
+          featured: mediaFeatured,
+          active: mediaActive,
+        }),
+      });
+
+      try {
+        await setDoc(doc(db, 'customCatalog', saved.id), {
+          id: saved.id,
+          tmdbId: saved.tmdbId,
+          mediaType: saved.mediaType,
+          title: saved.title,
+          originalTitle: saved.originalTitle,
+          overview: saved.overview,
+          posterPath: saved.posterPath,
+          backdropPath: saved.backdropPath,
+          releaseYear: saved.releaseYear,
+          voteAverage: saved.voteAverage,
+          ...(saved.customStreamUrl ? { customStreamUrl: saved.customStreamUrl } : {}),
+          featured: saved.featured,
+          active: saved.active,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Non-blocking Firestore mirror
+      }
+
+      setCustomCatalog((prev) => {
+        const exists = prev.some((x) => x.id === saved.id);
+        return exists ? prev.map((x) => (x.id === saved.id ? saved : x)) : [saved, ...prev];
+      });
+      resetMediaForm();
+      showFeedback(`Título "${saved.title}" salvo no catálogo.`);
+    } catch (err) {
+      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar mídia.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteCustomMedia = async (id: string) => {
+    await apiRequest(`/api/admin/catalog/custom/${id}`, { method: 'DELETE' });
+    setCustomCatalog((prev) => prev.filter((m) => m.id !== id));
+    try {
+      await deleteDoc(doc(db, 'customCatalog', id));
+    } catch {
+      // Ignore if not in Firestore
+    }
+    if (editingMediaId === id) resetMediaForm();
+    showFeedback('Mídia personalizada removida.');
+  };
+
+  // --- Channel Handlers ---
+  const resetChannelForm = () => {
+    setEditingChannelId(null);
+    setChName('');
+    setChCategory('Notícias');
+    setChUrl('');
+    setChLogo('');
+    setChDesc('');
+    setChActive(true);
+  };
+
+  const handleEditChannel = (ch: LiveChannel) => {
+    setEditingChannelId(ch.id);
+    setChName(ch.name);
+    setChCategory(ch.category);
+    setChUrl(ch.streamUrl);
+    setChLogo(ch.logoUrl || '');
+    setChDesc(ch.description || '');
+    setChActive(ch.active);
+  };
+
+  const handleSaveChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const saved = await apiRequest<LiveChannel>('/api/admin/channels', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: editingChannelId || undefined,
           name: chName,
           category: chCategory,
           streamUrl: chUrl,
+          logoUrl: chLogo || undefined,
           description: chDesc,
-          active: true,
+          active: chActive,
         }),
       });
-      setChannels((prev) => [created, ...prev]);
-      setChName('');
-      setChUrl('');
-      setChDesc('');
-      setActionMsg(`Canal autorizado "${created.name}" cadastrado.`);
+      setChannels((prev) => {
+        const exists = prev.some((c) => c.id === saved.id);
+        return exists ? prev.map((c) => (c.id === saved.id ? saved : c)) : [saved, ...prev];
+      });
+      resetChannelForm();
+      showFeedback(`Canal "${saved.name}" salvo com sucesso.`);
     } catch (err) {
-      setActionMsg(err instanceof Error ? err.message : 'Erro ao cadastrar canal.');
+      showFeedback(err instanceof Error ? err.message : 'Erro ao salvar canal.');
     }
+  };
+
+  const handleToggleChannelActive = async (ch: LiveChannel) => {
+    const updated = await apiRequest<LiveChannel>('/api/admin/channels', {
+      method: 'POST',
+      body: JSON.stringify({ ...ch, active: !ch.active }),
+    });
+    setChannels((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    showFeedback(`Canal "${updated.name}" ${updated.active ? 'ativado' : 'desativado'}.`);
   };
 
   const handleDeleteChannel = async (id: string) => {
     await apiRequest(`/api/admin/channels/${id}`, { method: 'DELETE' });
     setChannels((prev) => prev.filter((c) => c.id !== id));
+    if (editingChannelId === id) resetChannelForm();
+    showFeedback('Canal removido.');
   };
 
+  // --- User Handlers ---
+  const handleUserUpdate = async (
+    u: UserProfile,
+    updates: Partial<Pick<UserProfile, 'blocked' | 'role' | 'plan'>>
+  ) => {
+    const updated = await apiRequest<UserProfile>(`/api/admin/users/${u.uid}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+    setUsers((prev) => prev.map((x) => (x.uid === updated.uid ? updated : x)));
+    showFeedback(`Conta ${updated.email} atualizada.`);
+  };
+
+  // --- Catalog Sync & Cache ---
   const handleSyncCatalog = async () => {
     const res = await apiRequest<{ count: number; syncedAt: string; source: string }>(
       '/api/admin/catalog/sync',
       { method: 'POST' }
     );
-    setActionMsg(`Catálogo sincronizado: ${res.count} títulos (${res.source}).`);
+    showFeedback(`Catálogo sincronizado: ${res.count} títulos atualizados.`);
     await loadAdminData();
   };
 
@@ -162,10 +424,11 @@ export function AdminPage() {
     const res = await apiRequest<{ cleared: number }>('/api/admin/cache/clear', {
       method: 'POST',
     });
-    setActionMsg(`Cache limpo: ${res.cleared} entradas removidas.`);
+    showFeedback(`Cache limpo: ${res.cleared} entradas removidas.`);
     await loadAdminData();
   };
 
+  // --- Player Config Handler (Admin Only) ---
   const handleSavePlayerConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!playerConfig) return;
@@ -174,579 +437,1333 @@ export function AdminPage() {
       body: JSON.stringify(playerConfig),
     });
     setPlayerConfig(updated);
-    setActionMsg('Configuração global do player MegaEmbed atualizada.');
+    showFeedback('Configuração global de players e domínios atualizada.');
   };
 
-  // Unauthenticated or Unauthorized Backend Gate
+  // RESTRICTED ADMIN GATE (Separate Standalone View — Never leaks server/source/domain details!)
   if (!firebaseUser || authError) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6">
-        <div className="ms-glass rounded-3xl p-8 text-center space-y-4">
-          <div className="w-14 h-14 rounded-2xl mx-auto bg-sky-500/15 flex items-center justify-center text-sky-400">
+      <div className="min-h-screen bg-[#040712] text-white flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl bg-[#0a1022] border border-white/10 p-8 text-center space-y-5">
+          <div className="w-14 h-14 rounded-2xl mx-auto bg-sky-500/15 border border-sky-400/25 flex items-center justify-center text-sky-400">
             <Lock className="w-7 h-7" />
           </div>
-          <h1 className="font-display text-2xl font-extrabold text-white">
-            Painel Administrativo MegaStream
-          </h1>
-          <p className="text-sm text-slate-300 max-w-lg mx-auto">
-            {authError ||
-              'Área restrita validada no servidor. Entre com uma conta administradora autorizada para gerenciar usuários, catálogo, canais e configurações.'}
-          </p>
-          <div className="flex flex-wrap justify-center gap-3 pt-2">
+          <div className="space-y-2">
+            <p className="text-[11px] font-mono-tabular uppercase tracking-widest text-sky-400">
+              Área Restrita
+            </p>
+            <h1 className="font-display text-2xl font-extrabold text-white">
+              Console Administrativo
+            </h1>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              {authError ||
+                'Entre com uma conta administradora autorizada para gerenciar aparência do site, catálogo, players, canais e usuários.'}
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2.5 pt-2">
             {!firebaseUser ? (
               <button
                 type="button"
                 onClick={() => void signInWithGoogle()}
-                className="px-6 py-3 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
                 style={{ backgroundColor: 'var(--ms-accent)' }}
               >
-                Entrar com Google (Admin)
+                Entrar como Administrador
               </button>
             ) : (
-              <Link
-                to="/"
-                className="px-6 py-3 rounded-xl text-sm font-semibold text-white"
-                style={{ backgroundColor: 'var(--ms-accent)' }}
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="w-full h-11 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white cursor-pointer"
               >
-                Voltar ao Início
-              </Link>
+                Trocar de Conta
+              </button>
             )}
+            <Link
+              to="/"
+              className="w-full h-11 rounded-xl border border-white/10 hover:bg-white/5 text-sm font-medium text-slate-300 flex items-center justify-center gap-2"
+            >
+              Voltar para {siteConfig.siteName}
+            </Link>
           </div>
         </div>
-
-        {integrations && (
-          <div className="ms-glass rounded-3xl p-6 space-y-3">
-            <h2 className="font-display text-base font-bold text-white">
-              Resumo Público de Integrações
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div className="p-3 rounded-xl bg-black/30 flex justify-between">
-                <span className="text-slate-400">TMDB API (TMDB_ACCESS_TOKEN)</span>
-                <span className={integrations.tmdbConfigured ? 'text-emerald-300' : 'text-amber-300'}>
-                  {integrations.tmdbConfigured ? 'Conectado ao vivo' : 'Modo Demonstração'}
-                </span>
-              </div>
-              <div className="p-3 rounded-xl bg-black/30 flex justify-between">
-                <span className="text-slate-400">Gemini IA (Servidor)</span>
-                <span className={integrations.geminiConfigured ? 'text-emerald-300' : 'text-amber-300'}>
-                  {integrations.geminiConfigured ? 'Configurado' : 'Pendente'}
-                </span>
-              </div>
-              <div className="p-3 rounded-xl bg-black/30 flex justify-between">
-                <span className="text-slate-400">Firebase Auth & Firestore</span>
-                <span className="text-emerald-300">Provisionado</span>
-              </div>
-              <div className="p-3 rounded-xl bg-black/30 flex justify-between">
-                <span className="text-slate-400">MegaEmbed Player API</span>
-                <span className="text-emerald-300">Configurável</span>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
 
-  if (loading || !stats) {
-    return <div className="h-64 rounded-3xl bg-white/5 animate-pulse" />;
-  }
+  const maxUsage = stats
+    ? Math.max(1, ...stats.usageSeries.map((d) => d.playbacks + d.searches))
+    : 1;
 
-  const tabs: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-    { id: 'dashboard', label: 'Dashboard', icon: Activity },
-    { id: 'users', label: 'Usuários', icon: Users },
-    { id: 'catalog', label: 'Catálogo TMDB', icon: Film },
-    { id: 'channels', label: 'Canais', icon: Tv },
-    { id: 'players', label: 'Players', icon: Play },
-    { id: 'logs', label: 'Logs', icon: FileText },
-    { id: 'integrations', label: 'Integrações', icon: Layers },
-  ];
+  const filteredUsers = users.filter((u) => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return true;
+    return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+  });
 
-  const maxUsage = Math.max(1, ...stats.usageSeries.map((d) => d.playbacks + d.searches));
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="inline-flex items-center gap-2 text-xs font-semibold text-sky-300">
+  const renderSidebarNav = () => (
+    <div className="flex flex-col h-full">
+      <div className="h-16 px-5 border-b border-white/10 flex items-center justify-between">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0"
+            style={{ backgroundColor: 'var(--ms-accent)' }}
+          >
             <ShieldCheck className="w-4 h-4" />
-            Administração ({profile?.email})
           </div>
-          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-white mt-0.5">
-            Painel Administrativo
-          </h1>
+          <div className="min-w-0">
+            <p className="font-display text-sm font-bold text-white truncate">
+              {siteConfig.siteName}
+            </p>
+            <p className="text-[10px] font-mono-tabular uppercase tracking-wider text-sky-400">
+              Admin Console
+            </p>
+          </div>
         </div>
-
         <button
           type="button"
-          onClick={() => void loadAdminData()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-white hover:bg-white/10 cursor-pointer"
+          onClick={() => setMobileMenuOpen(false)}
+          className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white"
+          aria-label="Fechar menu admin"
         >
-          <RefreshCw className="w-4 h-4" />
-          Atualizar dados
+          <X className="w-5 h-5" />
         </button>
       </div>
 
-      {actionMsg && (
-        <div role="status" className="ms-glass rounded-xl px-4 py-2.5 text-xs sm:text-sm text-emerald-300">
-          {actionMsg}
-        </div>
-      )}
-
-      {/* Admin Navigation Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto ms-scrollbar-hide pb-1" role="tablist">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setActiveTab(tab.id)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                active ? 'text-white ms-glow' : 'ms-glass text-slate-300 hover:text-white'
-              }`}
-              style={active ? { backgroundColor: 'var(--ms-accent)' } : undefined}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* TAB: DASHBOARD */}
-      {activeTab === 'dashboard' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="ms-glass rounded-2xl p-5">
-              <p className="text-xs text-slate-400">Total de Usuários</p>
-              <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
-                {stats.totalUsers}
-              </p>
-              <p className="text-xs text-sky-300 mt-1 font-mono-tabular">
-                {stats.activeUsers} ativos
-              </p>
-            </div>
-            <div className="ms-glass rounded-2xl p-5">
-              <p className="text-xs text-slate-400">Catálogo Sincronizado</p>
-              <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
-                {stats.catalogMovies + stats.catalogSeries}
-              </p>
-              <p className="text-xs text-slate-400 mt-1 font-mono-tabular">
-                {stats.catalogMovies} filmes · {stats.catalogSeries} séries
-              </p>
-            </div>
-            <div className="ms-glass rounded-2xl p-5">
-              <p className="text-xs text-slate-400">Reproduções Registradas</p>
-              <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
-                {stats.totalPlaybacks}
-              </p>
-              <p className="text-xs text-slate-400 mt-1">Player MegaEmbed</p>
-            </div>
-            <div className="ms-glass rounded-2xl p-5">
-              <p className="text-xs text-slate-400">Canais & Assinaturas</p>
-              <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
-                {stats.channelsCount} / {stats.activeSubscriptions}
-              </p>
-              <p className="text-xs text-slate-400 mt-1">Canais / Assinaturas ativas</p>
-            </div>
-          </div>
-
-          {/* Usage Chart */}
-          <div className="ms-glass rounded-3xl p-6 space-y-4">
-            <h2 className="font-display text-lg font-bold text-white">
-              Visualizações e Buscas (Últimos 7 dias)
-            </h2>
-            <div className="grid grid-cols-7 gap-3 items-end h-44 pt-4">
-              {stats.usageSeries.map((day) => {
-                const total = day.playbacks + day.searches;
-                const heightPct = Math.max(12, Math.round((total / maxUsage) * 100));
-                return (
-                  <div key={day.label} className="flex flex-col items-center gap-2 h-full justify-end">
-                    <span className="text-[11px] text-slate-400 font-mono-tabular">{total}</span>
-                    <div
-                      className="w-full max-w-[44px] rounded-t-xl transition-all"
-                      style={{
-                        height: `${heightPct}%`,
-                        background:
-                          'linear-gradient(180deg, var(--ms-accent-bright) 0%, var(--ms-accent) 100%)',
-                      }}
-                    />
-                    <span className="text-xs text-slate-300">{day.label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB: USERS */}
-      {activeTab === 'users' && (
-        <div className="ms-glass rounded-3xl overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b text-xs text-slate-400" style={{ borderColor: 'var(--ms-border)' }}>
-                <th className="p-4">Nome</th>
-                <th className="p-4">E-mail</th>
-                <th className="p-4">Permissão</th>
-                <th className="p-4">Plano</th>
-                <th className="p-4">Status</th>
-                <th className="p-4 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y" style={{ borderColor: 'var(--ms-border)' }}>
-              {users.map((u) => (
-                <tr key={u.uid} className="hover:bg-white/5">
-                  <td className="p-4 font-semibold text-white">{u.name}</td>
-                  <td className="p-4 text-slate-300">{u.email}</td>
-                  <td className="p-4">
-                    <select
-                      value={u.role}
-                      onChange={(e) =>
-                        void handleRoleChange(u, e.target.value as 'user' | 'admin')
-                      }
-                      aria-label={`Permissão de ${u.email}`}
-                      className="px-2.5 py-1 rounded-lg bg-black/40 border text-xs text-white"
-                      style={{ borderColor: 'var(--ms-border)' }}
-                    >
-                      <option value="user">Usuário</option>
-                      <option value="admin">Administrador</option>
-                    </select>
-                  </td>
-                  <td className="p-4 text-xs uppercase text-sky-300">{u.plan}</td>
-                  <td className="p-4 text-xs">
-                    {u.blocked ? (
-                      <span className="text-red-300">Bloqueado</span>
-                    ) : (
-                      <span className="text-emerald-300">Ativo</span>
-                    )}
-                  </td>
-                  <td className="p-4 text-right">
-                    <button
-                      type="button"
-                      onClick={() => void handleToggleBlock(u)}
-                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-white cursor-pointer"
-                    >
-                      {u.blocked ? 'Desbloquear' : 'Bloquear'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* TAB: CATALOG SYNC */}
-      {activeTab === 'catalog' && (
-        <div className="ms-glass rounded-3xl p-6 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="font-display text-lg font-bold text-white flex items-center gap-2">
-                <Database className="w-5 h-5 text-sky-400" />
-                Importação Automática TMDB
-              </h2>
-              <p className="text-sm text-slate-400 mt-1">
-                Última sincronização:{' '}
-                {integrations?.lastSyncAt
-                  ? new Date(integrations.lastSyncAt).toLocaleString('pt-BR')
-                  : 'Automática ao iniciar'}
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => void handleClearCache()}
-                className="px-4 py-2.5 rounded-xl ms-glass text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
-              >
-                Limpar Cache ({integrations?.cacheEntries ?? 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleSyncCatalog()}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-white cursor-pointer"
-                style={{ backgroundColor: 'var(--ms-accent)' }}
-              >
-                Sincronizar Filmes e Séries
-              </button>
-            </div>
-          </div>
-          <p className="text-xs text-slate-400">
-            Todos os registros utilizam o <code className="text-sky-300">tmdbId</code> como chave única sem duplicação e sem apagar favoritos ou histórico dos usuários.
-          </p>
-        </div>
-      )}
-
-      {/* TAB: CHANNELS */}
-      {activeTab === 'channels' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <form
-            onSubmit={handleCreateChannel}
-            className="lg:col-span-5 ms-glass rounded-3xl p-6 space-y-4"
-          >
-            <h2 className="font-display text-lg font-bold text-white">
-              Cadastrar Canal Autorizado
-            </h2>
-            <div>
-              <label htmlFor="ch-name" className="block text-xs text-slate-300 mb-1">
-                Nome da Emissora / Canal
-              </label>
-              <input
-                id="ch-name"
-                type="text"
-                value={chName}
-                onChange={(e) => setChName(e.target.value)}
-                required
-                placeholder="Ex: Canal Cultura Oficial"
-                className="w-full h-10 px-3.5 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              />
-            </div>
-            <div>
-              <label htmlFor="ch-cat" className="block text-xs text-slate-300 mb-1">
-                Categoria
-              </label>
-              <select
-                id="ch-cat"
-                value={chCategory}
-                onChange={(e) => setChCategory(e.target.value as ChannelCategory)}
-                className="w-full h-10 px-3.5 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              >
-                <option value="Notícias">Notícias</option>
-                <option value="Esportes">Esportes</option>
-                <option value="Entretenimento">Entretenimento</option>
-                <option value="Filmes">Filmes</option>
-                <option value="Variedades">Variedades</option>
-                <option value="Infantil">Infantil</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="ch-url" className="block text-xs text-slate-300 mb-1">
-                URL de Transmissão Autorizada (https://)
-              </label>
-              <input
-                id="ch-url"
-                type="url"
-                value={chUrl}
-                onChange={(e) => setChUrl(e.target.value)}
-                required
-                placeholder="https://..."
-                className="w-full h-10 px-3.5 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              />
-            </div>
-            <div>
-              <label htmlFor="ch-desc" className="block text-xs text-slate-300 mb-1">
-                Descrição
-              </label>
-              <input
-                id="ch-desc"
-                type="text"
-                value={chDesc}
-                onChange={(e) => setChDesc(e.target.value)}
-                placeholder="Programação ao vivo autorizada"
-                className="w-full h-10 px-3.5 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
-              style={{ backgroundColor: 'var(--ms-accent)' }}
-            >
-              Salvar Canal Autorizado
-            </button>
-          </form>
-
-          <div className="lg:col-span-7 ms-glass rounded-3xl p-6 space-y-3">
-            <h2 className="font-display text-lg font-bold text-white">
-              Canais Cadastrados ({channels.length})
-            </h2>
-            {channels.length === 0 ? (
-              <p className="text-sm text-slate-400">Nenhum canal cadastrado ainda.</p>
-            ) : (
-              <div className="space-y-2.5">
-                {channels.map((ch) => (
-                  <div
-                    key={ch.id}
-                    className="p-3.5 rounded-2xl bg-black/30 flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-white truncate">{ch.name}</p>
-                      <p className="text-xs text-sky-300">{ch.category}</p>
-                      <p className="text-[11px] text-slate-400 truncate">{ch.streamUrl}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteChannel(ch.id)}
-                      aria-label={`Remover canal ${ch.name}`}
-                      className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-red-500/15 text-red-300 hover:bg-red-500/30 cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB: PLAYERS */}
-      {activeTab === 'players' && playerConfig && (
-        <form onSubmit={handleSavePlayerConfig} className="ms-glass rounded-3xl p-6 space-y-5 max-w-2xl">
-          <h2 className="font-display text-lg font-bold text-white flex items-center gap-2">
-            <Sliders className="w-5 h-5 text-sky-400" />
-            Configuração Global do Player MegaEmbed
-          </h2>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label htmlFor="adm-domain" className="block text-xs text-slate-300 mb-1">
-                Domínio Padrão
-              </label>
-              <select
-                id="adm-domain"
-                value={playerConfig.defaultDomain}
-                onChange={(e) =>
-                  setPlayerConfig({
-                    ...playerConfig,
-                    defaultDomain: e.target.value as MegaEmbedDomain,
-                  })
-                }
-                className="w-full h-10 px-3 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              >
-                {playerConfig.availableDomains.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="adm-player" className="block text-xs text-slate-300 mb-1">
-                Player Padrão
-              </label>
-              <select
-                id="adm-player"
-                value={playerConfig.defaultPlayer}
-                onChange={(e) =>
-                  setPlayerConfig({
-                    ...playerConfig,
-                    defaultPlayer: e.target.value as MegaEmbedPlayer,
-                  })
-                }
-                className="w-full h-10 px-3 rounded-xl bg-black/40 border text-sm text-white"
-                style={{ borderColor: 'var(--ms-border)' }}
-              >
-                {playerConfig.availablePlayers.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="adm-color" className="block text-xs text-slate-300 mb-1">
-                Cor Hex (#color:)
-              </label>
-              <input
-                id="adm-color"
-                type="text"
-                value={playerConfig.defaultColorHex}
-                onChange={(e) =>
-                  setPlayerConfig({ ...playerConfig, defaultColorHex: e.target.value })
-                }
-                className="w-full h-10 px-3 rounded-xl bg-black/40 border text-sm text-white font-mono-tabular"
-                style={{ borderColor: 'var(--ms-border)' }}
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
-            style={{ backgroundColor: 'var(--ms-accent)' }}
-          >
-            Salvar Configuração do Player
-          </button>
-        </form>
-      )}
-
-      {/* TAB: LOGS */}
-      {activeTab === 'logs' && (
-        <div className="ms-glass rounded-3xl p-6 space-y-3">
-          <h2 className="font-display text-lg font-bold text-white">Logs do Sistema</h2>
-          <div className="space-y-2 max-h-[420px] overflow-y-auto font-mono-tabular text-xs">
-            {logs.map((log) => (
-              <div key={log.id} className="p-3 rounded-xl bg-black/35 flex flex-wrap gap-3 items-baseline">
-                <span className="text-slate-500">
-                  {new Date(log.timestamp).toLocaleString('pt-BR')}
-                </span>
-                <span
-                  className={
-                    log.level === 'error'
-                      ? 'text-red-400'
-                      : log.level === 'warn'
-                        ? 'text-amber-300'
-                        : 'text-sky-300'
-                  }
+      <nav className="flex-1 p-3 space-y-5 overflow-y-auto" aria-label="Menu Administrativo">
+        {ADMIN_NAV_GROUPS.map((group) => (
+          <div key={group.group} className="space-y-1">
+            <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              {group.group}
+            </p>
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    setMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                    active
+                      ? 'text-white'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                  style={active ? { backgroundColor: 'var(--ms-accent)' } : undefined}
                 >
-                  [{log.service}]
-                </span>
-                <span className="text-slate-200">{log.message}</span>
-              </div>
-            ))}
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              );
+            })}
           </div>
+        ))}
+      </nav>
+
+      <div className="p-3 border-t border-white/10 space-y-1.5">
+        <Link
+          to="/"
+          className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-200 bg-white/5 hover:bg-white/10"
+        >
+          <span>Abrir Site Público</span>
+          <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+        </Link>
+        <button
+          type="button"
+          onClick={() => void logout()}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-red-300 hover:bg-red-500/10 cursor-pointer"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          Encerrar Sessão
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#040712] text-white flex">
+      {/* Desktop Dedicated Admin Sidebar (256px) */}
+      <aside className="hidden lg:block w-64 shrink-0 bg-[#070b18] border-r border-white/10 fixed inset-y-0 left-0 z-30">
+        {renderSidebarNav()}
+      </aside>
+
+      {/* Mobile Drawer */}
+      {mobileMenuOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          <div
+            className="fixed inset-0 bg-black/75"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-hidden="true"
+          />
+          <aside className="relative w-64 max-w-[80vw] bg-[#070b18] border-r border-white/10 z-10 h-full">
+            {renderSidebarNav()}
+          </aside>
         </div>
       )}
 
-      {/* TAB: INTEGRATIONS */}
-      {activeTab === 'integrations' && integrations && (
-        <div className="ms-glass rounded-3xl p-6 space-y-4">
-          <h2 className="font-display text-lg font-bold text-white flex items-center gap-2">
-            <Settings className="w-5 h-5 text-sky-400" />
-            Status das Integrações e Segurança
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-            <div className="p-4 rounded-2xl bg-black/30 space-y-1">
-              <p className="font-semibold text-white">TMDB API v3 (TMDB_ACCESS_TOKEN)</p>
-              <p className={integrations.tmdbConfigured ? 'text-emerald-300 text-xs' : 'text-amber-300 text-xs'}>
-                {integrations.tmdbConfigured
-                  ? 'Configurado nos Secrets do servidor e ativo.'
-                  : 'Pendente nos Secrets do servidor (Modo Demonstração ativo).'}
+      {/* Main Standalone Admin Workspace */}
+      <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
+        {/* Top Utility Header */}
+        <header className="sticky top-0 z-20 h-16 px-4 sm:px-8 bg-[#070b18]/95 backdrop-blur border-b border-white/10 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Abrir navegação administrativa"
+              className="lg:hidden p-2 rounded-xl bg-white/5 hover:bg-white/10 cursor-pointer"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="min-w-0">
+              <p className="text-[11px] font-mono-tabular text-slate-400">
+                Administração / {TAB_TITLES[activeTab]}
               </p>
-            </div>
-            <div className="p-4 rounded-2xl bg-black/30 space-y-1">
-              <p className="font-semibold text-white">Gemini AI SDK (GEMINI_API_KEY)</p>
-              <p className={integrations.geminiConfigured ? 'text-emerald-300 text-xs' : 'text-amber-300 text-xs'}>
-                {integrations.geminiConfigured
-                  ? 'Ativo exclusivamente no servidor.'
-                  : 'Pendente nos Secrets do ambiente.'}
-              </p>
-            </div>
-            <div className="p-4 rounded-2xl bg-black/30 space-y-1">
-              <p className="font-semibold text-white">MegaEmbed Player API</p>
-              <p className="text-emerald-300 text-xs">
-                Configurável (mgeb.lat / mgeb.space · vidstack, megaplay, megatube, clappr).
-              </p>
-            </div>
-            <div className="p-4 rounded-2xl bg-black/30 space-y-1">
-              <p className="font-semibold text-white">Firebase & Arquitetura PostgreSQL</p>
-              <p className="text-emerald-300 text-xs">
-                Firestore e Auth provisionados; esquema SQL pronto para migração.
-              </p>
+              <h1 className="font-display text-base sm:text-lg font-bold text-white truncate">
+                {TAB_TITLES[activeTab]}
+              </h1>
             </div>
           </div>
-        </div>
-      )}
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => void loadAdminData()}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-medium text-slate-200 hover:bg-white/10 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Atualizar</span>
+            </button>
+            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300">
+              <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+              <span className="max-w-[180px] truncate">{profile?.email || firebaseUser.email}</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 p-4 sm:p-8 max-w-[1380px] w-full mx-auto space-y-6">
+          {actionMsg && (
+            <div
+              role="status"
+              className="rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 text-xs sm:text-sm text-emerald-200 flex items-center gap-2"
+            >
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{actionMsg}</span>
+            </div>
+          )}
+
+          {loading || !stats ? (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-pulse">
+              {[1, 2, 3, 4].map((n) => (
+                <div key={n} className="h-28 rounded-2xl bg-white/5" />
+              ))}
+            </div>
+          ) : (
+            <>
+              {/* TAB: DASHBOARD */}
+              {activeTab === 'dashboard' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-5">
+                      <p className="text-xs text-slate-400">Total de Usuários</p>
+                      <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
+                        {stats.totalUsers}
+                      </p>
+                      <p className="text-xs text-sky-400 mt-1 font-mono-tabular">
+                        {stats.activeUsers} contas ativas
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-5">
+                      <p className="text-xs text-slate-400">Catálogo Sincronizado</p>
+                      <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
+                        {stats.catalogMovies + stats.catalogSeries}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1 font-mono-tabular">
+                        {stats.catalogMovies} filmes · {stats.catalogSeries} séries
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-5">
+                      <p className="text-xs text-slate-400">Reproduções Totais</p>
+                      <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
+                        {stats.totalPlaybacks}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1 font-mono-tabular">
+                        {customCatalog.length} títulos customizados
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-5">
+                      <p className="text-xs text-slate-400">Canais & Assinaturas</p>
+                      <p className="font-display text-2xl font-extrabold text-white mt-1 font-mono-tabular">
+                        {stats.channelsCount} / {stats.activeSubscriptions}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">Canais / Planos ativos</p>
+                    </div>
+                  </div>
+
+                  {/* Quick Admin Actions */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('site')}
+                      className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
+                    >
+                      <Palette className="w-5 h-5 text-sky-400" />
+                      <p className="text-sm font-bold text-white">Personalizar Identidade do Site</p>
+                      <p className="text-xs text-slate-400">
+                        Alterar nome, logo, tema padrão, cor de destaque, avisos e módulos.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('catalog')}
+                      className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
+                    >
+                      <Film className="w-5 h-5 text-sky-400" />
+                      <p className="text-sm font-bold text-white">Adicionar ou Editar Títulos</p>
+                      <p className="text-xs text-slate-400">
+                        Cadastrar filmes/séries, personalizar sinopses, capas e links de vídeo.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('players')}
+                      className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
+                    >
+                      <Play className="w-5 h-5 text-sky-400" />
+                      <p className="text-sm font-bold text-white">Configurar Fontes & Players</p>
+                      <p className="text-xs text-slate-400">
+                        Definir domínio padrão, motor de reprodução e parâmetros internos.
+                      </p>
+                    </button>
+                  </div>
+
+                  {/* Usage Chart */}
+                  <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                    <h2 className="font-display text-base font-bold text-white">
+                      Visualizações e Buscas (Últimos 7 dias)
+                    </h2>
+                    <div className="grid grid-cols-7 gap-3 items-end h-44 pt-4">
+                      {stats.usageSeries.map((day) => {
+                        const total = day.playbacks + day.searches;
+                        const heightPct = Math.max(12, Math.round((total / maxUsage) * 100));
+                        return (
+                          <div
+                            key={day.label}
+                            className="flex flex-col items-center gap-2 h-full justify-end"
+                          >
+                            <span className="text-[11px] text-slate-400 font-mono-tabular">
+                              {total}
+                            </span>
+                            <div
+                              className="w-full max-w-[44px] rounded-t-xl transition-all"
+                              style={{
+                                height: `${heightPct}%`,
+                                background:
+                                  'linear-gradient(180deg, var(--ms-accent-bright) 0%, var(--ms-accent) 100%)',
+                              }}
+                            />
+                            <span className="text-xs text-slate-300">{day.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: SITE CUSTOMIZATION */}
+              {activeTab === 'site' && (
+                <form onSubmit={handleSaveSiteConfig} className="space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Brand & Identity */}
+                    <section className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                      <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-sky-400" />
+                        Identidade & Textos do Site
+                      </h2>
+
+                      <div>
+                        <label htmlFor="site-name" className="block text-xs text-slate-300 mb-1">
+                          Nome da Plataforma
+                        </label>
+                        <input
+                          id="site-name"
+                          type="text"
+                          value={siteDraft.siteName}
+                          onChange={(e) =>
+                            setSiteDraft({ ...siteDraft, siteName: e.target.value })
+                          }
+                          required
+                          maxLength={40}
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="site-slogan" className="block text-xs text-slate-300 mb-1">
+                          Slogan / Subtítulo
+                        </label>
+                        <input
+                          id="site-slogan"
+                          type="text"
+                          value={siteDraft.siteSlogan}
+                          onChange={(e) =>
+                            setSiteDraft({ ...siteDraft, siteSlogan: e.target.value })
+                          }
+                          required
+                          maxLength={100}
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="site-logo" className="block text-xs text-slate-300 mb-1">
+                          URL de Logo Personalizada (deixe vazio para usar o ícone padrão)
+                        </label>
+                        <input
+                          id="site-logo"
+                          type="url"
+                          value={siteDraft.logoUrl}
+                          onChange={(e) =>
+                            setSiteDraft({ ...siteDraft, logoUrl: e.target.value })
+                          }
+                          placeholder="https://..."
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="site-footer" className="block text-xs text-slate-300 mb-1">
+                          Texto do Rodapé Lateral
+                        </label>
+                        <input
+                          id="site-footer"
+                          type="text"
+                          value={siteDraft.footerText}
+                          onChange={(e) =>
+                            setSiteDraft({ ...siteDraft, footerText: e.target.value })
+                          }
+                          maxLength={120}
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+                    </section>
+
+                    {/* Theme & Accent Colors */}
+                    <section className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                      <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                        <Palette className="w-4 h-4 text-sky-400" />
+                        Aparência Global & Cores
+                      </h2>
+
+                      <div>
+                        <label htmlFor="site-theme" className="block text-xs text-slate-300 mb-1">
+                          Tema Padrão para Visitantes
+                        </label>
+                        <select
+                          id="site-theme"
+                          value={siteDraft.defaultTheme}
+                          onChange={(e) =>
+                            setSiteDraft({
+                              ...siteDraft,
+                              defaultTheme: e.target.value as ThemeId,
+                            })
+                          }
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        >
+                          {themes.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name} — {t.subtitle}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label htmlFor="site-accent" className="block text-xs text-slate-300 mb-1">
+                          Cor Principal Personalizada (Hex, opcional)
+                        </label>
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="color"
+                            aria-label="Seletor visual da cor principal"
+                            value={
+                              siteDraft.accentColorHex
+                                ? `#${siteDraft.accentColorHex.replace('#', '')}`
+                                : '#1d63ff'
+                            }
+                            onChange={(e) =>
+                              setSiteDraft({
+                                ...siteDraft,
+                                accentColorHex: e.target.value.replace('#', ''),
+                              })
+                            }
+                            className="h-10 w-12 rounded-xl bg-transparent border border-white/10 cursor-pointer"
+                          />
+                          <input
+                            id="site-accent"
+                            type="text"
+                            value={siteDraft.accentColorHex}
+                            onChange={(e) =>
+                              setSiteDraft({
+                                ...siteDraft,
+                                accentColorHex: e.target.value.replace('#', ''),
+                              })
+                            }
+                            placeholder="Padrão do tema (ex: 1d63ff)"
+                            maxLength={6}
+                            className="flex-1 h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSiteDraft({ ...siteDraft, accentColorHex: '' })}
+                            className="h-10 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300 cursor-pointer whitespace-nowrap"
+                          >
+                            Resetar cor
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Announcement Banner */}
+                      <div className="pt-2 border-t border-white/10 space-y-3">
+                        <label className="flex items-center justify-between gap-3 cursor-pointer">
+                          <span className="text-xs font-semibold text-white">
+                            Exibir Banner de Aviso no Topo do Site
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={siteDraft.announcementEnabled}
+                            onChange={(e) =>
+                              setSiteDraft({
+                                ...siteDraft,
+                                announcementEnabled: e.target.checked,
+                              })
+                            }
+                            className="w-4 h-4 accent-sky-500"
+                          />
+                        </label>
+                        <input
+                          type="text"
+                          value={siteDraft.announcementText}
+                          onChange={(e) =>
+                            setSiteDraft({ ...siteDraft, announcementText: e.target.value })
+                          }
+                          placeholder="Ex: Novos lançamentos adicionados hoje!"
+                          maxLength={180}
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+                    </section>
+                  </div>
+
+                  {/* Feature Toggles & Maintenance */}
+                  <section className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                    <h2 className="font-display text-base font-bold text-white">
+                      Módulos Visíveis & Modo de Manutenção
+                    </h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      {[
+                        {
+                          key: 'enableChannels' as const,
+                          title: 'Página de Canais Ao Vivo',
+                          desc: 'Exibe a aba Canais no menu principal.',
+                        },
+                        {
+                          key: 'enableAiPage' as const,
+                          title: 'IA Inteligente',
+                          desc: 'Exibe recomendações inteligentes no menu.',
+                        },
+                        {
+                          key: 'enablePlansPage' as const,
+                          title: 'Planos & Assinaturas',
+                          desc: 'Exibe a seção de planos para usuários.',
+                        },
+                        {
+                          key: 'maintenanceMode' as const,
+                          title: 'Modo Manutenção',
+                          desc: 'Exibe alerta de manutenção para visitantes.',
+                        },
+                      ].map((item) => (
+                        <label
+                          key={item.key}
+                          className="rounded-xl bg-black/30 border border-white/10 p-4 flex items-start justify-between gap-3 cursor-pointer"
+                        >
+                          <div>
+                            <p className="text-xs font-bold text-white">{item.title}</p>
+                            <p className="text-[11px] text-slate-400 mt-0.5">{item.desc}</p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={siteDraft[item.key]}
+                            onChange={(e) =>
+                              setSiteDraft({ ...siteDraft, [item.key]: e.target.checked })
+                            }
+                            className="w-4 h-4 mt-0.5 accent-sky-500 shrink-0"
+                          />
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                      <button
+                        type="submit"
+                        disabled={saving}
+                        className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer disabled:opacity-60"
+                        style={{ backgroundColor: 'var(--ms-accent)' }}
+                      >
+                        {saving ? 'Salvando...' : 'Salvar Personalização do Site'}
+                      </button>
+                    </div>
+                  </section>
+                </form>
+              )}
+
+              {/* TAB: CATALOG & CUSTOM MEDIA */}
+              {activeTab === 'catalog' && (
+                <div className="space-y-6">
+                  {/* Sync Bar */}
+                  <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-5 flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                        <Database className="w-4 h-4 text-sky-400" />
+                        Sincronização de Catálogo & Cache
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Última sincronização:{' '}
+                        {integrations?.lastSyncAt
+                          ? new Date(integrations.lastSyncAt).toLocaleString('pt-BR')
+                          : 'Automática ao iniciar'}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleClearCache()}
+                        className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-semibold text-slate-200 hover:bg-white/10 cursor-pointer"
+                      >
+                        Limpar Cache ({integrations?.cacheEntries ?? 0})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSyncCatalog()}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold text-white cursor-pointer"
+                        style={{ backgroundColor: 'var(--ms-accent)' }}
+                      >
+                        Sincronizar Catálogo Agora
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Add / Modify Movie or Series */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <form
+                      onSubmit={handleSaveCustomMedia}
+                      className="lg:col-span-5 rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4"
+                    >
+                      <div className="flex items-center justify-between">
+                        <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                          <Plus className="w-4 h-4 text-sky-400" />
+                          {editingMediaId ? 'Editar Título' : 'Adicionar / Personalizar Título'}
+                        </h2>
+                        {editingMediaId && (
+                          <button
+                            type="button"
+                            onClick={resetMediaForm}
+                            className="text-xs text-sky-400 hover:underline cursor-pointer"
+                          >
+                            Cancelar edição
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label htmlFor="cm-type" className="block text-xs text-slate-300 mb-1">
+                            Tipo
+                          </label>
+                          <select
+                            id="cm-type"
+                            value={mediaType}
+                            onChange={(e) => setMediaType(e.target.value as MediaType)}
+                            className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                          >
+                            <option value="movie">Filme</option>
+                            <option value="tv">Série</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label htmlFor="cm-tmdbid" className="block text-xs text-slate-300 mb-1">
+                            ID TMDB (opcional)
+                          </label>
+                          <input
+                            id="cm-tmdbid"
+                            type="number"
+                            min={1}
+                            value={mediaTmdbId}
+                            onChange={(e) => setMediaTmdbId(e.target.value)}
+                            placeholder="Automático"
+                            className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label htmlFor="cm-title" className="block text-xs text-slate-300 mb-1">
+                          Título
+                        </label>
+                        <input
+                          id="cm-title"
+                          type="text"
+                          value={mediaTitle}
+                          onChange={(e) => setMediaTitle(e.target.value)}
+                          required
+                          placeholder="Ex: Duna: Edição Especial"
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label htmlFor="cm-year" className="block text-xs text-slate-300 mb-1">
+                            Ano de Lançamento
+                          </label>
+                          <input
+                            id="cm-year"
+                            type="text"
+                            value={mediaYear}
+                            onChange={(e) => setMediaYear(e.target.value)}
+                            maxLength={4}
+                            className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="cm-vote" className="block text-xs text-slate-300 mb-1">
+                            Nota (0–10)
+                          </label>
+                          <input
+                            id="cm-vote"
+                            type="number"
+                            step="0.1"
+                            min={0}
+                            max={10}
+                            value={mediaVote}
+                            onChange={(e) => setMediaVote(e.target.value)}
+                            className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label htmlFor="cm-poster" className="block text-xs text-slate-300 mb-1">
+                          URL da Capa / Pôster
+                        </label>
+                        <input
+                          id="cm-poster"
+                          type="url"
+                          value={mediaPoster}
+                          onChange={(e) => setMediaPoster(e.target.value)}
+                          placeholder="https://..."
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="cm-backdrop" className="block text-xs text-slate-300 mb-1">
+                          URL do Banner / Backdrop
+                        </label>
+                        <input
+                          id="cm-backdrop"
+                          type="url"
+                          value={mediaBackdrop}
+                          onChange={(e) => setMediaBackdrop(e.target.value)}
+                          placeholder="https://..."
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="cm-stream" className="block text-xs text-slate-300 mb-1">
+                          URL de Vídeo Customizada (opcional)
+                        </label>
+                        <input
+                          id="cm-stream"
+                          type="url"
+                          value={mediaStreamUrl}
+                          onChange={(e) => setMediaStreamUrl(e.target.value)}
+                          placeholder="Deixe vazio para usar provedor padrão"
+                          className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="cm-overview" className="block text-xs text-slate-300 mb-1">
+                          Sinopse
+                        </label>
+                        <textarea
+                          id="cm-overview"
+                          rows={3}
+                          value={mediaOverview}
+                          onChange={(e) => setMediaOverview(e.target.value)}
+                          placeholder="Descrição do filme ou série..."
+                          className="w-full p-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap gap-4">
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={mediaFeatured}
+                            onChange={(e) => setMediaFeatured(e.target.checked)}
+                            className="w-4 h-4 accent-sky-500"
+                          />
+                          Destacar na Home
+                        </label>
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={mediaActive}
+                            onChange={(e) => setMediaActive(e.target.checked)}
+                            className="w-4 h-4 accent-sky-500"
+                          />
+                          Título Ativo
+                        </label>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={saving}
+                        className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                        style={{ backgroundColor: 'var(--ms-accent)' }}
+                      >
+                        {editingMediaId ? 'Atualizar Título' : 'Salvar no Catálogo'}
+                      </button>
+                    </form>
+
+                    {/* Custom Catalog List */}
+                    <div className="lg:col-span-7 rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                      <h2 className="font-display text-base font-bold text-white">
+                        Mídias Adicionadas ou Modificadas ({customCatalog.length})
+                      </h2>
+                      {customCatalog.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-white/15 p-8 text-center text-sm text-slate-400">
+                          Nenhum título customizado ainda. Use o formulário ao lado para adicionar um novo filme/série ou personalizar um título existente pelo ID TMDB.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {customCatalog.map((item) => (
+                            <div
+                              key={item.id}
+                              className="p-4 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between gap-3"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                {item.posterPath ? (
+                                  <img
+                                    src={item.posterPath}
+                                    alt={item.title}
+                                    referrerPolicy="no-referrer"
+                                    className="w-11 h-16 rounded-lg object-cover shrink-0 bg-slate-900"
+                                  />
+                                ) : (
+                                  <div className="w-11 h-16 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
+                                    <Film className="w-4 h-4 text-sky-400" />
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <p className="text-sm font-bold text-white truncate">
+                                    {item.title}
+                                  </p>
+                                  <p className="text-xs text-slate-400 font-mono-tabular">
+                                    {item.mediaType === 'tv' ? 'Série' : 'Filme'} · #{item.tmdbId} ·{' '}
+                                    {item.releaseYear} · Nota {item.voteAverage.toFixed(1)}
+                                  </p>
+                                  <p className="text-[11px] text-sky-400 mt-0.5">
+                                    {item.featured ? 'Destaque Home · ' : ''}
+                                    {item.active ? 'Ativo' : 'Oculto'}
+                                    {item.customStreamUrl ? ' · Fonte customizada' : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditCustomMedia(item)}
+                                  aria-label={`Editar ${item.title}`}
+                                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-slate-200 cursor-pointer"
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteCustomMedia(item.id)}
+                                  aria-label={`Remover ${item.title}`}
+                                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-red-500/15 text-red-300 hover:bg-red-500/30 cursor-pointer"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: CHANNELS */}
+              {activeTab === 'channels' && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  <form
+                    onSubmit={handleSaveChannel}
+                    className="lg:col-span-5 rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h2 className="font-display text-base font-bold text-white">
+                        {editingChannelId ? 'Editar Canal' : 'Cadastrar Canal Autorizado'}
+                      </h2>
+                      {editingChannelId && (
+                        <button
+                          type="button"
+                          onClick={resetChannelForm}
+                          className="text-xs text-sky-400 hover:underline cursor-pointer"
+                        >
+                          Novo canal
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <label htmlFor="ch-name" className="block text-xs text-slate-300 mb-1">
+                        Nome da Emissora / Canal
+                      </label>
+                      <input
+                        id="ch-name"
+                        type="text"
+                        value={chName}
+                        onChange={(e) => setChName(e.target.value)}
+                        required
+                        placeholder="Ex: Canal Cultura Oficial"
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="ch-cat" className="block text-xs text-slate-300 mb-1">
+                        Categoria
+                      </label>
+                      <select
+                        id="ch-cat"
+                        value={chCategory}
+                        onChange={(e) => setChCategory(e.target.value as ChannelCategory)}
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      >
+                        <option value="Notícias">Notícias</option>
+                        <option value="Esportes">Esportes</option>
+                        <option value="Entretenimento">Entretenimento</option>
+                        <option value="Filmes">Filmes</option>
+                        <option value="Variedades">Variedades</option>
+                        <option value="Infantil">Infantil</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="ch-url" className="block text-xs text-slate-300 mb-1">
+                        URL de Transmissão Autorizada (https://)
+                      </label>
+                      <input
+                        id="ch-url"
+                        type="url"
+                        value={chUrl}
+                        onChange={(e) => setChUrl(e.target.value)}
+                        required
+                        placeholder="https://..."
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="ch-logo" className="block text-xs text-slate-300 mb-1">
+                        URL do Logotipo (opcional)
+                      </label>
+                      <input
+                        id="ch-logo"
+                        type="url"
+                        value={chLogo}
+                        onChange={(e) => setChLogo(e.target.value)}
+                        placeholder="https://..."
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="ch-desc" className="block text-xs text-slate-300 mb-1">
+                        Descrição
+                      </label>
+                      <input
+                        id="ch-desc"
+                        type="text"
+                        value={chDesc}
+                        onChange={(e) => setChDesc(e.target.value)}
+                        placeholder="Programação ao vivo autorizada"
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      />
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={chActive}
+                        onChange={(e) => setChActive(e.target.checked)}
+                        className="w-4 h-4 accent-sky-500"
+                      />
+                      Canal Ativo no Site
+                    </label>
+                    <button
+                      type="submit"
+                      className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                      style={{ backgroundColor: 'var(--ms-accent)' }}
+                    >
+                      {editingChannelId ? 'Atualizar Canal' : 'Salvar Canal Autorizado'}
+                    </button>
+                  </form>
+
+                  <div className="lg:col-span-7 rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-3">
+                    <h2 className="font-display text-base font-bold text-white">
+                      Canais Cadastrados ({channels.length})
+                    </h2>
+                    {channels.length === 0 ? (
+                      <p className="text-sm text-slate-400">Nenhum canal cadastrado ainda.</p>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {channels.map((ch) => (
+                          <div
+                            key={ch.id}
+                            className="p-3.5 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-white truncate">
+                                {ch.name}{' '}
+                                <span
+                                  className={`text-[11px] font-normal ml-1 ${
+                                    ch.active ? 'text-emerald-400' : 'text-amber-300'
+                                  }`}
+                                >
+                                  ({ch.active ? 'Ativo' : 'Pausado'})
+                                </span>
+                              </p>
+                              <p className="text-xs text-sky-300">{ch.category}</p>
+                              <p className="text-[11px] text-slate-400 truncate">{ch.streamUrl}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleChannelActive(ch)}
+                                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/15 text-xs text-slate-200 cursor-pointer"
+                              >
+                                {ch.active ? 'Pausar' : 'Ativar'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEditChannel(ch)}
+                                aria-label={`Editar canal ${ch.name}`}
+                                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-white/5 hover:bg-white/15 text-slate-200 cursor-pointer"
+                              >
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteChannel(ch.id)}
+                                aria-label={`Remover canal ${ch.name}`}
+                                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-red-500/15 text-red-300 hover:bg-red-500/30 cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: PLAYERS & SOURCES (ADMIN ONLY) */}
+              {activeTab === 'players' && playerConfig && (
+                <form
+                  onSubmit={handleSavePlayerConfig}
+                  className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-5 max-w-3xl"
+                >
+                  <div>
+                    <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-sky-400" />
+                      Configuração Interna de Players, Fontes e Domínios
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Estas definições controlam o servidor e provedores de reprodução em segundo plano e nunca são exibidas na tela pública do usuário.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label htmlFor="adm-domain" className="block text-xs text-slate-300 mb-1">
+                        Domínio Padrão (MegaEmbed)
+                      </label>
+                      <select
+                        id="adm-domain"
+                        value={playerConfig.defaultDomain}
+                        onChange={(e) =>
+                          setPlayerConfig({
+                            ...playerConfig,
+                            defaultDomain: e.target.value as MegaEmbedDomain,
+                          })
+                        }
+                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      >
+                        {playerConfig.availableDomains.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="adm-player" className="block text-xs text-slate-300 mb-1">
+                        Player Padrão
+                      </label>
+                      <select
+                        id="adm-player"
+                        value={playerConfig.defaultPlayer}
+                        onChange={(e) =>
+                          setPlayerConfig({
+                            ...playerConfig,
+                            defaultPlayer: e.target.value as MegaEmbedPlayer,
+                          })
+                        }
+                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      >
+                        {playerConfig.availablePlayers.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="adm-color" className="block text-xs text-slate-300 mb-1">
+                        Cor do Player (#color:)
+                      </label>
+                      <input
+                        id="adm-color"
+                        type="text"
+                        value={playerConfig.defaultColorHex}
+                        onChange={(e) =>
+                          setPlayerConfig({
+                            ...playerConfig,
+                            defaultColorHex: e.target.value.replace('#', ''),
+                          })
+                        }
+                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-black/30 border border-white/10 p-4 text-xs text-slate-300 space-y-1">
+                    <p className="font-semibold text-white">Padrão de roteamento ativo:</p>
+                    <p className="font-mono-tabular text-sky-300">
+                      Filmes: https://{playerConfig.defaultDomain}/embed/{'{TMDB_ID}'}?player={playerConfig.defaultPlayer}#color:{playerConfig.defaultColorHex}
+                    </p>
+                    <p className="font-mono-tabular text-sky-300">
+                      Séries: https://{playerConfig.defaultDomain}/embed/{'{TMDB_ID}'}/{'{SEASON}'}/{'{EPISODE}'}?player={playerConfig.defaultPlayer}#color:{playerConfig.defaultColorHex}
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                    style={{ backgroundColor: 'var(--ms-accent)' }}
+                  >
+                    Salvar Configuração de Players
+                  </button>
+                </form>
+              )}
+
+              {/* TAB: USERS & PLANS */}
+              {activeTab === 'users' && (
+                <div className="rounded-2xl bg-[#0c1224] border border-white/10 overflow-hidden">
+                  <div className="p-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="font-display text-base font-bold text-white">
+                      Contas Cadastradas ({filteredUsers.length})
+                    </h2>
+                    <input
+                      type="search"
+                      value={userSearch}
+                      onChange={(e) => setUserSearch(e.target.value)}
+                      placeholder="Filtrar por nome ou e-mail..."
+                      className="h-9 px-3.5 rounded-xl bg-black/40 border border-white/10 text-xs text-white w-full sm:w-64"
+                    />
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10 text-xs text-slate-400">
+                          <th className="p-4">Nome</th>
+                          <th className="p-4">E-mail</th>
+                          <th className="p-4">Permissão</th>
+                          <th className="p-4">Plano</th>
+                          <th className="p-4">Status</th>
+                          <th className="p-4 text-right">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10">
+                        {filteredUsers.map((u) => (
+                          <tr key={u.uid} className="hover:bg-white/5">
+                            <td className="p-4 font-semibold text-white">{u.name}</td>
+                            <td className="p-4 text-slate-300">{u.email}</td>
+                            <td className="p-4">
+                              <select
+                                value={u.role}
+                                onChange={(e) =>
+                                  void handleUserUpdate(u, {
+                                    role: e.target.value as 'user' | 'admin',
+                                  })
+                                }
+                                aria-label={`Permissão de ${u.email}`}
+                                className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-white"
+                              >
+                                <option value="user">Usuário</option>
+                                <option value="admin">Administrador</option>
+                              </select>
+                            </td>
+                            <td className="p-4">
+                              <select
+                                value={u.plan}
+                                onChange={(e) =>
+                                  void handleUserUpdate(u, { plan: e.target.value as PlanId })
+                                }
+                                aria-label={`Plano de ${u.email}`}
+                                className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-sky-300 uppercase"
+                              >
+                                <option value="free">Free</option>
+                                <option value="monthly">Mensal</option>
+                                <option value="quarterly">Trimestral</option>
+                                <option value="annual">Anual</option>
+                              </select>
+                            </td>
+                            <td className="p-4 text-xs">
+                              {u.blocked ? (
+                                <span className="text-red-300">Bloqueado</span>
+                              ) : (
+                                <span className="text-emerald-300">Ativo</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => void handleUserUpdate(u, { blocked: !u.blocked })}
+                                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-white cursor-pointer"
+                              >
+                                {u.blocked ? 'Desbloquear' : 'Bloquear'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: LOGS & INTEGRATIONS */}
+              {activeTab === 'logs' && (
+                <div className="space-y-6">
+                  {integrations && (
+                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
+                      <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-sky-400" />
+                        Status das Integrações do Servidor
+                      </h2>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
+                          <p className="font-semibold text-white">TMDB API v3</p>
+                          <p
+                            className={
+                              integrations.tmdbConfigured
+                                ? 'text-emerald-300 text-xs'
+                                : 'text-amber-300 text-xs'
+                            }
+                          >
+                            {integrations.tmdbConfigured
+                              ? 'TMDB_ACCESS_TOKEN conectado'
+                              : 'Modo Demonstração'}
+                          </p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
+                          <p className="font-semibold text-white">Gemini IA</p>
+                          <p
+                            className={
+                              integrations.geminiConfigured
+                                ? 'text-emerald-300 text-xs'
+                                : 'text-amber-300 text-xs'
+                            }
+                          >
+                            {integrations.geminiConfigured
+                              ? 'GEMINI_API_KEY ativa no servidor'
+                              : 'Chave pendente nos Secrets'}
+                          </p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
+                          <p className="font-semibold text-white">MegaEmbed API</p>
+                          <p className="text-emerald-300 text-xs">
+                            mgeb.lat / mgeb.space ativo
+                          </p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
+                          <p className="font-semibold text-white">Firebase & Cloud</p>
+                          <p className="text-emerald-300 text-xs">
+                            Firestore & Auth conectados
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-3">
+                    <h2 className="font-display text-base font-bold text-white">
+                      Registros Recentes do Sistema
+                    </h2>
+                    <div className="space-y-2 max-h-[420px] overflow-y-auto font-mono-tabular text-xs">
+                      {logs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="p-3 rounded-xl bg-black/35 border border-white/5 flex flex-wrap gap-3 items-baseline"
+                        >
+                          <span className="text-slate-500">
+                            {new Date(log.timestamp).toLocaleString('pt-BR')}
+                          </span>
+                          <span
+                            className={
+                              log.level === 'error'
+                                ? 'text-red-400'
+                                : log.level === 'warn'
+                                  ? 'text-amber-300'
+                                  : 'text-sky-300'
+                            }
+                          >
+                            [{log.service}]
+                          </span>
+                          <span className="text-slate-200">{log.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { buildTmdbImageUrl } from '../../shared/playerUrl.ts';
 import { deduplicateMediaByTmdbId, filterAndSortMedia } from '../../shared/catalogUtils.ts';
+import { customMediaToMediaItem } from '../../shared/siteConfigUtils.ts';
 import type {
   CastMember,
   GenreItem,
@@ -254,11 +255,18 @@ class TMDBServiceImpl {
     const page = Math.max(1, params.page ?? 1);
 
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
-        ...params,
-        page,
-        pageSize: 20,
-      });
+      const customAsMedia = repositoryStore
+        .getCustomCatalog()
+        .filter((c) => c.active)
+        .map(customMediaToMediaItem);
+      const subset = filterAndSortMedia(
+        deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]),
+        {
+          ...params,
+          page,
+          pageSize: 20,
+        }
+      );
       return { ...subset, source: 'demo', demoMode: true };
     }
 
@@ -389,8 +397,43 @@ class TMDBServiceImpl {
   }
 
   async getDetail(tmdbId: number, mediaType: MediaType): Promise<MediaDetail | null> {
+    const customMatch = repositoryStore
+      .getCustomCatalog()
+      .find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);
+
     if (!this.isConfigured()) {
-      return getDemoMediaDetail(tmdbId, mediaType);
+      const demo = getDemoMediaDetail(tmdbId, mediaType);
+      if (customMatch) {
+        const baseCustom = customMediaToMediaItem(customMatch);
+        if (!demo) {
+          return {
+            ...baseCustom,
+            runtime: null,
+            status: 'Disponível',
+            tagline: '',
+            director: null,
+            cast: [],
+            videos: [],
+            recommendations: DEMO_MEDIA_CATALOG.slice(0, 6),
+            similar: DEMO_MEDIA_CATALOG.slice(6, 12),
+            seasons:
+              mediaType === 'tv'
+                ? [{ id: 1, seasonNumber: 1, name: 'Temporada 1', overview: '', posterPath: baseCustom.posterPath, episodeCount: 1, airDate: '' }]
+                : undefined,
+          };
+        }
+        return {
+          ...demo,
+          title: customMatch.title,
+          originalTitle: customMatch.originalTitle || demo.originalTitle,
+          overview: customMatch.overview || demo.overview,
+          posterPath: customMatch.posterPath ?? demo.posterPath,
+          backdropPath: customMatch.backdropPath ?? demo.backdropPath,
+          releaseYear: customMatch.releaseYear || demo.releaseYear,
+          voteAverage: customMatch.voteAverage,
+        };
+      }
+      return demo;
     }
 
     await this.ensureImageConfig();
@@ -421,9 +464,32 @@ class TMDBServiceImpl {
       similar?: { results?: TmdbRawMedia[] };
     }
 
-    const raw = await this.request<TmdbDetailPayload>(`/${mediaType}/${tmdbId}`, {
-      append_to_response: 'credits,videos,recommendations,similar',
-    });
+    let raw: TmdbDetailPayload;
+    try {
+      raw = await this.request<TmdbDetailPayload>(`/${mediaType}/${tmdbId}`, {
+        append_to_response: 'credits,videos,recommendations,similar',
+      });
+    } catch (err) {
+      if (customMatch) {
+        const baseCustom = customMediaToMediaItem(customMatch);
+        return {
+          ...baseCustom,
+          runtime: null,
+          status: 'Disponível',
+          tagline: '',
+          director: null,
+          cast: [],
+          videos: [],
+          recommendations: [],
+          similar: [],
+          seasons:
+            mediaType === 'tv'
+              ? [{ id: 1, seasonNumber: 1, name: 'Temporada 1', overview: '', posterPath: baseCustom.posterPath, episodeCount: 1, airDate: '' }]
+              : undefined,
+        };
+      }
+      throw err;
+    }
 
     const base = this.mapMedia(raw, mediaType);
     const director =
@@ -444,7 +510,7 @@ class TMDBServiceImpl {
       (raw.similar?.results ?? []).map((r) => this.mapMedia(r, mediaType))
     );
 
-    return {
+    const detail: MediaDetail = {
       ...base,
       runtime: raw.runtime ?? raw.episode_run_time?.[0] ?? null,
       status: raw.status ?? '',
@@ -466,6 +532,21 @@ class TMDBServiceImpl {
         airDate: s.air_date ?? '',
       })),
     };
+
+    if (customMatch) {
+      return {
+        ...detail,
+        title: customMatch.title,
+        originalTitle: customMatch.originalTitle || detail.originalTitle,
+        overview: customMatch.overview || detail.overview,
+        posterPath: customMatch.posterPath ?? detail.posterPath,
+        backdropPath: customMatch.backdropPath ?? detail.backdropPath,
+        releaseYear: customMatch.releaseYear || detail.releaseYear,
+        voteAverage: customMatch.voteAverage,
+      };
+    }
+
+    return detail;
   }
 
   async getSeasonEpisodes(tmdbId: number, seasonNumber: number): Promise<SeasonDetail> {

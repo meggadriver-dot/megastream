@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_SITE_CONFIG } from '../../shared/siteConfigUtils.ts';
 import type {
+  CustomMediaItem,
   FavoriteItem,
   HistoryItem,
   LiveChannel,
+  SiteConfig,
   StoredStreamProfile,
   SubscriptionRecord,
   SystemLogEntry,
@@ -28,6 +31,11 @@ export interface IRepositoryStore {
   getSubscription(userId: string): SubscriptionRecord | null;
   upsertSubscription(sub: SubscriptionRecord): SubscriptionRecord;
   getAllSubscriptions(): SubscriptionRecord[];
+  getSiteConfig(): SiteConfig;
+  saveSiteConfig(config: SiteConfig): SiteConfig;
+  getCustomCatalog(): CustomMediaItem[];
+  upsertCustomMedia(item: CustomMediaItem): CustomMediaItem;
+  deleteCustomMedia(id: string): boolean;
   addLog(entry: Omit<SystemLogEntry, 'id' | 'timestamp'>): SystemLogEntry;
   getLogs(limit?: number): SystemLogEntry[];
   getTotalPlaybacks(): number;
@@ -43,6 +51,8 @@ interface PersistedState {
   history: Record<string, HistoryItem[]>;
   channels: Record<string, LiveChannel>;
   subscriptions: Record<string, SubscriptionRecord>;
+  siteConfig?: SiteConfig;
+  customCatalog?: Record<string, CustomMediaItem>;
   logs: SystemLogEntry[];
   totalPlaybacks: number;
   lastSyncAt: string | null;
@@ -75,6 +85,8 @@ class JsonRepositoryStore implements IRepositoryStore {
       history: {},
       channels: {},
       subscriptions: {},
+      siteConfig: { ...DEFAULT_SITE_CONFIG },
+      customCatalog: {},
       logs: [
         {
           id: 'boot-1',
@@ -208,6 +220,36 @@ class JsonRepositoryStore implements IRepositoryStore {
 
   getAllSubscriptions(): SubscriptionRecord[] {
     return Object.values(this.state.subscriptions);
+  }
+
+  getSiteConfig(): SiteConfig {
+    return this.state.siteConfig ?? { ...DEFAULT_SITE_CONFIG };
+  }
+
+  saveSiteConfig(config: SiteConfig): SiteConfig {
+    this.state.siteConfig = config;
+    this.save();
+    return config;
+  }
+
+  getCustomCatalog(): CustomMediaItem[] {
+    return Object.values(this.state.customCatalog ?? {}).sort((a, b) =>
+      b.updatedAt.localeCompare(a.updatedAt)
+    );
+  }
+
+  upsertCustomMedia(item: CustomMediaItem): CustomMediaItem {
+    if (!this.state.customCatalog) this.state.customCatalog = {};
+    this.state.customCatalog[item.id] = item;
+    this.save();
+    return item;
+  }
+
+  deleteCustomMedia(id: string): boolean {
+    if (!this.state.customCatalog?.[id]) return false;
+    delete this.state.customCatalog[id];
+    this.save();
+    return true;
   }
 
   addLog(entry: Omit<SystemLogEntry, 'id' | 'timestamp'>): SystemLogEntry {

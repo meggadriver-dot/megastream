@@ -1,4 +1,5 @@
 import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils.ts';
+import { customMediaToMediaItem, mergeCustomCatalogIntoList } from '../../shared/siteConfigUtils.ts';
 import type { GenreItem, MediaItem } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
@@ -102,10 +103,20 @@ class CatalogServiceImpl {
       TMDBService.getGenres('tv'),
     ]);
 
+    const customItems = repositoryStore.getCustomCatalog().filter((c) => c.active);
+    const featuredCustoms = customItems.filter((c) => c.featured).map(customMediaToMediaItem);
+
+    const mergedTrending = deduplicateMediaByTmdbId([
+      ...featuredCustoms,
+      ...mergeCustomCatalogIntoList(trending.items, customItems),
+    ]);
+    const mergedPopularMovies = mergeCustomCatalogIntoList(popularMovies.items, customItems, 'movie');
+    const mergedPopularSeries = mergeCustomCatalogIntoList(popularSeries.items, customItems, 'tv');
+
     const combined = deduplicateMediaByTmdbId([
-      ...trending.items,
-      ...popularMovies.items,
-      ...popularSeries.items,
+      ...mergedTrending,
+      ...mergedPopularMovies,
+      ...mergedPopularSeries,
       ...nowPlayingMovies.items,
       ...topRatedMovies.items,
       ...upcomingMovies.items,
@@ -116,13 +127,13 @@ class CatalogServiceImpl {
     this.syncedGenres = { movie: movieGenres, tv: tvGenres };
 
     const payload = {
-      featured: trending.items[0] ?? popularMovies.items[0] ?? null,
-      trending: trending.items,
-      popularMovies: popularMovies.items,
+      featured: featuredCustoms[0] ?? mergedTrending[0] ?? mergedPopularMovies[0] ?? null,
+      trending: mergedTrending,
+      popularMovies: mergedPopularMovies,
       nowPlayingMovies: nowPlayingMovies.items,
       topRatedMovies: topRatedMovies.items,
       upcomingMovies: upcomingMovies.items,
-      popularSeries: popularSeries.items,
+      popularSeries: mergedPopularSeries,
       topRatedSeries: topRatedSeries.items,
       onAirSeries: onAirSeries.items,
       genres: {

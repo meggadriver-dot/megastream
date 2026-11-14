@@ -196,7 +196,7 @@ export function SettingsPage() {
           Privacidade e Segurança
         </h2>
         <p className="text-sm text-slate-300">
-          Sua sessão é protegida pelo Firebase Authentication com tokens verificados no servidor. Chaves privadas de APIs externas (TMDB e Gemini) permanecem isoladas exclusivamente no ambiente do servidor.
+          Sua sessão é protegida com autenticação segura e tokens verificados no servidor. Todas as integrações e credenciais privadas permanecem isoladas exclusivamente no ambiente do servidor.
         </p>
       </section>
     </div>

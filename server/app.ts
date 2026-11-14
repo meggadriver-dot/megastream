@@ -18,6 +18,7 @@ import { HistoryService } from './services/HistoryService.ts';
 import { PlayerService } from './services/PlayerService.ts';
 import { ProfileService } from './services/ProfileService.ts';
 import { RecommendationService } from './services/RecommendationService.ts';
+import { SiteConfigService } from './services/SiteConfigService.ts';
 import { SubscriptionService } from './services/SubscriptionService.ts';
 import { TMDBService } from './services/TMDBService.ts';
 import { UserService } from './services/UserService.ts';
@@ -40,8 +41,13 @@ export function createApiApp(): Express {
     });
   });
 
-  // --- Integrations Status ---
-  app.get('/api/integrations/status', async (_req, res, next) => {
+  // --- Public Site Branding & Feature Config (No Server/Source Secrets) ---
+  app.get('/api/site-config', (_req, res) => {
+    res.json(SiteConfigService.getConfig());
+  });
+
+  // --- Integrations Status (Admin Only) ---
+  app.get('/api/integrations/status', requireAdmin, async (_req, res, next) => {
     try {
       const status = await AdminService.getIntegrationStatus();
       res.json(status);
@@ -226,8 +232,8 @@ export function createApiApp(): Express {
     }
   });
 
-  // --- MegaEmbed Player API ---
-  app.get('/api/player/config', (_req, res) => {
+  // --- Player Stream Resolution (Clean Playback Response) ---
+  app.get('/api/player/config', requireAdmin, (_req, res) => {
     res.json(PlayerService.getConfig());
   });
 
@@ -236,13 +242,14 @@ export function createApiApp(): Express {
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
         mediaType: 'movie',
-        domain: typeof req.query.domain === 'string' ? req.query.domain : undefined,
-        player: typeof req.query.player === 'string' ? req.query.player : undefined,
-        colorHex: typeof req.query.color === 'string' ? req.query.color : undefined,
       });
-      res.json(payload);
+      res.json({
+        tmdbId: payload.tmdbId,
+        mediaType: payload.mediaType,
+        embedUrl: payload.embedUrl,
+      });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro no player.' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao carregar reprodução.' });
     }
   });
 
@@ -259,15 +266,18 @@ export function createApiApp(): Express {
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
         mediaType: 'tv',
-        domain: typeof req.query.domain === 'string' ? req.query.domain : undefined,
-        player: typeof req.query.player === 'string' ? req.query.player : undefined,
-        colorHex: typeof req.query.color === 'string' ? req.query.color : undefined,
         seasonNumber,
         episodeNumber,
       });
-      res.json(payload);
+      res.json({
+        tmdbId: payload.tmdbId,
+        mediaType: payload.mediaType,
+        embedUrl: payload.embedUrl,
+        seasonNumber: payload.seasonNumber,
+        episodeNumber: payload.episodeNumber,
+      });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro no player.' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao carregar reprodução.' });
     }
   });
 
@@ -468,9 +478,41 @@ export function createApiApp(): Express {
     res.json({ removed: true });
   });
 
+  app.get('/api/admin/player-config', requireAdmin, (_req, res) => {
+    res.json(PlayerService.getConfig());
+  });
+
   app.put('/api/admin/player-config', requireAdmin, (req, res) => {
     const updated = PlayerService.updateConfig(req.body ?? {});
     res.json(updated);
+  });
+
+  app.get('/api/admin/site-config', requireAdmin, (_req, res) => {
+    res.json(SiteConfigService.getConfig());
+  });
+
+  app.put('/api/admin/site-config', requireAdmin, (req, res) => {
+    const updated = SiteConfigService.updateConfig(req.body ?? {});
+    res.json(updated);
+  });
+
+  app.get('/api/admin/catalog/custom', requireAdmin, (_req, res) => {
+    res.json({ items: SiteConfigService.listCustomCatalog() });
+  });
+
+  app.post('/api/admin/catalog/custom', requireAdmin, (req, res) => {
+    try {
+      const saved = SiteConfigService.upsertCustomMedia(req.body ?? {});
+      res.status(201).json(saved);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao salvar mídia.' });
+    }
+  });
+
+  app.delete('/api/admin/catalog/custom/:id', requireAdmin, (req, res) => {
+    const removed = SiteConfigService.deleteCustomMedia(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'Mídia personalizada não encontrada.' });
+    res.json({ removed: true });
   });
 
   app.post('/api/admin/catalog/sync', requireAdmin, async (_req, res, next) => {

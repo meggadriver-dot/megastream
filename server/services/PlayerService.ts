@@ -2,6 +2,7 @@ import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/ty
 import { playerConfigStore } from '../config/playerConfig.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { MegaEmbedService } from './MegaEmbedService.ts';
+import { SiteConfigService } from './SiteConfigService.ts';
 
 class PlayerServiceImpl {
   getConfig(): PlayerConfig {
@@ -27,6 +28,27 @@ class PlayerServiceImpl {
     seasonNumber?: number;
     episodeNumber?: number;
   }): EmbedPlayResponse {
+    const numericId = Number(params.tmdbId);
+    const customMatch =
+      Number.isInteger(numericId) && numericId > 0
+        ? SiteConfigService.getCustomMatch(numericId, params.mediaType)
+        : null;
+
+    if (customMatch?.customStreamUrl) {
+      const cfg = playerConfigStore.getConfig();
+      repositoryStore.incrementPlaybackCounter();
+      return {
+        tmdbId: numericId,
+        mediaType: params.mediaType,
+        embedUrl: customMatch.customStreamUrl,
+        domain: cfg.defaultDomain,
+        player: cfg.defaultPlayer,
+        colorHex: cfg.defaultColorHex,
+        seasonNumber: params.mediaType === 'tv' ? params.seasonNumber ?? 1 : undefined,
+        episodeNumber: params.mediaType === 'tv' ? params.episodeNumber ?? 1 : undefined,
+      };
+    }
+
     const result = MegaEmbedService.getEmbedPayload(params);
     repositoryStore.incrementPlaybackCounter();
     return result;
@@ -34,3 +56,4 @@ class PlayerServiceImpl {
 }
 
 export const PlayerService = new PlayerServiceImpl();
+

@@ -279,3 +279,47 @@ export interface AIRecommendationResponse {
   items: MediaItem[];
   source: 'gemini+tmdb' | 'gemini+demo' | 'fallback';
 }
+
+export interface SiteConfig {
+  siteName: string;
+  siteSlogan: string;
+  logoUrl: string;
+  defaultTheme: ThemeId;
+  accentColorHex: string;
+  announcementEnabled: boolean;
+  announcementText: string;
+  enableChannels: boolean;
+  enableAiPage: boolean;
+  enablePlansPage: boolean;
+  maintenanceMode: boolean;
+  footerText: string;
+  updatedAt: string;
+}
+
+export interface CustomMediaItem {
+  id: string;
+  tmdbId: number;
+  mediaType: MediaType;
+  title: string;
+  originalTitle: string;
+  overview: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  releaseYear: string;
+  voteAverage: number;
+  genreIds: number[];
+  customStreamUrl?: string;
+  featured: boolean;
+  active: boolean;
+  updatedAt: string;
+}
+
+export type AdminTab =
+  | 'dashboard'
+  | 'site'
+  | 'catalog'
+  | 'channels'
+  | 'players'
+  | 'users'
+  | 'logs';
+

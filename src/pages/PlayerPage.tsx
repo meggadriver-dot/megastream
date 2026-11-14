@@ -2,32 +2,28 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
-  Info,
+  Calendar,
+  Clock,
+  Film,
   Maximize2,
-  Palette,
   RefreshCw,
   RotateCcw,
+  Star,
   Tv,
 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import type {
-  EmbedPlayResponse,
-  MediaDetail,
-  MediaType,
-  MegaEmbedDomain,
-  MegaEmbedPlayer,
-  PlayerConfig,
-  SeasonDetail,
-} from '../../shared/types';
+import { formatRuntimeMinutes } from '../../shared/catalogUtils';
+import type { MediaDetail, MediaType, SeasonDetail } from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
 import { apiRequest } from '../services/apiClient';
 
-const COLOR_PRESETS = [
-  { label: 'Azul Elétrico', hex: '00a8ff' },
-  { label: 'Laranja Mega', hex: 'fb542b' },
-  { label: 'Neon Roxo', hex: 'a855f7' },
-  { label: 'Dourado', hex: 'f59e0b' },
-];
+interface CleanStreamPayload {
+  tmdbId: number;
+  mediaType: MediaType;
+  embedUrl: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+}
 
 export function PlayerPage() {
   const { type, tmdbId } = useParams<{ type: string; tmdbId: string }>();
@@ -44,11 +40,7 @@ export function PlayerPage() {
   const parsedEpisode = rawEpisode !== null && rawEpisode.trim() !== '' ? Number(rawEpisode) : 1;
   const episodeParam = Number.isInteger(parsedEpisode) && parsedEpisode >= 1 ? parsedEpisode : 1;
 
-  const [config, setConfig] = useState<PlayerConfig | null>(null);
-  const [domain, setDomain] = useState<MegaEmbedDomain>('mgeb.lat');
-  const [player, setPlayer] = useState<MegaEmbedPlayer>('vidstack');
-  const [colorHex, setColorHex] = useState('00a8ff');
-  const [embedData, setEmbedData] = useState<EmbedPlayResponse | null>(null);
+  const [embedData, setEmbedData] = useState<CleanStreamPayload | null>(null);
   const [detail, setDetail] = useState<MediaDetail | null>(null);
   const [seasonDetail, setSeasonDetail] = useState<SeasonDetail | null>(null);
 
@@ -58,18 +50,6 @@ export function PlayerPage() {
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Load configurable defaults from server
-  useEffect(() => {
-    apiRequest<PlayerConfig>('/api/player/config')
-      .then((cfg) => {
-        setConfig(cfg);
-        setDomain(cfg.defaultDomain);
-        setPlayer(cfg.defaultPlayer);
-        setColorHex(cfg.defaultColorHex);
-      })
-      .catch(() => {});
-  }, []);
 
   // Load media metadata & seasons
   useEffect(() => {
@@ -89,7 +69,7 @@ export function PlayerPage() {
       .catch(() => {});
   }, [tmdbId, mediaType, seasonParam]);
 
-  // Resolve MegaEmbed URL from backend PlayerService
+  // Resolve playback URL from backend using admin's global configuration
   const loadEmbed = useCallback(async () => {
     if (!tmdbId) return;
     setEmbedData(null);
@@ -97,24 +77,21 @@ export function PlayerPage() {
     setIframeTimedOut(false);
     setErrorMsg(null);
     try {
-      const params = new URLSearchParams({
-        domain,
-        player,
-        color: colorHex,
-      });
+      const params = new URLSearchParams();
       if (mediaType === 'tv') {
         params.set('season', String(seasonParam));
         params.set('episode', String(episodeParam));
       }
-      const res = await apiRequest<EmbedPlayResponse>(
-        `/api/player/${mediaType}/${tmdbId}?${params.toString()}`
+      const queryStr = params.toString();
+      const res = await apiRequest<CleanStreamPayload>(
+        `/api/player/${mediaType}/${tmdbId}${queryStr ? `?${queryStr}` : ''}`
       );
       setEmbedData(res);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Falha ao resolver player MegaEmbed.');
+      setErrorMsg(err instanceof Error ? err.message : 'Não foi possível iniciar a reprodução.');
       setIframeLoading(false);
     }
-  }, [tmdbId, mediaType, domain, player, colorHex, seasonParam, episodeParam]);
+  }, [tmdbId, mediaType, seasonParam, episodeParam]);
 
   useEffect(() => {
     void loadEmbed();
@@ -135,10 +112,9 @@ export function PlayerPage() {
       progressPercent: prev ? Math.min(95, prev.progressPercent + 10) : 15,
       seasonNumber: mediaType === 'tv' ? seasonParam : undefined,
       episodeNumber: mediaType === 'tv' ? episodeParam : undefined,
-      playerProvider: player,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail?.tmdbId, seasonParam, episodeParam, player]);
+  }, [detail?.tmdbId, seasonParam, episodeParam]);
 
   // Timeout guard if embedded iframe does not fire onLoad within 12s
   useEffect(() => {
@@ -169,10 +145,18 @@ export function PlayerPage() {
     (h) => h.tmdbId === Number(tmdbId) && h.mediaType === mediaType
   );
 
+  const currentEpisode =
+    mediaType === 'tv'
+      ? seasonDetail?.episodes.find((ep) => ep.episodeNumber === episodeParam) ?? null
+      : null;
+
   return (
     <div className="min-h-screen bg-[#03050e] text-white flex flex-col">
-      {/* Top Cinema Control Bar */}
-      <header className="px-4 sm:px-6 py-3 ms-glass border-b flex flex-wrap items-center justify-between gap-3" style={{ borderColor: 'var(--ms-border)' }}>
+      {/* Clean Cinema Control Bar */}
+      <header
+        className="px-4 sm:px-6 py-3 ms-glass border-b flex flex-wrap items-center justify-between gap-3"
+        style={{ borderColor: 'var(--ms-border)' }}
+      >
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
@@ -184,70 +168,26 @@ export function PlayerPage() {
           </button>
           <div className="min-w-0">
             <h1 className="font-display text-base sm:text-lg font-bold truncate">
-              {detail?.title || `Conteúdo TMDB #${tmdbId}`}
+              {detail?.title || 'Reproduzindo conteúdo'}
             </h1>
             <p className="text-xs text-slate-400 font-mono-tabular truncate">
               {mediaType === 'tv'
-                ? `Série · TMDB #${tmdbId} · T${seasonParam} Ep.${episodeParam}`
-                : `Filme · TMDB #${tmdbId}`}{' '}
-              · MegaEmbed ({player})
+                ? `Série · Temporada ${seasonParam} · Episódio ${episodeParam}${
+                    currentEpisode?.name ? ` — ${currentEpisode.name}` : ''
+                  }`
+                : `Filme${detail?.releaseYear ? ` · ${detail.releaseYear}` : ''}${
+                    detail?.runtime ? ` · ${formatRuntimeMinutes(detail.runtime)}` : ''
+                  }`}
               {previousProgress ? ` · Retomado (${Math.round(previousProgress.progressPercent)}%)` : ''}
             </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Player Provider Selector */}
-          <select
-            value={player}
-            onChange={(e) => setPlayer(e.target.value as MegaEmbedPlayer)}
-            aria-label="Selecionar player MegaEmbed"
-            className="h-10 px-3 rounded-xl bg-black/50 border text-xs sm:text-sm text-white"
-            style={{ borderColor: 'var(--ms-border)' }}
-          >
-            {(config?.availablePlayers ?? ['vidstack', 'megaplay', 'megatube', 'clappr']).map((p) => (
-              <option key={p} value={p}>
-                Player: {p}
-              </option>
-            ))}
-          </select>
-
-          {/* Domain Selector */}
-          <select
-            value={domain}
-            onChange={(e) => setDomain(e.target.value as MegaEmbedDomain)}
-            aria-label="Selecionar domínio MegaEmbed"
-            className="h-10 px-3 rounded-xl bg-black/50 border text-xs sm:text-sm text-white"
-            style={{ borderColor: 'var(--ms-border)' }}
-          >
-            {(config?.availableDomains ?? ['mgeb.lat', 'mgeb.space']).map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-
-          {/* Color Selector */}
-          <div className="flex items-center gap-1.5 px-2.5 h-10 rounded-xl bg-black/50 border" style={{ borderColor: 'var(--ms-border)' }}>
-            <Palette className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-            {COLOR_PRESETS.map((preset) => (
-              <button
-                key={preset.hex}
-                type="button"
-                onClick={() => setColorHex(preset.hex)}
-                aria-label={`Cor do player: ${preset.label}`}
-                className={`w-5 h-5 rounded-full border-2 cursor-pointer transition-transform ${
-                  colorHex === preset.hex ? 'border-white scale-110' : 'border-transparent'
-                }`}
-                style={{ backgroundColor: `#${preset.hex}` }}
-              />
-            ))}
-          </div>
-
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setReloadNonce((n) => n + 1)}
-            className="h-10 px-3 rounded-xl ms-glass text-xs font-semibold flex items-center gap-1.5 hover:bg-white/10 cursor-pointer"
+            className="h-10 px-3.5 rounded-xl ms-glass text-xs font-semibold flex items-center gap-1.5 hover:bg-white/10 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
             Recarregar
@@ -256,7 +196,7 @@ export function PlayerPage() {
           <button
             type="button"
             onClick={handleFullscreenLandscape}
-            className="h-10 px-3.5 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
+            className="h-10 px-4 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             style={{ backgroundColor: 'var(--ms-accent)' }}
           >
             <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -265,9 +205,9 @@ export function PlayerPage() {
         </div>
       </header>
 
-      {/* Main Responsive Player Area + Series Episode List */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">
-        <div className={mediaType === 'tv' ? 'lg:col-span-8 xl:col-span-9 space-y-3' : 'lg:col-span-12 space-y-3'}>
+      {/* Main Clean Video Area + Title / Episode Details */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">
+        <div className={mediaType === 'tv' ? 'lg:col-span-8 xl:col-span-9 space-y-5' : 'lg:col-span-12 space-y-5'}>
           <div
             ref={containerRef}
             className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border shadow-2xl"
@@ -277,7 +217,7 @@ export function PlayerPage() {
               <iframe
                 key={`${embedData.embedUrl}-${reloadNonce}`}
                 src={embedData.embedUrl}
-                title={detail?.title || `Player MegaEmbed ${tmdbId}`}
+                title={detail?.title || 'Player de vídeo'}
                 className="w-full h-full border-0"
                 allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                 referrerPolicy="no-referrer"
@@ -287,7 +227,7 @@ export function PlayerPage() {
                 }}
                 onError={() => {
                   setIframeLoading(false);
-                  setErrorMsg('Erro ao carregar o iframe do provedor.');
+                  setErrorMsg('Não foi possível iniciar a reprodução deste título no momento.');
                 }}
               />
             )}
@@ -295,12 +235,10 @@ export function PlayerPage() {
             {iframeLoading && !errorMsg && (
               <div className="absolute inset-0 bg-[#050814]/90 flex flex-col items-center justify-center gap-3 p-6 text-center pointer-events-none">
                 <div className="w-10 h-10 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
-                <p className="text-sm font-medium text-white">
-                  Carregando reprodução via MegaEmbed ({domain})...
-                </p>
+                <p className="text-sm font-medium text-white">Carregando reprodução...</p>
                 {iframeTimedOut && (
-                  <p className="text-xs text-amber-300 max-w-md pointer-events-auto">
-                    O provedor está demorando para responder. Você pode trocar o player/domínio acima ou tentar novamente.
+                  <p className="text-xs text-slate-300 max-w-md pointer-events-auto">
+                    O vídeo está demorando para iniciar. Clique em Recarregar no topo para tentar novamente.
                   </p>
                 )}
               </div>
@@ -323,42 +261,114 @@ export function PlayerPage() {
             )}
           </div>
 
-          {embedData && (
-            <div className="ms-glass rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300">
-              <span className="font-mono-tabular truncate">
-                Fonte incorporada: <strong className="text-sky-300">{embedData.embedUrl}</strong>
-              </span>
-              <button
-                type="button"
-                onClick={() => setDomain((d) => (d === 'mgeb.lat' ? 'mgeb.space' : 'mgeb.lat'))}
-                className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium whitespace-nowrap cursor-pointer"
-              >
-                Alternar domínio ({domain === 'mgeb.lat' ? 'mgeb.space' : 'mgeb.lat'})
-              </button>
-            </div>
-          )}
+          {/* Clean Movie / Series / Episode Information Card */}
+          {detail && (
+            <section
+              className="ms-glass rounded-2xl p-5 sm:p-6 space-y-4"
+              aria-label="Informações do título"
+            >
+              {currentEpisode && (
+                <div className="pb-4 border-b space-y-2" style={{ borderColor: 'var(--ms-border)' }}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-sky-300 font-mono-tabular">
+                      Temporada {currentEpisode.seasonNumber} · Episódio {currentEpisode.episodeNumber}
+                    </span>
+                    <div className="flex items-center gap-3 text-xs text-slate-400 font-mono-tabular">
+                      {currentEpisode.runtime && (
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                          {currentEpisode.runtime} min
+                        </span>
+                      )}
+                      {currentEpisode.airDate && (
+                        <span className="inline-flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
+                          {currentEpisode.airDate}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <h2 className="font-display text-lg sm:text-xl font-bold text-white">
+                    {currentEpisode.name}
+                  </h2>
+                  {currentEpisode.overview && (
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      {currentEpisode.overview}
+                    </p>
+                  )}
+                </div>
+              )}
 
-          {embedData?.seriesSupportNote && (
-            <div className="ms-glass rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-sky-200">
-              <Info className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" aria-hidden="true" />
-              <p>{embedData.seriesSupportNote}</p>
-            </div>
+              <div className="flex flex-col sm:flex-row gap-4 sm:items-start justify-between">
+                <div className="space-y-2 flex-1">
+                  <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-300 font-mono-tabular">
+                    <span className="inline-flex items-center gap-1 text-amber-400 font-semibold">
+                      <Star className="w-3.5 h-3.5 fill-amber-400" aria-hidden="true" />
+                      {detail.voteAverage.toFixed(1)}/10
+                    </span>
+                    {detail.releaseYear && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>{detail.releaseYear}</span>
+                      </>
+                    )}
+                    {detail.runtime && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>{formatRuntimeMinutes(detail.runtime)}</span>
+                      </>
+                    )}
+                    {detail.genres && detail.genres.length > 0 && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-sky-300">
+                          {detail.genres.map((g) => g.name).join(' / ')}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <h3 className="font-display text-lg font-bold text-white flex items-center gap-2">
+                    {mediaType === 'tv' ? (
+                      <Tv className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Film className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                    )}
+                    {detail.title}
+                  </h3>
+
+                  {detail.overview && (
+                    <p className="text-sm text-slate-300 leading-relaxed">{detail.overview}</p>
+                  )}
+
+                  {detail.director && (
+                    <p className="text-xs text-slate-400 pt-1">
+                      Direção / Criação: <span className="text-slate-200">{detail.director}</span>
+                    </p>
+                  )}
+                </div>
+
+                <Link
+                  to={mediaType === 'tv' ? `/series/${detail.tmdbId}` : `/movie/${detail.tmdbId}`}
+                  className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white whitespace-nowrap shrink-0"
+                >
+                  Ver ficha completa
+                </Link>
+              </div>
+            </section>
           )}
         </div>
 
-        {/* Episode Selector Sidebar for Series */}
+        {/* Clean Episode Selector Sidebar for Series */}
         {mediaType === 'tv' && (
-          <aside className="lg:col-span-4 xl:col-span-3 ms-glass rounded-2xl p-4 flex flex-col max-h-[600px]">
+          <aside className="lg:col-span-4 xl:col-span-3 ms-glass rounded-2xl p-4 flex flex-col max-h-[680px]">
             <div className="space-y-2.5 pb-3 border-b" style={{ borderColor: 'var(--ms-border)' }}>
               <div className="flex items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-bold text-white flex items-center gap-2">
                   <Tv className="w-4 h-4 text-sky-400" />
                   Episódios · Temp. {seasonParam}
                 </h2>
-                <Link
-                  to={`/series/${tmdbId}`}
-                  className="text-xs text-sky-300 hover:underline"
-                >
+                <Link to={`/series/${tmdbId}`} className="text-xs text-sky-300 hover:underline">
                   Ver série
                 </Link>
               </div>
@@ -397,15 +407,26 @@ export function PlayerPage() {
                         episode: String(ep.episodeNumber),
                       })
                     }
-                    className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer ${
+                    className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-center gap-2.5 ${
                       isCurrent ? 'text-white' : 'bg-white/5 text-slate-300 hover:bg-white/10'
                     }`}
                     style={isCurrent ? { backgroundColor: 'var(--ms-accent)' } : undefined}
                   >
-                    <p className="text-xs font-mono-tabular opacity-80">
-                      Episódio {ep.episodeNumber}
-                    </p>
-                    <p className="text-sm font-semibold truncate">{ep.name}</p>
+                    {ep.stillPath && (
+                      <img
+                        src={ep.stillPath}
+                        alt={ep.name}
+                        referrerPolicy="no-referrer"
+                        className="w-16 aspect-video rounded-lg object-cover shrink-0 bg-black/40"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] font-mono-tabular opacity-80">
+                        Episódio {ep.episodeNumber}
+                        {ep.runtime ? ` · ${ep.runtime}m` : ''}
+                      </p>
+                      <p className="text-sm font-semibold truncate">{ep.name}</p>
+                    </div>
                   </button>
                 );
               })}

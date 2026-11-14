@@ -139,6 +139,57 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidSiteConfig(data) {
+      return data.keys().hasAll([
+          'siteName', 'siteSlogan', 'defaultTheme', 'announcementEnabled',
+          'enableChannels', 'enableAiPage', 'enablePlansPage', 'maintenanceMode',
+          'footerText', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'siteName', 'siteSlogan', 'logoUrl', 'defaultTheme', 'accentColorHex',
+          'announcementEnabled', 'announcementText', 'enableChannels',
+          'enableAiPage', 'enablePlansPage', 'maintenanceMode', 'footerText', 'updatedAt'
+        ])
+        && data.siteName is string && data.siteName.size() >= 1 && data.siteName.size() <= 40
+        && data.siteSlogan is string && data.siteSlogan.size() >= 1 && data.siteSlogan.size() <= 100
+        && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 500))
+        && data.defaultTheme in ['cinematografico', 'neon-roxo', 'minimalista', 'gold-premium', '3d-glass']
+        && (!('accentColorHex' in data) || (data.accentColorHex is string && data.accentColorHex.size() <= 12))
+        && data.announcementEnabled is bool
+        && (!('announcementText' in data) || (data.announcementText is string && data.announcementText.size() <= 180))
+        && data.enableChannels is bool
+        && data.enableAiPage is bool
+        && data.enablePlansPage is bool
+        && data.maintenanceMode is bool
+        && data.footerText is string && data.footerText.size() >= 1 && data.footerText.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomMedia(data, mediaId) {
+      return data.keys().hasAll([
+          'id', 'tmdbId', 'mediaType', 'title', 'overview', 'featured', 'active', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'tmdbId', 'mediaType', 'title', 'originalTitle', 'overview',
+          'posterPath', 'backdropPath', 'releaseYear', 'voteAverage',
+          'customStreamUrl', 'featured', 'active', 'updatedAt'
+        ])
+        && data.id is string && data.id == mediaId && isValidId(data.id)
+        && data.tmdbId is number && data.tmdbId > 0
+        && data.mediaType in ['movie', 'tv']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && (!('originalTitle' in data) || (data.originalTitle is string && data.originalTitle.size() <= 160))
+        && data.overview is string && data.overview.size() <= 1000
+        && (!('posterPath' in data) || data.posterPath == null || (data.posterPath is string && data.posterPath.size() <= 500))
+        && (!('backdropPath' in data) || data.backdropPath == null || (data.backdropPath is string && data.backdropPath.size() <= 500))
+        && (!('releaseYear' in data) || (data.releaseYear is string && data.releaseYear.size() <= 8))
+        && (!('voteAverage' in data) || (data.voteAverage is number && data.voteAverage >= 0 && data.voteAverage <= 10))
+        && (!('customStreamUrl' in data) || (data.customStreamUrl is string && data.customStreamUrl.size() <= 500))
+        && data.featured is bool
+        && data.active is bool
+        && data.updatedAt is timestamp;
+    }
+
     // Collection: /users/{userId}
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -281,6 +332,28 @@ service cloud.firestore {
     match /admins/{adminId} {
       allow get, list: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // Collection: /siteConfig/{configId}
+    match /siteConfig/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(configId)
+        && isValidSiteConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // Collection: /customCatalog/{mediaId}
+    match /customCatalog/{mediaId} {
+      allow get: if isValidId(mediaId) && (existing().active == true || isAdmin());
+      allow list: if resource.data.active == true || isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(mediaId)
+        && isValidCustomMedia(incoming(), mediaId)
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(mediaId);
     }
 
     // Connection check document (read-only ping)

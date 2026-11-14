@@ -29,6 +29,12 @@ import {
   validateProfilePin,
   verifyProfilePin,
 } from './profileUtils.ts';
+import {
+  DEFAULT_SITE_CONFIG,
+  mergeCustomCatalogIntoList,
+  sanitizeCustomMediaInput,
+  sanitizeSiteConfig,
+} from './siteConfigUtils.ts';
 import type { MediaItem } from './types.ts';
 
 test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragment', () => {
@@ -291,5 +297,56 @@ test('shouldShowProfileGate appears only when authenticated and profile not yet 
     false
   );
 });
+
+test('sanitizeSiteConfig validates site name, theme, accent color, and feature flags', () => {
+  const updated = sanitizeSiteConfig(
+    {
+      siteName: '<b>CineMega</b>',
+      siteSlogan: '  O melhor cinema  ',
+      defaultTheme: 'gold-premium',
+      accentColorHex: '#ff5500',
+      announcementEnabled: true,
+      announcementText: '<script>Aviso</script> Manutenção hoje',
+      enableChannels: false,
+      logoUrl: 'javascript:alert(1)',
+    },
+    DEFAULT_SITE_CONFIG
+  );
+
+  assert.equal(updated.siteName, 'bCineMega/b');
+  assert.equal(updated.siteSlogan, 'O melhor cinema');
+  assert.equal(updated.defaultTheme, 'gold-premium');
+  assert.equal(updated.accentColorHex, 'ff5500');
+  assert.equal(updated.announcementEnabled, true);
+  assert.equal(updated.announcementText, 'scriptAviso/script Manutenção hoje');
+  assert.equal(updated.enableChannels, false);
+  assert.equal(updated.logoUrl, '');
+});
+
+test('sanitizeCustomMediaInput and mergeCustomCatalogIntoList support adding and overriding media', () => {
+  const customOverride = sanitizeCustomMediaInput({
+    tmdbId: 693134,
+    mediaType: 'movie',
+    title: 'Duna: Edição Especial Admin',
+    releaseYear: '2024',
+    voteAverage: 9.8,
+    featured: true,
+    customStreamUrl: 'https://cdn.example.com/dune-special',
+  });
+
+  const brandNew = sanitizeCustomMediaInput({
+    tmdbId: 900123,
+    mediaType: 'movie',
+    title: 'Documentário Exclusivo',
+    overview: 'Produção especial.',
+  });
+
+  const merged = mergeCustomCatalogIntoList(SAMPLE_ITEMS, [customOverride, brandNew], 'movie');
+  assert.equal(merged.some((m) => m.title === 'Documentário Exclusivo'), true);
+  const overridden = merged.find((m) => m.tmdbId === 693134 && m.mediaType === 'movie');
+  assert.equal(overridden?.title, 'Duna: Edição Especial Admin');
+  assert.equal(overridden?.voteAverage, 9.8);
+});
+
 
 
