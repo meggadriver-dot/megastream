@@ -36,8 +36,13 @@ export function PlayerPage() {
   const { recordPlayback, history } = useAuth();
 
   const mediaType: MediaType = type === 'tv' ? 'tv' : 'movie';
-  const seasonParam = Number(searchParams.get('season') || 1);
-  const episodeParam = Number(searchParams.get('episode') || 1);
+  const rawSeason = searchParams.get('season');
+  const parsedSeason = rawSeason !== null && rawSeason.trim() !== '' ? Number(rawSeason) : 1;
+  const seasonParam = Number.isInteger(parsedSeason) && parsedSeason >= 0 ? parsedSeason : 1;
+
+  const rawEpisode = searchParams.get('episode');
+  const parsedEpisode = rawEpisode !== null && rawEpisode.trim() !== '' ? Number(rawEpisode) : 1;
+  const episodeParam = Number.isInteger(parsedEpisode) && parsedEpisode >= 1 ? parsedEpisode : 1;
 
   const [config, setConfig] = useState<PlayerConfig | null>(null);
   const [domain, setDomain] = useState<MegaEmbedDomain>('mgeb.lat');
@@ -87,6 +92,7 @@ export function PlayerPage() {
   // Resolve MegaEmbed URL from backend PlayerService
   const loadEmbed = useCallback(async () => {
     if (!tmdbId) return;
+    setEmbedData(null);
     setIframeLoading(true);
     setIframeTimedOut(false);
     setErrorMsg(null);
@@ -181,7 +187,10 @@ export function PlayerPage() {
               {detail?.title || `Conteúdo TMDB #${tmdbId}`}
             </h1>
             <p className="text-xs text-slate-400 font-mono-tabular truncate">
-              {mediaType === 'tv' ? `Série · T${seasonParam} Ep.${episodeParam}` : 'Filme'} · MegaEmbed ({player})
+              {mediaType === 'tv'
+                ? `Série · TMDB #${tmdbId} · T${seasonParam} Ep.${episodeParam}`
+                : `Filme · TMDB #${tmdbId}`}{' '}
+              · MegaEmbed ({player})
               {previousProgress ? ` · Retomado (${Math.round(previousProgress.progressPercent)}%)` : ''}
             </p>
           </div>
@@ -340,17 +349,39 @@ export function PlayerPage() {
         {/* Episode Selector Sidebar for Series */}
         {mediaType === 'tv' && (
           <aside className="lg:col-span-4 xl:col-span-3 ms-glass rounded-2xl p-4 flex flex-col max-h-[600px]">
-            <div className="flex items-center justify-between gap-2 pb-3 border-b" style={{ borderColor: 'var(--ms-border)' }}>
-              <h2 className="font-display text-sm font-bold text-white flex items-center gap-2">
-                <Tv className="w-4 h-4 text-sky-400" />
-                Episódios · Temp. {seasonParam}
-              </h2>
-              <Link
-                to={`/series/${tmdbId}`}
-                className="text-xs text-sky-300 hover:underline"
-              >
-                Ver série
-              </Link>
+            <div className="space-y-2.5 pb-3 border-b" style={{ borderColor: 'var(--ms-border)' }}>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-display text-sm font-bold text-white flex items-center gap-2">
+                  <Tv className="w-4 h-4 text-sky-400" />
+                  Episódios · Temp. {seasonParam}
+                </h2>
+                <Link
+                  to={`/series/${tmdbId}`}
+                  className="text-xs text-sky-300 hover:underline"
+                >
+                  Ver série
+                </Link>
+              </div>
+              {detail?.seasons && detail.seasons.length > 0 && (
+                <select
+                  value={seasonParam}
+                  onChange={(e) =>
+                    setSearchParams({
+                      season: e.target.value,
+                      episode: '1',
+                    })
+                  }
+                  aria-label="Selecionar temporada no player"
+                  className="w-full h-9 px-3 rounded-xl bg-black/50 border text-xs text-white"
+                  style={{ borderColor: 'var(--ms-border)' }}
+                >
+                  {detail.seasons.map((s) => (
+                    <option key={s.id} value={s.seasonNumber}>
+                      {s.name} ({s.episodeCount} ep.)
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2 pt-3">

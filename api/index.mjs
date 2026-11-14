@@ -27,8 +27,8 @@ var DEFAULT_PLAYER_CONFIG = {
   defaultPlayer: "vidstack",
   availablePlayers: ["vidstack", "megaplay", "megatube", "clappr"],
   defaultColorHex: "00a8ff",
-  seriesSeasonEpisodeDocumented: false,
-  seriesLimitationNote: "A documenta\xE7\xE3o p\xFAblica do MegaEmbed define o endpoint base /embed/{TMDB_ID} com ?player= e #color:. Par\xE2metros espec\xEDficos de temporada e epis\xF3dio n\xE3o s\xE3o presumidos sem confirma\xE7\xE3o oficial do provedor."
+  seriesSeasonEpisodeDocumented: true,
+  seriesLimitationNote: "S\xE9ries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:."
 };
 function sanitizeHexColor(input, fallback = "00a8ff") {
   if (!input) return fallback;
@@ -60,6 +60,26 @@ function normalizeTmdbId(value) {
   }
   return parsed;
 }
+function normalizeSeasonNumber(value, fallback = 1) {
+  if (value === void 0 || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 999) {
+    return fallback;
+  }
+  return parsed;
+}
+function normalizeEpisodeNumber(value, fallback = 1) {
+  if (value === void 0 || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 9999) {
+    return fallback;
+  }
+  return parsed;
+}
 function buildMegaEmbedUrl(params) {
   const validId = normalizeTmdbId(params.tmdbId);
   if (!validId) {
@@ -68,6 +88,11 @@ function buildMegaEmbedUrl(params) {
   const domain = validateMegaEmbedDomain(params.domain, DEFAULT_PLAYER_CONFIG.defaultDomain);
   const player = validateMegaEmbedPlayer(params.player, DEFAULT_PLAYER_CONFIG.defaultPlayer);
   const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
+  if (params.mediaType === "tv") {
+    const season = normalizeSeasonNumber(params.seasonNumber, 1);
+    const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+    return `https://${domain}/embed/${validId}/${season}/${episode}?player=${encodeURIComponent(player)}#color:${color}`;
+  }
   return `https://${domain}/embed/${validId}?player=${encodeURIComponent(player)}#color:${color}`;
 }
 function buildTmdbImageUrl(path4, size = "w500", baseUrl = "https://image.tmdb.org/t/p/") {
@@ -1749,12 +1774,16 @@ var MegaEmbedServiceImpl = class {
     const domain = validateMegaEmbedDomain(params.domain, cfg.defaultDomain);
     const player = validateMegaEmbedPlayer(params.player, cfg.defaultPlayer);
     const colorHex = sanitizeHexColor(params.colorHex, cfg.defaultColorHex);
+    const seasonNumber = params.mediaType === "tv" ? normalizeSeasonNumber(params.seasonNumber, 1) : void 0;
+    const episodeNumber = params.mediaType === "tv" ? normalizeEpisodeNumber(params.episodeNumber, 1) : void 0;
     const embedUrl = buildMegaEmbedUrl({
       tmdbId: validId,
       domain,
       player,
       colorHex,
-      mediaType: params.mediaType
+      mediaType: params.mediaType,
+      seasonNumber,
+      episodeNumber
     });
     return {
       tmdbId: validId,
@@ -1763,9 +1792,9 @@ var MegaEmbedServiceImpl = class {
       domain,
       player,
       colorHex,
-      seasonNumber: params.seasonNumber,
-      episodeNumber: params.episodeNumber,
-      ...params.mediaType === "tv" ? {
+      seasonNumber,
+      episodeNumber,
+      ...params.mediaType === "tv" && !cfg.seriesSeasonEpisodeDocumented ? {
         seriesSupportNote: cfg.seriesLimitationNote
       } : {}
     };
@@ -2072,8 +2101,8 @@ function createApiApp() {
   });
   app2.get("/api/player/tv/:tmdbId", (req, res) => {
     try {
-      const seasonNumber = req.query.season ? Number(req.query.season) : void 0;
-      const episodeNumber = req.query.episode ? Number(req.query.episode) : void 0;
+      const seasonNumber = typeof req.query.season === "string" && req.query.season.trim() !== "" ? Number(req.query.season) : void 0;
+      const episodeNumber = typeof req.query.episode === "string" && req.query.episode.trim() !== "" ? Number(req.query.episode) : void 0;
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
         mediaType: "tv",

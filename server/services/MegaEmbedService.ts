@@ -1,5 +1,7 @@
 import {
   buildMegaEmbedUrl,
+  normalizeEpisodeNumber,
+  normalizeSeasonNumber,
   normalizeTmdbId,
   sanitizeHexColor,
   validateMegaEmbedDomain,
@@ -27,6 +29,10 @@ class MegaEmbedServiceImpl {
     const domain = validateMegaEmbedDomain(params.domain, cfg.defaultDomain);
     const player = validateMegaEmbedPlayer(params.player, cfg.defaultPlayer);
     const colorHex = sanitizeHexColor(params.colorHex, cfg.defaultColorHex);
+    const seasonNumber =
+      params.mediaType === 'tv' ? normalizeSeasonNumber(params.seasonNumber, 1) : undefined;
+    const episodeNumber =
+      params.mediaType === 'tv' ? normalizeEpisodeNumber(params.episodeNumber, 1) : undefined;
 
     const embedUrl = buildMegaEmbedUrl({
       tmdbId: validId,
@@ -34,6 +40,8 @@ class MegaEmbedServiceImpl {
       player,
       colorHex,
       mediaType: params.mediaType,
+      seasonNumber,
+      episodeNumber,
     });
 
     return {
@@ -43,9 +51,9 @@ class MegaEmbedServiceImpl {
       domain,
       player,
       colorHex,
-      seasonNumber: params.seasonNumber,
-      episodeNumber: params.episodeNumber,
-      ...(params.mediaType === 'tv'
+      seasonNumber,
+      episodeNumber,
+      ...(params.mediaType === 'tv' && !cfg.seriesSeasonEpisodeDocumented
         ? {
             seriesSupportNote: cfg.seriesLimitationNote,
           }

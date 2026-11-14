@@ -191,7 +191,11 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
 
               <div className="flex flex-wrap items-center gap-3 pt-2">
                 <Link
-                  to={`/watch/${detail.mediaType}/${detail.tmdbId}`}
+                  to={
+                    detail.mediaType === 'tv'
+                      ? `/watch/tv/${detail.tmdbId}?season=${selectedSeason}&episode=1`
+                      : `/watch/${detail.mediaType}/${detail.tmdbId}`
+                  }
                   className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white ms-glow transition-transform hover:scale-[1.02] whitespace-nowrap"
                   style={{ backgroundColor: 'var(--ms-accent)' }}
                 >

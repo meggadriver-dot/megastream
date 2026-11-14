@@ -23,9 +23,9 @@ export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
   defaultPlayer: 'vidstack',
   availablePlayers: ['vidstack', 'megaplay', 'megatube', 'clappr'],
   defaultColorHex: '00a8ff',
-  seriesSeasonEpisodeDocumented: false,
+  seriesSeasonEpisodeDocumented: true,
   seriesLimitationNote:
-    'A documentação pública do MegaEmbed define o endpoint base /embed/{TMDB_ID} com ?player= e #color:. Parâmetros específicos de temporada e episódio não são presumidos sem confirmação oficial do provedor.',
+    'Séries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:.',
 };
 
 export function sanitizeHexColor(input?: string | null, fallback = '00a8ff'): string {
@@ -71,12 +71,42 @@ export function normalizeTmdbId(value: string | number): number | null {
   return parsed;
 }
 
+export function normalizeSeasonNumber(
+  value?: string | number | null,
+  fallback = 1
+): number {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 999) {
+    return fallback;
+  }
+  return parsed;
+}
+
+export function normalizeEpisodeNumber(
+  value?: string | number | null,
+  fallback = 1
+): number {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 9999) {
+    return fallback;
+  }
+  return parsed;
+}
+
 export function buildMegaEmbedUrl(params: {
   tmdbId: number;
   domain?: string | null;
   player?: string | null;
   colorHex?: string | null;
   mediaType?: MediaType;
+  seasonNumber?: number | string | null;
+  episodeNumber?: number | string | null;
 }): string {
   const validId = normalizeTmdbId(params.tmdbId);
   if (!validId) {
@@ -86,6 +116,12 @@ export function buildMegaEmbedUrl(params: {
   const domain = validateMegaEmbedDomain(params.domain, DEFAULT_PLAYER_CONFIG.defaultDomain);
   const player = validateMegaEmbedPlayer(params.player, DEFAULT_PLAYER_CONFIG.defaultPlayer);
   const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
+
+  if (params.mediaType === 'tv') {
+    const season = normalizeSeasonNumber(params.seasonNumber, 1);
+    const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+    return `https://${domain}/embed/${validId}/${season}/${episode}?player=${encodeURIComponent(player)}#color:${color}`;
+  }
 
   return `https://${domain}/embed/${validId}?player=${encodeURIComponent(player)}#color:${color}`;
 }

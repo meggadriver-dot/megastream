@@ -247,8 +247,14 @@ export function createApiApp(): Express {
 
   app.get('/api/player/tv/:tmdbId', (req, res) => {
     try {
-      const seasonNumber = req.query.season ? Number(req.query.season) : undefined;
-      const episodeNumber = req.query.episode ? Number(req.query.episode) : undefined;
+      const seasonNumber =
+        typeof req.query.season === 'string' && req.query.season.trim() !== ''
+          ? Number(req.query.season)
+          : undefined;
+      const episodeNumber =
+        typeof req.query.episode === 'string' && req.query.episode.trim() !== ''
+          ? Number(req.query.episode)
+          : undefined;
       const payload = PlayerService.resolveStream({
         tmdbId: req.params.tmdbId,
         mediaType: 'tv',

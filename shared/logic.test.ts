@@ -29,6 +29,48 @@ test('buildMegaEmbedUrl generates valid mgeb.lat URL with player and color fragm
   assert.equal(url, 'https://mgeb.lat/embed/1439930?player=vidstack#color:fb542b');
 });
 
+test('buildMegaEmbedUrl includes season and episode path segments for TV episodes', () => {
+  const ep1 = buildMegaEmbedUrl({
+    tmdbId: 1399,
+    mediaType: 'tv',
+    seasonNumber: 1,
+    episodeNumber: 1,
+    domain: 'mgeb.lat',
+    player: 'vidstack',
+    colorHex: '00a8ff',
+  });
+  const ep2 = buildMegaEmbedUrl({
+    tmdbId: 1399,
+    mediaType: 'tv',
+    seasonNumber: 1,
+    episodeNumber: 2,
+    domain: 'mgeb.lat',
+    player: 'vidstack',
+    colorHex: '00a8ff',
+  });
+  const s2ep5 = buildMegaEmbedUrl({
+    tmdbId: 1399,
+    mediaType: 'tv',
+    seasonNumber: 2,
+    episodeNumber: 5,
+    domain: 'mgeb.space',
+    player: 'megaplay',
+    colorHex: '#fb542b',
+  });
+  const specialEp = buildMegaEmbedUrl({
+    tmdbId: 1399,
+    mediaType: 'tv',
+    seasonNumber: 0,
+    episodeNumber: 3,
+  });
+
+  assert.equal(ep1, 'https://mgeb.lat/embed/1399/1/1?player=vidstack#color:00a8ff');
+  assert.equal(ep2, 'https://mgeb.lat/embed/1399/1/2?player=vidstack#color:00a8ff');
+  assert.notEqual(ep1, ep2);
+  assert.equal(s2ep5, 'https://mgeb.space/embed/1399/2/5?player=megaplay#color:fb542b');
+  assert.equal(specialEp, 'https://mgeb.lat/embed/1399/0/3?player=vidstack#color:00a8ff');
+});
+
 test('buildMegaEmbedUrl supports mgeb.space and falls back safely on invalid inputs', () => {
   const url = buildMegaEmbedUrl({
     tmdbId: 693134,
@@ -37,6 +79,14 @@ test('buildMegaEmbedUrl supports mgeb.space and falls back safely on invalid inp
     colorHex: 'invalid',
   });
   assert.equal(url, 'https://mgeb.space/embed/693134?player=vidstack#color:00a8ff');
+
+  const tvFallback = buildMegaEmbedUrl({
+    tmdbId: 82856,
+    mediaType: 'tv',
+    seasonNumber: -3,
+    episodeNumber: 0,
+  });
+  assert.equal(tvFallback, 'https://mgeb.lat/embed/82856/1/1?player=vidstack#color:00a8ff');
 });
 
 test('buildMegaEmbedUrl rejects invalid TMDB IDs', () => {
