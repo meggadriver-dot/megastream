@@ -500,6 +500,14 @@ var JsonRepositoryStore = class {
     this.save();
     return item;
   }
+  removeHistory(userId, tmdbId, mediaType) {
+    const list = this.state.history[userId] ?? [];
+    const next = list.filter((h) => !(h.tmdbId === tmdbId && h.mediaType === mediaType));
+    const removed = next.length !== list.length;
+    this.state.history[userId] = next;
+    this.save();
+    return removed;
+  }
   getChannels() {
     return Object.values(this.state.channels).sort(
       (a, b) => b.createdAt.localeCompare(a.createdAt)
@@ -2284,6 +2292,14 @@ var HistoryServiceImpl = class {
     };
     return repositoryStore.upsertHistory(item);
   }
+  remove(userId, tmdbId, mediaType) {
+    const existing = repositoryStore.getHistory(userId);
+    const filtered = existing.filter(
+      (h) => !(h.tmdbId === tmdbId && h.mediaType === mediaType)
+    );
+    if (filtered.length === existing.length) return false;
+    return repositoryStore.removeHistory(userId, tmdbId, mediaType);
+  }
 };
 var HistoryService = new HistoryServiceImpl();
 
@@ -3141,6 +3157,13 @@ function createApiApp() {
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao registrar hist\xF3rico." });
     }
+  });
+  app2.delete("/api/users/history/:id", requireAuth, (req, res) => {
+    const tmdbId = normalizeTmdbId(req.params.id);
+    const mediaType = req.query.type === "tv" ? "tv" : "movie";
+    if (!tmdbId) return res.status(400).json({ error: "ID TMDB inv\xE1lido." });
+    const removed = HistoryService.remove(req.identity.uid, tmdbId, mediaType);
+    res.json({ removed });
   });
   app2.get("/api/admin/dashboard", requireAdmin, async (_req, res, next) => {
     try {

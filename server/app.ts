@@ -448,6 +448,14 @@ export function createApiApp(): Express {
     }
   });
 
+  app.delete('/api/users/history/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+    const tmdbId = normalizeTmdbId(req.params.id);
+    const mediaType = req.query.type === 'tv' ? 'tv' : 'movie';
+    if (!tmdbId) return res.status(400).json({ error: 'ID TMDB inválido.' });
+    const removed = HistoryService.remove(req.identity!.uid, tmdbId, mediaType);
+    res.json({ removed });
+  });
+
   // --- Admin Panel (Backend Role-Verified) ---
   app.get('/api/admin/dashboard', requireAdmin, async (_req, res, next) => {
     try {

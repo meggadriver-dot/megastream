@@ -36,7 +36,60 @@ import {
   sanitizeSiteConfig,
   toIsoTimestamp,
 } from './siteConfigUtils.ts';
+import {
+  buildFavoriteRecord,
+  buildHistoryRecord,
+  mergeFavoriteLists,
+  mergeHistoryLists,
+} from './userLibraryUtils.ts';
 import type { MediaItem } from './types.ts';
+
+test('buildFavoriteRecord and buildHistoryRecord clamp values and preserve order on merge', () => {
+  const favA = buildFavoriteRecord('user_1', {
+    tmdbId: 693134,
+    mediaType: 'movie',
+    title: '',
+    voteAverage: 14.2,
+    releaseYear: '2024',
+    createdAt: '2026-10-01T10:00:00.000Z',
+  });
+  assert.equal(favA.title, 'Título');
+  assert.equal(favA.voteAverage, 10);
+  assert.equal(favA.id, 'movie_693134');
+
+  const favB = buildFavoriteRecord('user_1', {
+    tmdbId: 82856,
+    mediaType: 'tv',
+    title: 'The Mandalorian',
+    createdAt: '2026-11-01T10:00:00.000Z',
+  });
+  const mergedFavs = mergeFavoriteLists([favA], [favB, favA]);
+  assert.equal(mergedFavs.length, 2);
+  assert.equal(mergedFavs[0].id, 'tv_82856');
+
+  const histOld = buildHistoryRecord('user_1', {
+    tmdbId: 1399,
+    mediaType: 'tv',
+    title: 'Game of Thrones',
+    progressPercent: 25,
+    seasonNumber: 1,
+    episodeNumber: 1,
+    watchedAt: '2026-10-01T10:00:00.000Z',
+  });
+  const histNew = buildHistoryRecord('user_1', {
+    tmdbId: 1399,
+    mediaType: 'tv',
+    title: 'Game of Thrones',
+    progressPercent: 130,
+    seasonNumber: 1,
+    episodeNumber: 2,
+    watchedAt: '2026-11-10T10:00:00.000Z',
+  });
+  assert.equal(histNew.progressPercent, 100);
+  const mergedHist = mergeHistoryLists([histOld], [histNew]);
+  assert.equal(mergedHist.length, 1);
+  assert.equal(mergedHist[0].episodeNumber, 2);
+});
 
 test('toIsoTimestamp handles ISO strings, numbers, and Firestore-like Timestamp objects', () => {
   assert.equal(toIsoTimestamp('2026-11-14T12:00:00Z'), '2026-11-14T12:00:00.000Z');

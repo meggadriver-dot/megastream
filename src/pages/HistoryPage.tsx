@@ -1,10 +1,10 @@
 import React from 'react';
-import { History, Play } from 'lucide-react';
+import { History, Play, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 export function HistoryPage() {
-  const { history } = useAuth();
+  const { history, removeFromHistory } = useAuth();
 
   return (
     <div className="space-y-6">
@@ -91,14 +91,26 @@ export function HistoryPage() {
                   </div>
                 </div>
 
-                <Link
-                  to={watchUrl}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-white shrink-0 whitespace-nowrap"
-                  style={{ backgroundColor: 'var(--ms-accent)' }}
-                >
-                  <Play className="w-4 h-4 fill-current" />
-                  Retomar ({Math.round(item.progressPercent)}%)
-                </Link>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Link
+                    to={watchUrl}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-white whitespace-nowrap"
+                    style={{ backgroundColor: 'var(--ms-accent)' }}
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    Retomar ({Math.round(item.progressPercent)}%)
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={() => void removeFromHistory(item.tmdbId, item.mediaType)}
+                    aria-label={`Remover ${item.title} do histórico`}
+                    title="Remover do histórico"
+                    className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-red-600/80 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
               </article>
             );
           })}

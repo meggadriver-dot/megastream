@@ -211,7 +211,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(userId)
         && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
@@ -220,7 +220,7 @@ service cloud.firestore {
         && incoming().plan == 'free'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(userId)
         && isValidUserProfile(incoming(), userId)
         && incoming().uid == existing().uid
@@ -245,25 +245,35 @@ service cloud.firestore {
       match /favorites/{favoriteId} {
         allow get: if isValidId(userId) && isValidId(favoriteId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidId(userId) && isValidId(favoriteId)
           && isOwner(userId)
           && isValidFavoriteItem(incoming(), userId)
           && incoming().createdAt == request.time;
-        allow update: if false;
-        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(favoriteId) && (isOwner(userId) || isAdmin());
+        allow update: if isSignedIn()
+          && isValidId(userId) && isValidId(favoriteId)
+          && isOwner(userId)
+          && isValidFavoriteItem(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().tmdbId == existing().tmdbId
+          && incoming().mediaType == existing().mediaType
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'posterPath', 'voteAverage', 'releaseYear'
+          ]);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(favoriteId) && (isOwner(userId) || isAdmin());
       }
 
       // Subcollection: /users/{userId}/history/{historyId}
       match /history/{historyId} {
         allow get: if isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidId(userId) && isValidId(historyId)
           && isOwner(userId)
           && isValidHistoryItem(incoming(), userId)
           && incoming().watchedAt == request.time;
-        allow update: if isVerifiedUser()
+        allow update: if isSignedIn()
           && isValidId(userId) && isValidId(historyId)
           && isOwner(userId)
           && isValidHistoryItem(incoming(), userId)
@@ -275,20 +285,20 @@ service cloud.firestore {
             'title', 'posterPath', 'backdropPath', 'progressPercent',
             'seasonNumber', 'episodeNumber', 'playerProvider', 'watchedAt'
           ]);
-        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(historyId) && (isOwner(userId) || isAdmin());
       }
 
       // Subcollection: /users/{userId}/profiles/{profileId}
       match /profiles/{profileId} {
         allow get: if isValidId(userId) && isValidId(profileId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidId(userId) && isValidId(profileId)
           && isOwner(userId)
           && isValidStreamProfile(incoming(), userId, profileId)
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time;
-        allow update: if isVerifiedUser()
+        allow update: if isSignedIn()
           && isValidId(userId) && isValidId(profileId)
           && isValidStreamProfile(incoming(), userId, profileId)
           && incoming().id == existing().id
@@ -306,7 +316,7 @@ service cloud.firestore {
               ])
             )
           );
-        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(profileId) && (isOwner(userId) || isAdmin());
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(profileId) && (isOwner(userId) || isAdmin());
       }
     }
 

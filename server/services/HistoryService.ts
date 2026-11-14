@@ -51,6 +51,16 @@ class HistoryServiceImpl {
 
     return repositoryStore.upsertHistory(item);
   }
+
+  remove(userId: string, tmdbId: number, mediaType: MediaType): boolean {
+    const existing = repositoryStore.getHistory(userId);
+    const filtered = existing.filter(
+      (h) => !(h.tmdbId === tmdbId && h.mediaType === mediaType)
+    );
+    if (filtered.length === existing.length) return false;
+    // Persist removal via repositoryStore
+    return repositoryStore.removeHistory(userId, tmdbId, mediaType);
+  }
 }
 
 export const HistoryService = new HistoryServiceImpl();

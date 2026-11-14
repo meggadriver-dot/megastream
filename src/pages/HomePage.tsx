@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bookmark, Check, Play, Sparkles, Star } from 'lucide-react';
+import { Bookmark, Check, ChevronRight, Play, Sparkles, Star, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import type { GenreItem, MediaItem } from '../../shared/types';
@@ -24,7 +24,7 @@ interface HomeCatalogPayload {
 }
 
 export function HomePage() {
-  const { history, isFavorite, toggleFavorite } = useAuth();
+  const { history, isFavorite, toggleFavorite, removeFromHistory } = useAuth();
   const [data, setData] = useState<HomeCatalogPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,25 +98,6 @@ export function HomePage() {
   }
 
   const featuredFav = featured ? isFavorite(featured.tmdbId, featured.mediaType) : false;
-
-  const continueWatchingItems: MediaItem[] = history.map((h) => ({
-    id: h.tmdbId,
-    tmdbId: h.tmdbId,
-    mediaType: h.mediaType,
-    title: h.title,
-    originalTitle: h.title,
-    overview: '',
-    posterPath: h.posterPath,
-    backdropPath: h.backdropPath,
-    releaseDate: '',
-    releaseYear: `${Math.round(h.progressPercent)}%`,
-    voteAverage: 0,
-    voteCount: 0,
-    popularity: 100,
-    genreIds: [],
-    originalLanguage: 'pt',
-    source: data.source,
-  }));
 
   return (
     <div className="space-y-8">
@@ -261,12 +242,112 @@ export function HomePage() {
         </div>
       </section>
 
-      {continueWatchingItems.length > 0 && (
-        <MediaRow
-          title="Continuar Assistindo"
-          items={continueWatchingItems}
-          seeMoreTo="/history"
-        />
+      {history.length > 0 && (
+        <section className="space-y-3" aria-label="Continuar Assistindo">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="font-display text-lg sm:text-xl font-bold tracking-tight text-white">
+              Continuar Assistindo
+            </h2>
+            <Link
+              to="/history"
+              className="inline-flex items-center gap-1 text-xs sm:text-sm font-medium text-sky-300 hover:text-sky-200 transition-colors"
+            >
+              Ver todos
+              <ChevronRight className="w-4 h-4" aria-hidden="true" />
+            </Link>
+          </div>
+
+          <div className="flex gap-3 sm:gap-4 overflow-x-auto pb-2 ms-scrollbar-hide snap-x">
+            {history.map((item) => {
+              const resumeUrl = `/watch/${item.mediaType}/${item.tmdbId}${
+                item.seasonNumber
+                  ? `?season=${item.seasonNumber}&episode=${item.episodeNumber || 1}`
+                  : ''
+              }`;
+              const thumb = item.backdropPath || item.posterPath;
+              const pct = Math.min(100, Math.max(5, Math.round(item.progressPercent)));
+
+              return (
+                <article
+                  key={`${item.mediaType}-${item.tmdbId}`}
+                  className="group relative flex-shrink-0 w-[220px] sm:w-[250px] snap-start"
+                >
+                  <Link
+                    to={resumeUrl}
+                    className="block rounded-2xl overflow-hidden bg-[#0a122a] border transition-transform duration-300 group-hover:scale-[1.02] group-hover:border-sky-400/50"
+                    style={{ borderColor: 'var(--ms-border)' }}
+                  >
+                    <div className="relative aspect-video overflow-hidden bg-slate-900">
+                      {thumb ? (
+                        <img
+                          src={thumb}
+                          alt={item.title}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="h-full w-full flex items-center justify-center p-3 text-center text-xs text-slate-400">
+                          {item.title}
+                        </div>
+                      )}
+
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent" />
+
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span
+                          className="w-11 h-11 rounded-full flex items-center justify-center text-white ms-glow"
+                          style={{ backgroundColor: 'var(--ms-accent)' }}
+                        >
+                          <Play className="w-5 h-5 fill-current ml-0.5" aria-hidden="true" />
+                        </span>
+                      </div>
+
+                      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 text-[11px] text-slate-200 font-mono-tabular">
+                        <span className="px-2 py-0.5 rounded-md bg-black/75 border border-white/15">
+                          {item.mediaType === 'tv' && item.seasonNumber
+                            ? `T${item.seasonNumber} · Ep.${item.episodeNumber || 1}`
+                            : 'Filme'}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md bg-black/75 border border-white/15">
+                          {pct}%
+                        </span>
+                      </div>
+
+                      <div className="absolute bottom-0 inset-x-0 h-1 bg-white/15">
+                        <div
+                          className="h-full transition-all"
+                          style={{
+                            width: `${pct}%`,
+                            backgroundColor: 'var(--ms-accent-bright)',
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="px-3 py-2.5">
+                      <h3 className="text-sm font-semibold text-white truncate">{item.title}</h3>
+                    </div>
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void removeFromHistory(item.tmdbId, item.mediaType);
+                    }}
+                    aria-label={`Remover ${item.title} de Continuar Assistindo`}
+                    title="Remover de Continuar Assistindo"
+                    className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/75 border border-white/15 text-slate-200 hover:text-white hover:bg-red-600/80 flex items-center justify-center transition-colors cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       <MediaRow

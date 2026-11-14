@@ -33,6 +33,7 @@ export interface IRepositoryStore {
   removeFavorite(userId: string, tmdbId: number, mediaType: 'movie' | 'tv'): boolean;
   getHistory(userId: string): HistoryItem[];
   upsertHistory(item: HistoryItem): HistoryItem;
+  removeHistory(userId: string, tmdbId: number, mediaType: 'movie' | 'tv'): boolean;
   getChannels(): LiveChannel[];
   upsertChannel(channel: LiveChannel): LiveChannel;
   deleteChannel(id: string): boolean;
@@ -198,6 +199,15 @@ class JsonRepositoryStore implements IRepositoryStore {
     this.state.history[item.userId] = [item, ...filtered].slice(0, 100);
     this.save();
     return item;
+  }
+
+  removeHistory(userId: string, tmdbId: number, mediaType: 'movie' | 'tv'): boolean {
+    const list = this.state.history[userId] ?? [];
+    const next = list.filter((h) => !(h.tmdbId === tmdbId && h.mediaType === mediaType));
+    const removed = next.length !== list.length;
+    this.state.history[userId] = next;
+    this.save();
+    return removed;
   }
 
   getChannels(): LiveChannel[] {

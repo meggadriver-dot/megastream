@@ -29,7 +29,7 @@ export function PlayerPage() {
   const { type, tmdbId } = useParams<{ type: string; tmdbId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { recordPlayback, history } = useAuth();
+  const { recordPlayback, history, loading: authLoading, firebaseUser } = useAuth();
 
   const mediaType: MediaType = type === 'tv' ? 'tv' : 'movie';
   const rawSeason = searchParams.get('season');
@@ -50,6 +50,7 @@ export function PlayerPage() {
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const recordedKeyRef = useRef<string | null>(null);
 
   // Load media metadata & seasons
   useEffect(() => {
@@ -97,9 +98,15 @@ export function PlayerPage() {
     void loadEmbed();
   }, [loadEmbed, reloadNonce]);
 
-  // Record playback history automatically
+  // Record playback history automatically after auth settles
   useEffect(() => {
-    if (!detail) return;
+    if (authLoading || !detail) return;
+    const recKey = `${firebaseUser?.uid ?? 'guest'}:${detail.mediaType}:${detail.tmdbId}:${
+      mediaType === 'tv' ? seasonParam : 0
+    }:${mediaType === 'tv' ? episodeParam : 0}`;
+    if (recordedKeyRef.current === recKey) return;
+    recordedKeyRef.current = recKey;
+
     const prev = history.find(
       (h) => h.tmdbId === detail.tmdbId && h.mediaType === detail.mediaType
     );
@@ -113,8 +120,16 @@ export function PlayerPage() {
       seasonNumber: mediaType === 'tv' ? seasonParam : undefined,
       episodeNumber: mediaType === 'tv' ? episodeParam : undefined,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail?.tmdbId, seasonParam, episodeParam]);
+  }, [
+    authLoading,
+    firebaseUser?.uid,
+    detail,
+    mediaType,
+    seasonParam,
+    episodeParam,
+    history,
+    recordPlayback,
+  ]);
 
   // Timeout guard if embedded iframe does not fire onLoad within 12s
   useEffect(() => {
