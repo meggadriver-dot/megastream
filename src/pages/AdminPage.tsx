@@ -278,7 +278,12 @@ export function AdminPage() {
         if (!effectivePlayer.updatedAt || effectivePlayer.updatedAt === DEFAULT_PLAYER_CONFIG.updatedAt || fsTs >= apiTs) {
           effectivePlayer = {
             ...effectivePlayer,
-            sourceMode: fsData.sourceMode === 'custom_template' ? 'custom_template' : effectivePlayer.sourceMode,
+            sourceMode:
+              fsData.sourceMode === 'watchaflix' ||
+              fsData.sourceMode === 'custom_template' ||
+              fsData.sourceMode === 'megaembed'
+                ? fsData.sourceMode
+                : effectivePlayer.sourceMode,
             defaultDomain: fsData.defaultDomain || effectivePlayer.defaultDomain,
             fallbackDomain: fsData.fallbackDomain || effectivePlayer.fallbackDomain,
             autoFallback: typeof fsData.autoFallback === 'boolean' ? fsData.autoFallback : effectivePlayer.autoFallback,
@@ -287,6 +292,14 @@ export function AdminPage() {
               typeof fsData.defaultColorHex === 'string' && fsData.defaultColorHex
                 ? fsData.defaultColorHex
                 : effectivePlayer.defaultColorHex,
+            watchaflixBaseUrl:
+              typeof fsData.watchaflixBaseUrl === 'string' && fsData.watchaflixBaseUrl
+                ? fsData.watchaflixBaseUrl
+                : effectivePlayer.watchaflixBaseUrl,
+            watchaflixLang:
+              fsData.watchaflixLang === 'pt' || fsData.watchaflixLang === 'en'
+                ? fsData.watchaflixLang
+                : effectivePlayer.watchaflixLang,
             customEmbedMovieTemplate:
               typeof fsData.customEmbedMovieTemplate === 'string'
                 ? fsData.customEmbedMovieTemplate
@@ -802,6 +815,8 @@ export function AdminPage() {
         autoFallback: updated.autoFallback,
         defaultPlayer: updated.defaultPlayer,
         defaultColorHex: updated.defaultColorHex,
+        watchaflixBaseUrl: updated.watchaflixBaseUrl,
+        watchaflixLang: updated.watchaflixLang,
         customEmbedMovieTemplate: updated.customEmbedMovieTemplate,
         customEmbedTvTemplate: updated.customEmbedTvTemplate,
         embedTimeoutSeconds: updated.embedTimeoutSeconds,

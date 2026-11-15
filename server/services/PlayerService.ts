@@ -22,6 +22,8 @@ class PlayerServiceImpl {
       autoFallback?: boolean;
       defaultPlayer?: string;
       defaultColorHex?: string;
+      watchaflixBaseUrl?: string;
+      watchaflixLang?: string;
       customEmbedMovieTemplate?: string;
       customEmbedTvTemplate?: string;
       embedTimeoutSeconds?: number;
@@ -42,6 +44,8 @@ class PlayerServiceImpl {
             autoFallback: remote.autoFallback,
             defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
             defaultColorHex: remote.defaultColorHex,
+            watchaflixBaseUrl: remote.watchaflixBaseUrl,
+            watchaflixLang: remote.watchaflixLang as PlayerConfig['watchaflixLang'],
             customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
             customEmbedTvTemplate: remote.customEmbedTvTemplate,
             embedTimeoutSeconds: remote.embedTimeoutSeconds,

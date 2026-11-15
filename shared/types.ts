@@ -113,7 +113,9 @@ export interface PaginatedCatalogResponse {
   demoMode: boolean;
 }
 
-export type PlayerSourceMode = 'megaembed' | 'custom_template';
+export type PlayerSourceMode = 'megaembed' | 'watchaflix' | 'custom_template';
+
+export type WatchaFlixLang = 'pt' | 'en';
 
 export type CatalogSourceMode = 'auto' | 'tmdb' | 'demo' | 'custom_only';
 
@@ -132,6 +134,8 @@ export interface PlayerConfig {
   defaultPlayer: MegaEmbedPlayer;
   availablePlayers: MegaEmbedPlayer[];
   defaultColorHex: string;
+  watchaflixBaseUrl: string;
+  watchaflixLang: WatchaFlixLang;
   customEmbedMovieTemplate: string;
   customEmbedTvTemplate: string;
   embedTimeoutSeconds: number;
@@ -147,6 +151,7 @@ export interface EmbedPlayResponse {
   domain: MegaEmbedDomain;
   player: MegaEmbedPlayer;
   colorHex: string;
+  referrerPolicy?: 'no-referrer' | 'strict-origin';
   seasonNumber?: number;
   episodeNumber?: number;
   seriesSupportNote?: string;

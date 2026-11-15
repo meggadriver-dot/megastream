@@ -3,6 +3,8 @@ import type {
   MegaEmbedPlayer,
   MediaType,
   PlayerConfig,
+  PlayerSourceMode,
+  WatchaFlixLang,
 } from './types.ts';
 
 export const ALLOWED_MEGAEMBED_DOMAINS: readonly MegaEmbedDomain[] = [
@@ -17,6 +19,10 @@ export const ALLOWED_MEGAEMBED_PLAYERS: readonly MegaEmbedPlayer[] = [
   'clappr',
 ] as const;
 
+export const ALLOWED_WATCHAFLIX_LANGS: readonly WatchaFlixLang[] = ['pt', 'en'] as const;
+
+export const DEFAULT_WATCHAFLIX_BASE_URL = 'https://api.watcha.one';
+
 export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
   sourceMode: 'megaembed',
   defaultDomain: 'mgeb.lat',
@@ -26,6 +32,8 @@ export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
   defaultPlayer: 'vidstack',
   availablePlayers: ['vidstack', 'megaplay', 'megatube', 'clappr'],
   defaultColorHex: '00a8ff',
+  watchaflixBaseUrl: DEFAULT_WATCHAFLIX_BASE_URL,
+  watchaflixLang: 'pt',
   customEmbedMovieTemplate: '',
   customEmbedTvTemplate: '',
   embedTimeoutSeconds: 12,
@@ -120,6 +128,75 @@ export function normalizeEpisodeNumber(
   return parsed;
 }
 
+export function validatePlayerSourceMode(
+  mode?: string | null,
+  fallback: PlayerSourceMode = 'megaembed'
+): PlayerSourceMode {
+  if (mode === 'watchaflix' || mode === 'custom_template' || mode === 'megaembed') {
+    return mode;
+  }
+  return fallback;
+}
+
+export function validateWatchaFlixLang(
+  lang?: string | null,
+  fallback: WatchaFlixLang = 'pt'
+): WatchaFlixLang {
+  if (lang === 'pt' || lang === 'en') {
+    return lang;
+  }
+  return fallback;
+}
+
+export function normalizeWatchaFlixBaseUrl(input?: string | null): string {
+  if (!input || typeof input !== 'string') return DEFAULT_WATCHAFLIX_BASE_URL;
+  const trimmed = input.trim().slice(0, 300);
+  if (!trimmed) return DEFAULT_WATCHAFLIX_BASE_URL;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_WATCHAFLIX_BASE_URL;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    // WatchaFlix's public docs portal is watchaflixapi.watcha.one, while its actual embed API lives at api.watcha.one
+    if (hostname === 'watchaflixapi.watcha.one' || hostname === 'watcha.one' || hostname === 'www.watcha.one') {
+      return DEFAULT_WATCHAFLIX_BASE_URL;
+    }
+    const cleanPath = parsed.pathname.replace(/\/embed\/.*$/i, '').replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.host}${cleanPath}`.slice(0, 300);
+  } catch {
+    return DEFAULT_WATCHAFLIX_BASE_URL;
+  }
+}
+
+export function buildWatchaFlixEmbedUrl(params: {
+  tmdbId: number;
+  mediaType?: MediaType;
+  seasonNumber?: number | string | null;
+  episodeNumber?: number | string | null;
+  baseUrl?: string | null;
+  colorHex?: string | null;
+  lang?: string | null;
+}): string {
+  const validId = normalizeTmdbId(params.tmdbId);
+  if (!validId) {
+    throw new Error('ID TMDB inválido para WatchaFlix.');
+  }
+  const base = normalizeWatchaFlixBaseUrl(params.baseUrl);
+  const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
+  const lang = validateWatchaFlixLang(params.lang, DEFAULT_PLAYER_CONFIG.watchaflixLang);
+  const query = `?color=${encodeURIComponent(color)}&lang=${encodeURIComponent(lang)}`;
+
+  if (params.mediaType === 'tv') {
+    const season = normalizeSeasonNumber(params.seasonNumber, 1);
+    const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+    return `${base}/embed/tv/${validId}/${season}/${episode}${query}`;
+  }
+
+  return `${base}/embed/movie/${validId}${query}`;
+}
+
 export function buildMegaEmbedUrl(params: {
   tmdbId: number;
   domain?: string | null;
@@ -166,9 +243,9 @@ export function buildCustomEmbedUrl(params: {
   const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
 
   return cleanTemplate
-    .replace(/\{tmdbId\}|\{TMDB_ID\}|\{id\}/g, String(validId))
+    .replace(/\{tmdbId\}|\{tmdb_id\}|\{TMDB_ID\}|\{id\}/g, String(validId))
     .replace(/\{season\}|\{SEASON\}|\{temporada\}/g, String(season))
-    .replace(/\{episode\}|\{EPISODE\}|\{episodio\}/g, String(episode))
+    .replace(/\{episode\}|\{EPISODE\}|\{episodio\}|\{episódio\}/g, String(episode))
     .replace(/\{player\}/g, encodeURIComponent(player))
     .replace(/\{color\}/g, color)
     .replace(/\{type\}/g, params.mediaType === 'tv' ? 'tv' : 'movie');

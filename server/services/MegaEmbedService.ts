@@ -1,6 +1,7 @@
 import {
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
+  buildWatchaFlixEmbedUrl,
   normalizeEpisodeNumber,
   normalizeSeasonNumber,
   normalizeTmdbId,
@@ -36,7 +37,20 @@ class MegaEmbedServiceImpl {
       params.mediaType === 'tv' ? normalizeEpisodeNumber(params.episodeNumber, 1) : undefined;
 
     let embedUrl: string | null = null;
-    if (cfg.sourceMode === 'custom_template') {
+    let referrerPolicy: 'no-referrer' | 'strict-origin' = 'no-referrer';
+
+    if (cfg.sourceMode === 'watchaflix') {
+      embedUrl = buildWatchaFlixEmbedUrl({
+        tmdbId: validId,
+        mediaType: params.mediaType,
+        seasonNumber,
+        episodeNumber,
+        baseUrl: cfg.watchaflixBaseUrl,
+        colorHex,
+        lang: cfg.watchaflixLang,
+      });
+      referrerPolicy = 'strict-origin';
+    } else if (cfg.sourceMode === 'custom_template') {
       const tpl =
         params.mediaType === 'tv' ? cfg.customEmbedTvTemplate : cfg.customEmbedMovieTemplate;
       if (tpl) {
@@ -49,6 +63,7 @@ class MegaEmbedServiceImpl {
           player,
           colorHex,
         });
+        referrerPolicy = 'strict-origin';
       }
     }
 
@@ -62,6 +77,7 @@ class MegaEmbedServiceImpl {
         seasonNumber,
         episodeNumber,
       });
+      referrerPolicy = 'no-referrer';
     }
 
     return {
@@ -71,6 +87,7 @@ class MegaEmbedServiceImpl {
       domain,
       player,
       colorHex,
+      referrerPolicy,
       seasonNumber,
       episodeNumber,
       ...(params.mediaType === 'tv' && !cfg.seriesSeasonEpisodeDocumented

@@ -194,15 +194,17 @@ service cloud.firestore {
       return data.keys().hasAll(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
         && data.keys().hasOnly([
           'sourceMode', 'defaultDomain', 'fallbackDomain', 'autoFallback',
-          'defaultPlayer', 'defaultColorHex', 'customEmbedMovieTemplate',
-          'customEmbedTvTemplate', 'embedTimeoutSeconds', 'updatedAt'
+          'defaultPlayer', 'defaultColorHex', 'watchaflixBaseUrl', 'watchaflixLang',
+          'customEmbedMovieTemplate', 'customEmbedTvTemplate', 'embedTimeoutSeconds', 'updatedAt'
         ])
-        && (!('sourceMode' in data) || data.sourceMode in ['megaembed', 'custom_template'])
+        && (!('sourceMode' in data) || data.sourceMode in ['megaembed', 'watchaflix', 'custom_template'])
         && data.defaultDomain in ['mgeb.lat', 'mgeb.space']
         && (!('fallbackDomain' in data) || data.fallbackDomain in ['mgeb.lat', 'mgeb.space'])
         && (!('autoFallback' in data) || data.autoFallback is bool)
         && data.defaultPlayer in ['vidstack', 'megaplay', 'megatube', 'clappr']
         && data.defaultColorHex is string && data.defaultColorHex.size() >= 3 && data.defaultColorHex.size() <= 12
+        && (!('watchaflixBaseUrl' in data) || (data.watchaflixBaseUrl is string && data.watchaflixBaseUrl.size() >= 8 && data.watchaflixBaseUrl.size() <= 300))
+        && (!('watchaflixLang' in data) || data.watchaflixLang in ['pt', 'en'])
         && (!('customEmbedMovieTemplate' in data) || (data.customEmbedMovieTemplate is string && data.customEmbedMovieTemplate.size() <= 500))
         && (!('customEmbedTvTemplate' in data) || (data.customEmbedTvTemplate is string && data.customEmbedTvTemplate.size() <= 500))
         && (!('embedTimeoutSeconds' in data) || (data.embedTimeoutSeconds is number && data.embedTimeoutSeconds >= 5 && data.embedTimeoutSeconds <= 30))

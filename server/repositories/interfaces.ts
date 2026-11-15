@@ -16,6 +16,7 @@ import type {
   SystemLogEntry,
   SystemSettings,
   UserProfile,
+  WatchaFlixLang,
 } from '../../shared/types.ts';
 
 export interface StoredPlayerSettings {
@@ -25,6 +26,8 @@ export interface StoredPlayerSettings {
   autoFallback?: boolean;
   defaultPlayer: MegaEmbedPlayer;
   defaultColorHex: string;
+  watchaflixBaseUrl?: string;
+  watchaflixLang?: WatchaFlixLang;
   customEmbedMovieTemplate?: string;
   customEmbedTvTemplate?: string;
   embedTimeoutSeconds?: number;

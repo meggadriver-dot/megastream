@@ -95,6 +95,38 @@ class AdminServiceImpl {
         episodeNumber: 2,
       });
       const cfg = playerConfigStore.getConfig();
+
+      if (cfg.sourceMode === 'watchaflix') {
+        try {
+          const healthUrl = `${cfg.watchaflixBaseUrl.replace(/\/+$/, '')}/health`;
+          const res = await fetch(healthUrl, {
+            signal: AbortSignal.timeout(6000),
+            headers: { Accept: 'application/json' },
+          });
+          const ok = res.ok && Boolean(movieSample.embedUrl && tvSample.embedUrl);
+          return {
+            target: 'player',
+            ok,
+            statusCode: res.status,
+            latencyMs: Date.now() - started,
+            message: ok
+              ? `WatchaFlix API online (${cfg.watchaflixBaseUrl} · HTTP ${res.status}) e URLs geradas com sucesso.`
+              : `WatchaFlix retornou HTTP ${res.status} ao verificar /health.`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
+            testedAt: new Date().toISOString(),
+          };
+        } catch (err) {
+          return {
+            target: 'player',
+            ok: false,
+            latencyMs: Date.now() - started,
+            message: `Falha ao conectar em ${cfg.watchaflixBaseUrl}/health: ${err instanceof Error ? err.message : String(err)}`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
+            testedAt: new Date().toISOString(),
+          };
+        }
+      }
+
       return {
         target: 'player',
         ok: Boolean(movieSample.embedUrl && tvSample.embedUrl),

@@ -4,12 +4,16 @@ import {
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
   buildTmdbImageUrl,
+  buildWatchaFlixEmbedUrl,
   normalizeTmdbId,
+  normalizeWatchaFlixBaseUrl,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
+  validatePlayerSourceMode,
+  validateWatchaFlixLang,
 } from './playerUrl.ts';
 import {
   DEFAULT_SYSTEM_SETTINGS,
@@ -563,8 +567,52 @@ test('sanitizeSystemSettings, extractPublicRuntimeSettings, and secret masking e
   assert.equal(sanitizeSecretToken('  tok_123 \n\t abc '), 'tok_123abc');
 });
 
+test('WatchaFlix URL normalization, embed building, and source mode validation work cleanly', () => {
+  assert.equal(normalizeWatchaFlixBaseUrl('https://watchaflixapi.watcha.one/'), 'https://api.watcha.one');
+  assert.equal(normalizeWatchaFlixBaseUrl('watchaflixapi.watcha.one/embed/movie/260514'), 'https://api.watcha.one');
+  assert.equal(normalizeWatchaFlixBaseUrl('https://watcha.one'), 'https://api.watcha.one');
+  assert.equal(normalizeWatchaFlixBaseUrl('https://api.watcha.one/embed/tv/1396/1/1'), 'https://api.watcha.one');
+  assert.equal(normalizeWatchaFlixBaseUrl('javascript:alert(1)'), 'https://api.watcha.one');
+  assert.equal(normalizeWatchaFlixBaseUrl('https://proxy.watcha.example/'), 'https://proxy.watcha.example');
 
+  assert.equal(validatePlayerSourceMode('watchaflix'), 'watchaflix');
+  assert.equal(validatePlayerSourceMode('unknown', 'megaembed'), 'megaembed');
+  assert.equal(validateWatchaFlixLang('en'), 'en');
+  assert.equal(validateWatchaFlixLang('fr', 'pt'), 'pt');
 
+  assert.equal(
+    buildWatchaFlixEmbedUrl({
+      tmdbId: 260514,
+      mediaType: 'movie',
+      baseUrl: 'https://watchaflixapi.watcha.one/',
+      colorHex: '#e50914',
+      lang: 'pt',
+    }),
+    'https://api.watcha.one/embed/movie/260514?color=e50914&lang=pt'
+  );
 
+  assert.equal(
+    buildWatchaFlixEmbedUrl({
+      tmdbId: 1396,
+      mediaType: 'tv',
+      seasonNumber: 2,
+      episodeNumber: 5,
+      baseUrl: 'https://api.watcha.one',
+      colorHex: '00a8ff',
+      lang: 'en',
+    }),
+    'https://api.watcha.one/embed/tv/1396/2/5?color=00a8ff&lang=en'
+  );
 
-
+  assert.equal(
+    buildCustomEmbedUrl({
+      template: 'https://api.watcha.one/embed/tv/{tmdb_id}/{temporada}/{episódio}?color={color}',
+      tmdbId: 1396,
+      mediaType: 'tv',
+      seasonNumber: 1,
+      episodeNumber: 4,
+      colorHex: '#00a8ff',
+    }),
+    'https://api.watcha.one/embed/tv/1396/1/4?color=00a8ff'
+  );
+});

@@ -1,16 +1,20 @@
 import {
   DEFAULT_PLAYER_CONFIG,
+  normalizeWatchaFlixBaseUrl,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
+  validatePlayerSourceMode,
+  validateWatchaFlixLang,
 } from '../../shared/playerUrl.ts';
 import type {
   MegaEmbedDomain,
   MegaEmbedPlayer,
   PlayerConfig,
   PlayerSourceMode,
+  WatchaFlixLang,
 } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 
@@ -20,8 +24,10 @@ class PlayerConfigStore {
     if (!stored) {
       return { ...DEFAULT_PLAYER_CONFIG };
     }
-    const sourceMode: PlayerSourceMode =
-      stored.sourceMode === 'custom_template' ? 'custom_template' : 'megaembed';
+    const sourceMode: PlayerSourceMode = validatePlayerSourceMode(
+      stored.sourceMode,
+      DEFAULT_PLAYER_CONFIG.sourceMode
+    );
     return {
       ...DEFAULT_PLAYER_CONFIG,
       sourceMode,
@@ -45,6 +51,11 @@ class PlayerConfigStore {
         stored.defaultColorHex,
         DEFAULT_PLAYER_CONFIG.defaultColorHex
       ),
+      watchaflixBaseUrl: normalizeWatchaFlixBaseUrl(stored.watchaflixBaseUrl),
+      watchaflixLang: validateWatchaFlixLang(
+        stored.watchaflixLang,
+        DEFAULT_PLAYER_CONFIG.watchaflixLang
+      ),
       customEmbedMovieTemplate: sanitizeEmbedTemplate(stored.customEmbedMovieTemplate),
       customEmbedTvTemplate: sanitizeEmbedTemplate(stored.customEmbedTvTemplate),
       embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
@@ -62,12 +73,10 @@ class PlayerConfigStore {
   updateConfig(partial: Partial<PlayerConfig>, preserveUpdatedAt = false): PlayerConfig {
     const current = this.getPersisted();
 
-    const nextSourceMode: PlayerSourceMode =
-      partial.sourceMode === 'custom_template'
-        ? 'custom_template'
-        : partial.sourceMode === 'megaembed'
-          ? 'megaembed'
-          : current.sourceMode;
+    const nextSourceMode: PlayerSourceMode = validatePlayerSourceMode(
+      partial.sourceMode,
+      current.sourceMode
+    );
 
     const nextDomain: MegaEmbedDomain = partial.defaultDomain
       ? validateMegaEmbedDomain(partial.defaultDomain, current.defaultDomain)
@@ -87,6 +96,16 @@ class PlayerConfigStore {
     const nextColor = partial.defaultColorHex
       ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex)
       : current.defaultColorHex;
+
+    const nextWatchaflixBaseUrl =
+      partial.watchaflixBaseUrl !== undefined
+        ? normalizeWatchaFlixBaseUrl(partial.watchaflixBaseUrl)
+        : current.watchaflixBaseUrl;
+
+    const nextWatchaflixLang: WatchaFlixLang =
+      partial.watchaflixLang !== undefined
+        ? validateWatchaFlixLang(partial.watchaflixLang, current.watchaflixLang)
+        : current.watchaflixLang;
 
     const nextMovieTpl =
       partial.customEmbedMovieTemplate !== undefined
@@ -115,6 +134,8 @@ class PlayerConfigStore {
       autoFallback: nextAutoFallback,
       defaultPlayer: nextPlayer,
       defaultColorHex: nextColor,
+      watchaflixBaseUrl: nextWatchaflixBaseUrl,
+      watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,
       customEmbedTvTemplate: nextTvTpl,
       embedTimeoutSeconds: nextTimeout,

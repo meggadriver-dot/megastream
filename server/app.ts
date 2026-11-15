@@ -271,6 +271,7 @@ export function createApiApp(): Express {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        referrerPolicy: payload.referrerPolicy,
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao carregar reprodução.' });
@@ -302,6 +303,7 @@ export function createApiApp(): Express {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        referrerPolicy: payload.referrerPolicy,
         seasonNumber: payload.seasonNumber,
         episodeNumber: payload.episodeNumber,
       });

@@ -23,6 +23,7 @@ interface CleanStreamPayload {
   tmdbId: number;
   mediaType: MediaType;
   embedUrl: string;
+  referrerPolicy?: 'no-referrer' | 'strict-origin';
   seasonNumber?: number;
   episodeNumber?: number;
 }
@@ -284,7 +285,7 @@ export function PlayerPage() {
                     title={detail?.title || 'Player de vídeo'}
                     className="w-full h-full border-0"
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                    referrerPolicy="no-referrer"
+                    referrerPolicy={embedData.referrerPolicy ?? 'strict-origin'}
                     onLoad={() => {
                       setIframeLoading(false);
                       setIframeTimedOut(false);

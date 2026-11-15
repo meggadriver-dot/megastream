@@ -137,9 +137,11 @@ export function AdminDiagnosticsTab({
             <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
               <p className="font-semibold text-white">Motor de Player</p>
               <p className="text-emerald-300 text-xs">
-                {integrations.playerSourceMode === 'custom_template'
-                  ? 'Template Customizado Ativo'
-                  : 'MegaEmbed Ativo'}
+                {integrations.playerSourceMode === 'watchaflix'
+                  ? 'WatchaFlix API Ativa'
+                  : integrations.playerSourceMode === 'custom_template'
+                    ? 'Template Customizado Ativo'
+                    : 'MegaEmbed Ativo'}
               </p>
               <p className="text-[11px] text-slate-400">Resolução oculta para usuários</p>
             </div>
