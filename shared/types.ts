@@ -113,9 +113,13 @@ export interface PaginatedCatalogResponse {
   demoMode: boolean;
 }
 
-export type PlayerSourceMode = 'megaembed' | 'watchaflix' | 'custom_template';
+export type PlayerSourceMode = 'myembed' | 'megaembed' | 'watchaflix' | 'custom_template';
 
 export type WatchaFlixLang = 'pt' | 'en';
+
+export type StreamKind = 'iframe' | 'video' | 'hls';
+
+export type IframeSandboxPolicy = 'strict_no_ads' | 'none';
 
 export type CatalogSourceMode = 'auto' | 'tmdb' | 'demo' | 'custom_only';
 
@@ -134,6 +138,8 @@ export interface PlayerConfig {
   defaultPlayer: MegaEmbedPlayer;
   availablePlayers: MegaEmbedPlayer[];
   defaultColorHex: string;
+  myembedBaseUrl: string;
+  antiAdSandbox: boolean;
   watchaflixBaseUrl: string;
   watchaflixLang: WatchaFlixLang;
   customEmbedMovieTemplate: string;
@@ -151,6 +157,8 @@ export interface EmbedPlayResponse {
   domain: MegaEmbedDomain;
   player: MegaEmbedPlayer;
   colorHex: string;
+  streamKind?: StreamKind;
+  sandboxPolicy?: IframeSandboxPolicy;
   referrerPolicy?: 'no-referrer' | 'strict-origin';
   seasonNumber?: number;
   episodeNumber?: number;

@@ -35,7 +35,10 @@ import {
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { DEFAULT_PLAYER_CONFIG } from '../../shared/playerUrl';
+import {
+  DEFAULT_PLAYER_CONFIG,
+  resolveHydratedSourceMode,
+} from '../../shared/playerUrl';
 import {
   DEFAULT_SITE_CONFIG,
   sanitizeCustomMediaInput,
@@ -278,12 +281,11 @@ export function AdminPage() {
         if (!effectivePlayer.updatedAt || effectivePlayer.updatedAt === DEFAULT_PLAYER_CONFIG.updatedAt || fsTs >= apiTs) {
           effectivePlayer = {
             ...effectivePlayer,
-            sourceMode:
-              fsData.sourceMode === 'watchaflix' ||
-              fsData.sourceMode === 'custom_template' ||
-              fsData.sourceMode === 'megaembed'
-                ? fsData.sourceMode
-                : effectivePlayer.sourceMode,
+            sourceMode: resolveHydratedSourceMode({
+              remoteSourceMode: fsData.sourceMode,
+              remoteAntiAdSandbox: fsData.antiAdSandbox,
+              fallback: effectivePlayer.sourceMode,
+            }),
             defaultDomain: fsData.defaultDomain || effectivePlayer.defaultDomain,
             fallbackDomain: fsData.fallbackDomain || effectivePlayer.fallbackDomain,
             autoFallback: typeof fsData.autoFallback === 'boolean' ? fsData.autoFallback : effectivePlayer.autoFallback,
@@ -292,6 +294,14 @@ export function AdminPage() {
               typeof fsData.defaultColorHex === 'string' && fsData.defaultColorHex
                 ? fsData.defaultColorHex
                 : effectivePlayer.defaultColorHex,
+            myembedBaseUrl:
+              typeof fsData.myembedBaseUrl === 'string' && fsData.myembedBaseUrl
+                ? fsData.myembedBaseUrl
+                : effectivePlayer.myembedBaseUrl,
+            antiAdSandbox:
+              typeof fsData.antiAdSandbox === 'boolean'
+                ? fsData.antiAdSandbox
+                : effectivePlayer.antiAdSandbox,
             watchaflixBaseUrl:
               typeof fsData.watchaflixBaseUrl === 'string' && fsData.watchaflixBaseUrl
                 ? fsData.watchaflixBaseUrl
@@ -815,6 +825,8 @@ export function AdminPage() {
         autoFallback: updated.autoFallback,
         defaultPlayer: updated.defaultPlayer,
         defaultColorHex: updated.defaultColorHex,
+        myembedBaseUrl: updated.myembedBaseUrl,
+        antiAdSandbox: updated.antiAdSandbox,
         watchaflixBaseUrl: updated.watchaflixBaseUrl,
         watchaflixLang: updated.watchaflixLang,
         customEmbedMovieTemplate: updated.customEmbedMovieTemplate,

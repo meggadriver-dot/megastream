@@ -151,6 +151,7 @@ export function ChannelsPage() {
                 src={activeChannel.streamUrl}
                 controls
                 autoPlay
+                playsInline
                 className="w-full h-full"
               />
             ) : (
@@ -158,8 +159,8 @@ export function ChannelsPage() {
                 src={activeChannel.streamUrl}
                 title={activeChannel.name}
                 className="w-full h-full border-0"
-                allowFullScreen
-                allow="autoplay; encrypted-media"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+                allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                 referrerPolicy="no-referrer"
               />
             )}

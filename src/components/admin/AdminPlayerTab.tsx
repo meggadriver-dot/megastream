@@ -1,10 +1,13 @@
 import React from 'react';
-import { Activity, AlertTriangle, Check, Globe, Sliders, Sparkles } from 'lucide-react';
+import { Activity, AlertTriangle, Check, Globe, ShieldCheck, Sliders, Sparkles, Zap } from 'lucide-react';
 import {
+  DEFAULT_MYEMBED_BASE_URL,
   DEFAULT_WATCHAFLIX_BASE_URL,
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
+  buildMyEmbedUrl,
   buildWatchaFlixEmbedUrl,
+  normalizeMyEmbedBaseUrl,
   normalizeWatchaFlixBaseUrl,
 } from '../../../shared/playerUrl';
 import type {
@@ -36,64 +39,80 @@ export function AdminPlayerTab({
   onTestPlayer,
 }: AdminPlayerTabProps) {
   const moviePreview =
-    playerConfig.sourceMode === 'watchaflix'
-      ? buildWatchaFlixEmbedUrl({
+    playerConfig.sourceMode === 'myembed'
+      ? buildMyEmbedUrl({
           tmdbId: 693134,
           mediaType: 'movie',
-          baseUrl: playerConfig.watchaflixBaseUrl,
-          colorHex: playerConfig.defaultColorHex,
-          lang: playerConfig.watchaflixLang,
+          baseUrl: playerConfig.myembedBaseUrl,
         })
-      : playerConfig.sourceMode === 'custom_template' && playerConfig.customEmbedMovieTemplate
-        ? buildCustomEmbedUrl({
-            template: playerConfig.customEmbedMovieTemplate,
+      : playerConfig.sourceMode === 'watchaflix'
+        ? buildWatchaFlixEmbedUrl({
             tmdbId: 693134,
             mediaType: 'movie',
-            player: playerConfig.defaultPlayer,
+            baseUrl: playerConfig.watchaflixBaseUrl,
             colorHex: playerConfig.defaultColorHex,
-          }) || 'Template inválido (use https://...)'
-        : buildMegaEmbedUrl({
-            tmdbId: 693134,
-            domain: playerConfig.defaultDomain,
-            player: playerConfig.defaultPlayer,
-            colorHex: playerConfig.defaultColorHex,
-            mediaType: 'movie',
-          });
+            lang: playerConfig.watchaflixLang,
+          })
+        : playerConfig.sourceMode === 'custom_template' && playerConfig.customEmbedMovieTemplate
+          ? buildCustomEmbedUrl({
+              template: playerConfig.customEmbedMovieTemplate,
+              tmdbId: 693134,
+              mediaType: 'movie',
+              player: playerConfig.defaultPlayer,
+              colorHex: playerConfig.defaultColorHex,
+            }) || 'Template inválido (use https://...)'
+          : buildMegaEmbedUrl({
+              tmdbId: 693134,
+              domain: playerConfig.defaultDomain,
+              player: playerConfig.defaultPlayer,
+              colorHex: playerConfig.defaultColorHex,
+              mediaType: 'movie',
+            });
 
   const tvPreview =
-    playerConfig.sourceMode === 'watchaflix'
-      ? buildWatchaFlixEmbedUrl({
+    playerConfig.sourceMode === 'myembed'
+      ? buildMyEmbedUrl({
           tmdbId: 1399,
           mediaType: 'tv',
           seasonNumber: 1,
           episodeNumber: 2,
-          baseUrl: playerConfig.watchaflixBaseUrl,
-          colorHex: playerConfig.defaultColorHex,
-          lang: playerConfig.watchaflixLang,
+          baseUrl: playerConfig.myembedBaseUrl,
         })
-      : playerConfig.sourceMode === 'custom_template' && playerConfig.customEmbedTvTemplate
-        ? buildCustomEmbedUrl({
-            template: playerConfig.customEmbedTvTemplate,
+      : playerConfig.sourceMode === 'watchaflix'
+        ? buildWatchaFlixEmbedUrl({
             tmdbId: 1399,
             mediaType: 'tv',
             seasonNumber: 1,
             episodeNumber: 2,
-            player: playerConfig.defaultPlayer,
+            baseUrl: playerConfig.watchaflixBaseUrl,
             colorHex: playerConfig.defaultColorHex,
-          }) || 'Template inválido (use https://...)'
-        : buildMegaEmbedUrl({
-            tmdbId: 1399,
-            domain: playerConfig.defaultDomain,
-            player: playerConfig.defaultPlayer,
-            colorHex: playerConfig.defaultColorHex,
-            mediaType: 'tv',
-            seasonNumber: 1,
-            episodeNumber: 2,
-          });
+            lang: playerConfig.watchaflixLang,
+          })
+        : playerConfig.sourceMode === 'custom_template' && playerConfig.customEmbedTvTemplate
+          ? buildCustomEmbedUrl({
+              template: playerConfig.customEmbedTvTemplate,
+              tmdbId: 1399,
+              mediaType: 'tv',
+              seasonNumber: 1,
+              episodeNumber: 2,
+              player: playerConfig.defaultPlayer,
+              colorHex: playerConfig.defaultColorHex,
+            }) || 'Template inválido (use https://...)'
+          : buildMegaEmbedUrl({
+              tmdbId: 1399,
+              domain: playerConfig.defaultDomain,
+              player: playerConfig.defaultPlayer,
+              colorHex: playerConfig.defaultColorHex,
+              mediaType: 'tv',
+              seasonNumber: 1,
+              episodeNumber: 2,
+            });
 
   const isDocsDomainEntered = /watchaflixapi\.watcha\.one/i.test(
     playerConfig.watchaflixBaseUrl || ''
   );
+
+  const isMyEmbedDocsEntered = /embedmovies\.org/i.test(playerConfig.myembedBaseUrl || '');
 
   const applyWatchaFlixPresetToTemplates = () => {
     const base = normalizeWatchaFlixBaseUrl(playerConfig.watchaflixBaseUrl);
@@ -130,25 +149,31 @@ export function AdminPlayerTab({
         </div>
 
         {/* Source Mode */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {(
             [
               {
+                id: 'myembed',
+                title: 'EmbedMovies BR (Rápido · Sem Cloudflare)',
+                desc: 'Carregamento rápido (~120ms), áudio DUB/LEG em português, sem desafio Cloudflare e compatível com bloqueio de pop-ups.',
+                recommended: true,
+              },
+              {
                 id: 'megaembed',
-                title: 'MegaEmbed Oficial',
-                desc: 'Domínios mgeb.lat / mgeb.space com seleção automática de player.',
+                title: 'MegaEmbed',
+                desc: 'Domínios mgeb.lat / mgeb.space com seleção de player.',
               },
               {
                 id: 'watchaflix',
                 title: 'WatchaFlix API',
-                desc: 'Player público por ID TMDB (api.watcha.one), sem key ou token, áudio PT/EN e legendas.',
+                desc: 'api.watcha.one (possui verificação Cloudflare Turnstile e anúncios nativos da fonte).',
               },
               {
                 id: 'custom_template',
-                title: 'Template Customizado',
-                desc: 'URLs próprias com {tmdbId}, {season}, {episode}, {player} e {color}.',
+                title: 'Template Customizado / Direto',
+                desc: 'URLs próprias ou fluxos diretos (.m3u8 / .mp4) com {tmdbId}, {season}, {episode}.',
               },
-            ] as Array<{ id: PlayerSourceMode; title: string; desc: string }>
+            ] as Array<{ id: PlayerSourceMode; title: string; desc: string; recommended?: boolean }>
           ).map((mode) => {
             const selected = playerConfig.sourceMode === mode.id;
             return (
@@ -168,14 +193,101 @@ export function AdminPlayerTab({
                   onChange={() => onChange({ ...playerConfig, sourceMode: mode.id })}
                   className="mt-1 accent-sky-400 shrink-0"
                 />
-                <div className="min-w-0">
-                  <p className="text-sm font-bold text-white">{mode.title}</p>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-bold text-white">{mode.title}</p>
+                    {mode.recommended && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300">
+                        <Zap className="w-3 h-3" />
+                        Recomendado
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{mode.desc}</p>
                 </div>
               </label>
             );
           })}
         </div>
+
+        {/* Anti-Ad & Anti-Popup Sandbox Shield */}
+        <label className="rounded-xl bg-emerald-500/5 border border-emerald-400/25 p-4 flex items-center justify-between gap-4 cursor-pointer">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-white">
+                Bloqueio de Anúncios, Pop-ups e Redirecionamentos (Iframe Sandbox)
+              </p>
+              <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
+                Impede que o player abra novas abas, pop-ups ou redirecione a página atual durante a reprodução. Mantenha ativado para uma experiência limpa e fluida.
+              </p>
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={playerConfig.antiAdSandbox}
+            onChange={(e) => onChange({ ...playerConfig, antiAdSandbox: e.target.checked })}
+            className="w-5 h-5 accent-emerald-400 shrink-0"
+          />
+        </label>
+
+        {/* MyEmbed / EmbedMovies Source Settings */}
+        {playerConfig.sourceMode === 'myembed' && (
+          <div className="rounded-xl bg-sky-500/5 border border-sky-400/25 p-4 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-emerald-400" />
+                  EmbedMovies / Player Rápido (Sem Cloudflare)
+                </h3>
+                <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                  Usa <span className="font-mono-tabular text-emerald-300">/filme/{'{tmdbId}'}</span> e{' '}
+                  <span className="font-mono-tabular text-emerald-300">/serie/{'{tmdbId}/{season}/{episode}'}</span>{' '}
+                  sem token e sem desafios Turnstile.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    ...playerConfig,
+                    myembedBaseUrl: DEFAULT_MYEMBED_BASE_URL,
+                  })
+                }
+                className="h-8 px-3 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold text-white cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Usar Padrão Oficial
+              </button>
+            </div>
+
+            <div>
+              <label htmlFor="adm-myembed-base" className="block text-xs text-slate-300 mb-1">
+                Endpoint Base do Player Rápido
+              </label>
+              <input
+                id="adm-myembed-base"
+                type="url"
+                value={playerConfig.myembedBaseUrl}
+                onChange={(e) =>
+                  onChange({ ...playerConfig, myembedBaseUrl: e.target.value })
+                }
+                onBlur={(e) =>
+                  onChange({
+                    ...playerConfig,
+                    myembedBaseUrl: normalizeMyEmbedBaseUrl(e.target.value),
+                  })
+                }
+                placeholder="https://myembed.biz"
+                className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+              />
+              {isMyEmbedDocsEntered && (
+                <p className="text-[11px] text-amber-300 mt-1">
+                  Aviso: embedmovies.org é o site de documentação — será convertido automaticamente para https://myembed.biz.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* WatchaFlix Official Source Settings */}
         {playerConfig.sourceMode === 'watchaflix' && (
@@ -188,7 +300,7 @@ export function AdminPlayerTab({
                 </h3>
                 <p className="text-xs text-slate-300 mt-1 leading-relaxed">
                   O portal <span className="font-mono-tabular text-sky-300">watchaflixapi.watcha.one</span> é a página de documentação; o servidor real de embed da WatchaFlix é{' '}
-                  <span className="font-mono-tabular text-emerald-300">https://api.watcha.one</span>. Ao salvar, qualquer URL do portal é convertida automaticamente.
+                  <span className="font-mono-tabular text-emerald-300">https://api.watcha.one</span>.
                 </p>
               </div>
               <button
@@ -391,11 +503,10 @@ export function AdminPlayerTab({
           <div className="pt-3 border-t border-white/10 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-slate-300">
-                Variáveis aceitas: <span className="font-mono-tabular text-sky-300">{'{tmdbId}'}</span>,{' '}
-                <span className="font-mono-tabular text-sky-300">{'{tmdb_id}'}</span>,{' '}
+                Aceita embeds HTML ou streams diretos (.m3u8 / .mp4). Variáveis:{' '}
+                <span className="font-mono-tabular text-sky-300">{'{tmdbId}'}</span>,{' '}
                 <span className="font-mono-tabular text-sky-300">{'{season}'}</span>,{' '}
                 <span className="font-mono-tabular text-sky-300">{'{episode}'}</span>,{' '}
-                <span className="font-mono-tabular text-sky-300">{'{player}'}</span>,{' '}
                 <span className="font-mono-tabular text-sky-300">{'{color}'}</span>
               </p>
               <button
@@ -419,7 +530,7 @@ export function AdminPlayerTab({
                 onChange={(e) =>
                   onChange({ ...playerConfig, customEmbedMovieTemplate: e.target.value })
                 }
-                placeholder="https://api.watcha.one/embed/movie/{tmdbId}?color={color}&lang=pt"
+                placeholder="https://myembed.biz/filme/{tmdbId} ou https://cdn.exemplo.com/{tmdbId}.m3u8"
                 className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
               />
             </div>
@@ -435,7 +546,7 @@ export function AdminPlayerTab({
                 onChange={(e) =>
                   onChange({ ...playerConfig, customEmbedTvTemplate: e.target.value })
                 }
-                placeholder="https://api.watcha.one/embed/tv/{tmdbId}/{season}/{episode}?color={color}&lang=pt"
+                placeholder="https://myembed.biz/serie/{tmdbId}/{season}/{episode}"
                 className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
               />
             </div>

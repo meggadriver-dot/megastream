@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Hls from 'hls.js';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -14,7 +15,13 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { formatRuntimeMinutes } from '../../shared/catalogUtils';
 import { PLAYER_LAST_ROUTE_KEY, resolvePlayerBackTarget } from '../../shared/playerNavigation';
-import type { MediaDetail, MediaType, SeasonDetail } from '../../shared/types';
+import type {
+  IframeSandboxPolicy,
+  MediaDetail,
+  MediaType,
+  SeasonDetail,
+  StreamKind,
+} from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
 import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { apiRequest } from '../services/apiClient';
@@ -23,6 +30,8 @@ interface CleanStreamPayload {
   tmdbId: number;
   mediaType: MediaType;
   embedUrl: string;
+  streamKind?: StreamKind;
+  sandboxPolicy?: IframeSandboxPolicy;
   referrerPolicy?: 'no-referrer' | 'strict-origin';
   seasonNumber?: number;
   episodeNumber?: number;
@@ -48,12 +57,13 @@ export function PlayerPage() {
   const [detail, setDetail] = useState<MediaDetail | null>(null);
   const [seasonDetail, setSeasonDetail] = useState<SeasonDetail | null>(null);
 
-  const [iframeLoading, setIframeLoading] = useState(true);
-  const [iframeTimedOut, setIframeTimedOut] = useState(false);
+  const [playerLoading, setPlayerLoading] = useState(true);
+  const [playerTimedOut, setPlayerTimedOut] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const recordedKeyRef = useRef<string | null>(null);
 
   // Load media metadata & seasons
@@ -75,13 +85,14 @@ export function PlayerPage() {
   }, [tmdbId, mediaType, seasonParam]);
 
   // Resolve playback URL from backend using admin's global configuration
+  const authPending = runtimeSettings.requireAuthForPlayer && authLoading;
   const authBlocked = runtimeSettings.requireAuthForPlayer && !authLoading && !firebaseUser;
 
   const loadEmbed = useCallback(async () => {
-    if (!tmdbId || authBlocked) return;
+    if (!tmdbId || authPending || authBlocked) return;
     setEmbedData(null);
-    setIframeLoading(true);
-    setIframeTimedOut(false);
+    setPlayerLoading(true);
+    setPlayerTimedOut(false);
     setErrorMsg(null);
     try {
       const params = new URLSearchParams();
@@ -96,13 +107,69 @@ export function PlayerPage() {
       setEmbedData(res);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Não foi possível iniciar a reprodução.');
-      setIframeLoading(false);
+      setPlayerLoading(false);
     }
-  }, [tmdbId, authBlocked, mediaType, seasonParam, episodeParam]);
+  }, [tmdbId, authPending, authBlocked, mediaType, seasonParam, episodeParam]);
 
   useEffect(() => {
     void loadEmbed();
   }, [loadEmbed, reloadNonce]);
+
+  // Preconnect dynamically to resolved stream origin for faster handshake
+  useEffect(() => {
+    if (!embedData?.embedUrl) return;
+    let linkEl: HTMLLinkElement | null = null;
+    try {
+      const origin = new URL(embedData.embedUrl).origin;
+      linkEl = document.createElement('link');
+      linkEl.rel = 'preconnect';
+      linkEl.href = origin;
+      document.head.appendChild(linkEl);
+    } catch {
+      // Ignore malformed URLs
+    }
+    return () => {
+      if (linkEl && linkEl.parentNode) {
+        linkEl.parentNode.removeChild(linkEl);
+      }
+    };
+  }, [embedData?.embedUrl]);
+
+  // Attach HLS.js automatically when streamKind === 'hls'
+  useEffect(() => {
+    if (!embedData || embedData.streamKind !== 'hls' || !videoRef.current) return;
+    const videoEl = videoRef.current;
+    let hls: Hls | null = null;
+
+    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = embedData.embedUrl;
+    } else if (Hls.isSupported()) {
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      });
+      hls.loadSource(embedData.embedUrl);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setPlayerLoading(false);
+        setPlayerTimedOut(false);
+        void videoEl.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          setPlayerLoading(false);
+          setErrorMsg('Não foi possível reproduzir este fluxo de vídeo no momento.');
+        }
+      });
+    } else {
+      setPlayerLoading(false);
+      setErrorMsg('Seu navegador não suporta reprodução HLS direta.');
+    }
+
+    return () => {
+      hls?.destroy();
+    };
+  }, [embedData, reloadNonce]);
 
   // Record playback history automatically after auth settles
   useEffect(() => {
@@ -137,15 +204,15 @@ export function PlayerPage() {
     recordPlayback,
   ]);
 
-  // Timeout guard if embedded iframe does not fire onLoad within configured seconds
+  // Timeout guard if player does not become ready within configured seconds
   useEffect(() => {
-    if (!iframeLoading || authBlocked) return;
+    if (!playerLoading || authBlocked || authPending) return;
     const timeoutMs = Math.max(5, Math.min(30, runtimeSettings.embedTimeoutSeconds || 12)) * 1000;
     const timer = setTimeout(() => {
-      setIframeTimedOut(true);
+      setPlayerTimedOut(true);
     }, timeoutMs);
     return () => clearTimeout(timer);
-  }, [iframeLoading, authBlocked, reloadNonce, embedData?.embedUrl, runtimeSettings.embedTimeoutSeconds]);
+  }, [playerLoading, authBlocked, authPending, reloadNonce, embedData?.embedUrl, runtimeSettings.embedTimeoutSeconds]);
 
   const handleFullscreenLandscape = async () => {
     try {
@@ -186,6 +253,12 @@ export function PlayerPage() {
     });
     navigate(target, { replace: true });
   };
+
+  const streamKind: StreamKind = embedData?.streamKind ?? 'iframe';
+  const iframeSandbox =
+    embedData?.sandboxPolicy === 'none'
+      ? undefined
+      : 'allow-scripts allow-same-origin allow-forms allow-presentation';
 
   return (
     <div className="min-h-screen bg-[#03050e] text-white flex flex-col">
@@ -278,30 +351,73 @@ export function PlayerPage() {
               </div>
             ) : (
               <>
-                {embedData?.embedUrl && !errorMsg && (
+                {embedData?.embedUrl && !errorMsg && streamKind === 'hls' && (
+                  <video
+                    ref={videoRef}
+                    key={`${embedData.embedUrl}-${reloadNonce}`}
+                    controls
+                    autoPlay
+                    playsInline
+                    className="w-full h-full bg-black"
+                    onCanPlay={() => {
+                      setPlayerLoading(false);
+                      setPlayerTimedOut(false);
+                    }}
+                    onError={() => {
+                      setPlayerLoading(false);
+                      setErrorMsg('Não foi possível reproduzir este título no momento.');
+                    }}
+                  />
+                )}
+
+                {embedData?.embedUrl && !errorMsg && streamKind === 'video' && (
+                  <video
+                    key={`${embedData.embedUrl}-${reloadNonce}`}
+                    src={embedData.embedUrl}
+                    controls
+                    autoPlay
+                    playsInline
+                    className="w-full h-full bg-black"
+                    onCanPlay={() => {
+                      setPlayerLoading(false);
+                      setPlayerTimedOut(false);
+                    }}
+                    onError={() => {
+                      setPlayerLoading(false);
+                      setErrorMsg('Não foi possível reproduzir este arquivo de vídeo no momento.');
+                    }}
+                  />
+                )}
+
+                {embedData?.embedUrl && !errorMsg && streamKind === 'iframe' && (
                   <iframe
                     key={`${embedData.embedUrl}-${reloadNonce}`}
                     src={embedData.embedUrl}
                     title={detail?.title || 'Player de vídeo'}
                     className="w-full h-full border-0"
+                    sandbox={iframeSandbox}
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                     referrerPolicy={embedData.referrerPolicy ?? 'strict-origin'}
                     onLoad={() => {
-                      setIframeLoading(false);
-                      setIframeTimedOut(false);
+                      setPlayerLoading(false);
+                      setPlayerTimedOut(false);
                     }}
                     onError={() => {
-                      setIframeLoading(false);
+                      setPlayerLoading(false);
                       setErrorMsg('Não foi possível iniciar a reprodução deste título no momento.');
                     }}
                   />
                 )}
 
-                {iframeLoading && !errorMsg && (
-                  <div className="absolute inset-0 bg-[#050814]/90 flex flex-col items-center justify-center gap-3 p-6 text-center pointer-events-none">
+                {!errorMsg && (
+                  <div
+                    className={`absolute inset-0 bg-[#050814]/85 flex flex-col items-center justify-center gap-3 p-6 text-center transition-opacity duration-300 pointer-events-none ${
+                      playerLoading ? 'opacity-100' : 'opacity-0'
+                    }`}
+                  >
                     <div className="w-10 h-10 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
                     <p className="text-sm font-medium text-white">Carregando reprodução...</p>
-                    {iframeTimedOut && (
+                    {playerTimedOut && playerLoading && (
                       <p className="text-xs text-slate-300 max-w-md pointer-events-auto">
                         O vídeo está demorando para iniciar. Clique em Recarregar no topo para tentar novamente.
                       </p>

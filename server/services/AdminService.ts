@@ -96,6 +96,42 @@ class AdminServiceImpl {
       });
       const cfg = playerConfigStore.getConfig();
 
+      if (cfg.sourceMode === 'myembed') {
+        try {
+          const res = await fetch(movieSample.embedUrl, {
+            signal: AbortSignal.timeout(6000),
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
+          });
+          const body = await res.text().catch(() => '');
+          const hasCloudflare = /challenges\.cloudflare|cf-turnstile|Attention Required|Just a moment/i.test(
+            body
+          );
+          const ok = res.ok && !hasCloudflare && Boolean(movieSample.embedUrl && tvSample.embedUrl);
+          return {
+            target: 'player',
+            ok,
+            statusCode: res.status,
+            latencyMs: Date.now() - started,
+            message: ok
+              ? `EmbedMovies online (${cfg.myembedBaseUrl} · HTTP ${res.status}, sem verificação Cloudflare${cfg.antiAdSandbox ? ', Sandbox Anti-Anúncios ativo' : ''}).`
+              : hasCloudflare
+                ? `Bloqueio Cloudflare detectado em ${cfg.myembedBaseUrl} (HTTP ${res.status}).`
+                : `EmbedMovies retornou HTTP ${res.status} ao verificar disponibilidade.`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
+            testedAt: new Date().toISOString(),
+          };
+        } catch (err) {
+          return {
+            target: 'player',
+            ok: false,
+            latencyMs: Date.now() - started,
+            message: `Falha ao conectar em ${cfg.myembedBaseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
+            testedAt: new Date().toISOString(),
+          };
+        }
+      }
+
       if (cfg.sourceMode === 'watchaflix') {
         try {
           const healthUrl = `${cfg.watchaflixBaseUrl.replace(/\/+$/, '')}/health`;

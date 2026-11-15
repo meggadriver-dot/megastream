@@ -1,5 +1,6 @@
 import {
   DEFAULT_PLAYER_CONFIG,
+  normalizeMyEmbedBaseUrl,
   normalizeWatchaFlixBaseUrl,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
@@ -51,6 +52,11 @@ class PlayerConfigStore {
         stored.defaultColorHex,
         DEFAULT_PLAYER_CONFIG.defaultColorHex
       ),
+      myembedBaseUrl: normalizeMyEmbedBaseUrl(stored.myembedBaseUrl),
+      antiAdSandbox:
+        typeof stored.antiAdSandbox === 'boolean'
+          ? stored.antiAdSandbox
+          : DEFAULT_PLAYER_CONFIG.antiAdSandbox,
       watchaflixBaseUrl: normalizeWatchaFlixBaseUrl(stored.watchaflixBaseUrl),
       watchaflixLang: validateWatchaFlixLang(
         stored.watchaflixLang,
@@ -97,6 +103,16 @@ class PlayerConfigStore {
       ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex)
       : current.defaultColorHex;
 
+    const nextMyEmbedBaseUrl =
+      partial.myembedBaseUrl !== undefined
+        ? normalizeMyEmbedBaseUrl(partial.myembedBaseUrl)
+        : current.myembedBaseUrl;
+
+    const nextAntiAdSandbox =
+      typeof partial.antiAdSandbox === 'boolean'
+        ? partial.antiAdSandbox
+        : current.antiAdSandbox;
+
     const nextWatchaflixBaseUrl =
       partial.watchaflixBaseUrl !== undefined
         ? normalizeWatchaFlixBaseUrl(partial.watchaflixBaseUrl)
@@ -134,6 +150,8 @@ class PlayerConfigStore {
       autoFallback: nextAutoFallback,
       defaultPlayer: nextPlayer,
       defaultColorHex: nextColor,
+      myembedBaseUrl: nextMyEmbedBaseUrl,
+      antiAdSandbox: nextAntiAdSandbox,
       watchaflixBaseUrl: nextWatchaflixBaseUrl,
       watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,

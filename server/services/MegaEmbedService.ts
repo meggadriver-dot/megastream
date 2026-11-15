@@ -1,10 +1,13 @@
 import {
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
+  buildMyEmbedUrl,
   buildWatchaFlixEmbedUrl,
+  detectStreamKind,
   normalizeEpisodeNumber,
   normalizeSeasonNumber,
   normalizeTmdbId,
+  resolveSandboxPolicy,
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
@@ -37,9 +40,18 @@ class MegaEmbedServiceImpl {
       params.mediaType === 'tv' ? normalizeEpisodeNumber(params.episodeNumber, 1) : undefined;
 
     let embedUrl: string | null = null;
-    let referrerPolicy: 'no-referrer' | 'strict-origin' = 'no-referrer';
+    let referrerPolicy: 'no-referrer' | 'strict-origin' = 'strict-origin';
 
-    if (cfg.sourceMode === 'watchaflix') {
+    if (cfg.sourceMode === 'myembed') {
+      embedUrl = buildMyEmbedUrl({
+        tmdbId: validId,
+        mediaType: params.mediaType,
+        seasonNumber,
+        episodeNumber,
+        baseUrl: cfg.myembedBaseUrl,
+      });
+      referrerPolicy = 'strict-origin';
+    } else if (cfg.sourceMode === 'watchaflix') {
       embedUrl = buildWatchaFlixEmbedUrl({
         tmdbId: validId,
         mediaType: params.mediaType,
@@ -68,17 +80,34 @@ class MegaEmbedServiceImpl {
     }
 
     if (!embedUrl) {
-      embedUrl = buildMegaEmbedUrl({
-        tmdbId: validId,
-        domain,
-        player,
-        colorHex,
-        mediaType: params.mediaType,
-        seasonNumber,
-        episodeNumber,
-      });
-      referrerPolicy = 'no-referrer';
+      if (cfg.sourceMode === 'megaembed') {
+        embedUrl = buildMegaEmbedUrl({
+          tmdbId: validId,
+          domain,
+          player,
+          colorHex,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber,
+        });
+        referrerPolicy = 'no-referrer';
+      } else {
+        embedUrl = buildMyEmbedUrl({
+          tmdbId: validId,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber,
+          baseUrl: cfg.myembedBaseUrl,
+        });
+        referrerPolicy = 'strict-origin';
+      }
     }
+
+    const streamKind = detectStreamKind(embedUrl);
+    const sandboxPolicy = resolveSandboxPolicy({
+      streamKind,
+      antiAdSandbox: cfg.antiAdSandbox,
+    });
 
     return {
       tmdbId: validId,
@@ -87,6 +116,8 @@ class MegaEmbedServiceImpl {
       domain,
       player,
       colorHex,
+      streamKind,
+      sandboxPolicy,
       referrerPolicy,
       seasonNumber,
       episodeNumber,

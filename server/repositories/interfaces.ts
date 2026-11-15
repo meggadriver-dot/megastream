@@ -26,6 +26,8 @@ export interface StoredPlayerSettings {
   autoFallback?: boolean;
   defaultPlayer: MegaEmbedPlayer;
   defaultColorHex: string;
+  myembedBaseUrl?: string;
+  antiAdSandbox?: boolean;
   watchaflixBaseUrl?: string;
   watchaflixLang?: WatchaFlixLang;
   customEmbedMovieTemplate?: string;

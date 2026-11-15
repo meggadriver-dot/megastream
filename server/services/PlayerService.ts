@@ -1,3 +1,8 @@
+import {
+  detectStreamKind,
+  resolveHydratedSourceMode,
+  resolveSandboxPolicy,
+} from '../../shared/playerUrl.ts';
 import { toIsoTimestamp } from '../../shared/siteConfigUtils.ts';
 import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/types.ts';
 import { playerConfigStore } from '../config/playerConfig.ts';
@@ -22,6 +27,8 @@ class PlayerServiceImpl {
       autoFallback?: boolean;
       defaultPlayer?: string;
       defaultColorHex?: string;
+      myembedBaseUrl?: string;
+      antiAdSandbox?: boolean;
       watchaflixBaseUrl?: string;
       watchaflixLang?: string;
       customEmbedMovieTemplate?: string;
@@ -36,14 +43,21 @@ class PlayerServiceImpl {
       const remoteIso = toIsoTimestamp(remote.updatedAt, '');
       const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
       if (localTs === 0 || remoteTs >= localTs || local.updatedAt === '2026-01-01T00:00:00.000Z') {
+        const resolvedMode = resolveHydratedSourceMode({
+          remoteSourceMode: remote.sourceMode,
+          remoteAntiAdSandbox: remote.antiAdSandbox,
+          fallback: local.sourceMode,
+        });
         playerConfigStore.updateConfig(
           {
-            sourceMode: remote.sourceMode as PlayerConfig['sourceMode'],
+            sourceMode: resolvedMode,
             defaultDomain: remote.defaultDomain as PlayerConfig['defaultDomain'],
             fallbackDomain: remote.fallbackDomain as PlayerConfig['fallbackDomain'],
             autoFallback: remote.autoFallback,
             defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
             defaultColorHex: remote.defaultColorHex,
+            myembedBaseUrl: remote.myembedBaseUrl,
+            antiAdSandbox: remote.antiAdSandbox,
             watchaflixBaseUrl: remote.watchaflixBaseUrl,
             watchaflixLang: remote.watchaflixLang as PlayerConfig['watchaflixLang'],
             customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
@@ -74,7 +88,7 @@ class PlayerServiceImpl {
     repositoryStore.addLog({
       level: 'info',
       service: 'PlayerService',
-      message: `Configuração do player atualizada: modo=${updated.sourceMode}, domínio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`,
+      message: `Configuração do player atualizada: modo=${updated.sourceMode}, antiAdSandbox=${updated.antiAdSandbox}, domínio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`,
     });
     return updated;
   }
@@ -109,6 +123,11 @@ class PlayerServiceImpl {
 
     if (customMatch?.customStreamUrl) {
       const cfg = playerConfigStore.getConfig();
+      const streamKind = detectStreamKind(customMatch.customStreamUrl);
+      const sandboxPolicy = resolveSandboxPolicy({
+        streamKind,
+        antiAdSandbox: cfg.antiAdSandbox,
+      });
       repositoryStore.incrementPlaybackCounter();
       return {
         tmdbId: numericId,
@@ -117,6 +136,9 @@ class PlayerServiceImpl {
         domain: cfg.defaultDomain,
         player: cfg.defaultPlayer,
         colorHex: cfg.defaultColorHex,
+        streamKind,
+        sandboxPolicy,
+        referrerPolicy: 'strict-origin',
         seasonNumber: params.mediaType === 'tv' ? params.seasonNumber ?? 1 : undefined,
         episodeNumber: params.mediaType === 'tv' ? params.episodeNumber ?? 1 : undefined,
       };

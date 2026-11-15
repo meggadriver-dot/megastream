@@ -1,12 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_PLAYER_CONFIG,
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
+  buildMyEmbedUrl,
   buildTmdbImageUrl,
   buildWatchaFlixEmbedUrl,
+  detectStreamKind,
+  normalizeMyEmbedBaseUrl,
   normalizeTmdbId,
   normalizeWatchaFlixBaseUrl,
+  resolveHydratedSourceMode,
+  resolveSandboxPolicy,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
@@ -614,5 +620,62 @@ test('WatchaFlix URL normalization, embed building, and source mode validation w
       colorHex: '#00a8ff',
     }),
     'https://api.watcha.one/embed/tv/1396/1/4?color=00a8ff'
+  );
+});
+
+test('myembed fast source, streamKind detection, and anti-ad sandbox policy work cleanly', () => {
+  assert.equal(DEFAULT_PLAYER_CONFIG.sourceMode, 'myembed');
+  assert.equal(DEFAULT_PLAYER_CONFIG.antiAdSandbox, true);
+  assert.equal(validatePlayerSourceMode('myembed'), 'myembed');
+  assert.equal(normalizeMyEmbedBaseUrl('https://embedmovies.org/'), 'https://myembed.biz');
+  assert.equal(normalizeMyEmbedBaseUrl('https://myembed.biz/filme/693134'), 'https://myembed.biz');
+  assert.equal(normalizeMyEmbedBaseUrl('javascript:alert(1)'), 'https://myembed.biz');
+
+  assert.equal(
+    buildMyEmbedUrl({ tmdbId: 693134, mediaType: 'movie' }),
+    'https://myembed.biz/filme/693134'
+  );
+  assert.equal(
+    buildMyEmbedUrl({
+      tmdbId: 1399,
+      mediaType: 'tv',
+      seasonNumber: 2,
+      episodeNumber: 4,
+    }),
+    'https://myembed.biz/serie/1399/2/4'
+  );
+
+  assert.equal(detectStreamKind('https://cdn.example.com/live/master.m3u8?token=abc'), 'hls');
+  assert.equal(detectStreamKind('https://cdn.example.com/movie.mp4#t=10'), 'video');
+  assert.equal(detectStreamKind('https://myembed.biz/filme/693134'), 'iframe');
+
+  assert.equal(resolveSandboxPolicy({ streamKind: 'iframe', antiAdSandbox: true }), 'strict_no_ads');
+  assert.equal(resolveSandboxPolicy({ streamKind: 'iframe', antiAdSandbox: false }), 'none');
+  assert.equal(resolveSandboxPolicy({ streamKind: 'hls', antiAdSandbox: true }), 'none');
+  assert.equal(resolveSandboxPolicy({ streamKind: 'video', antiAdSandbox: true }), 'none');
+
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'watchaflix',
+      remoteAntiAdSandbox: undefined,
+      fallback: 'myembed',
+    }),
+    'myembed'
+  );
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'watchaflix',
+      remoteAntiAdSandbox: true,
+      fallback: 'myembed',
+    }),
+    'watchaflix'
+  );
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'custom_template',
+      remoteAntiAdSandbox: undefined,
+      fallback: 'myembed',
+    }),
+    'custom_template'
   );
 });

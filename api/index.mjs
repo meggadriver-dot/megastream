@@ -21,9 +21,10 @@ var ALLOWED_MEGAEMBED_PLAYERS = [
   "megatube",
   "clappr"
 ];
+var DEFAULT_MYEMBED_BASE_URL = "https://myembed.biz";
 var DEFAULT_WATCHAFLIX_BASE_URL = "https://api.watcha.one";
 var DEFAULT_PLAYER_CONFIG = {
-  sourceMode: "megaembed",
+  sourceMode: "myembed",
   defaultDomain: "mgeb.lat",
   fallbackDomain: "mgeb.space",
   autoFallback: true,
@@ -31,13 +32,15 @@ var DEFAULT_PLAYER_CONFIG = {
   defaultPlayer: "vidstack",
   availablePlayers: ["vidstack", "megaplay", "megatube", "clappr"],
   defaultColorHex: "00a8ff",
+  myembedBaseUrl: DEFAULT_MYEMBED_BASE_URL,
+  antiAdSandbox: true,
   watchaflixBaseUrl: DEFAULT_WATCHAFLIX_BASE_URL,
   watchaflixLang: "pt",
   customEmbedMovieTemplate: "",
   customEmbedTvTemplate: "",
   embedTimeoutSeconds: 12,
   seriesSeasonEpisodeDocumented: true,
-  seriesLimitationNote: "S\xE9ries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:.",
+  seriesLimitationNote: "S\xE9ries carregam diretamente por temporada e epis\xF3dio sem etapas extras de verifica\xE7\xE3o.",
   updatedAt: "2026-01-01T00:00:00.000Z"
 };
 function sanitizeHexColor(input, fallback = "00a8ff") {
@@ -102,11 +105,69 @@ function normalizeEpisodeNumber(value, fallback = 1) {
   }
   return parsed;
 }
-function validatePlayerSourceMode(mode, fallback = "megaembed") {
-  if (mode === "watchaflix" || mode === "custom_template" || mode === "megaembed") {
+function validatePlayerSourceMode(mode, fallback = DEFAULT_PLAYER_CONFIG.sourceMode) {
+  if (mode === "myembed" || mode === "watchaflix" || mode === "custom_template" || mode === "megaembed") {
     return mode;
   }
   return fallback;
+}
+function resolveHydratedSourceMode(params) {
+  const validRemote = validatePlayerSourceMode(params.remoteSourceMode, params.fallback);
+  const hasExplicitPostUpgradeSave = typeof params.remoteAntiAdSandbox === "boolean";
+  if (!hasExplicitPostUpgradeSave && (validRemote === "watchaflix" || validRemote === "megaembed")) {
+    return "myembed";
+  }
+  return validRemote;
+}
+function normalizeMyEmbedBaseUrl(input) {
+  if (!input || typeof input !== "string") return DEFAULT_MYEMBED_BASE_URL;
+  const trimmed = input.trim().slice(0, 300);
+  if (!trimmed) return DEFAULT_MYEMBED_BASE_URL;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return DEFAULT_MYEMBED_BASE_URL;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === "embedmovies.org" || hostname === "www.embedmovies.org") {
+      return DEFAULT_MYEMBED_BASE_URL;
+    }
+    const cleanPath = parsed.pathname.replace(/\/(filme|serie)\/.*$/i, "").replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${cleanPath}`.slice(0, 300);
+  } catch {
+    return DEFAULT_MYEMBED_BASE_URL;
+  }
+}
+function buildMyEmbedUrl(params) {
+  const validId = normalizeTmdbId(params.tmdbId);
+  if (!validId) {
+    throw new Error("ID TMDB inv\xE1lido para incorpora\xE7\xE3o do player.");
+  }
+  const base = normalizeMyEmbedBaseUrl(params.baseUrl);
+  if (params.mediaType === "tv") {
+    const season = normalizeSeasonNumber(params.seasonNumber, 1);
+    const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+    return `${base}/serie/${validId}/${season}/${episode}`;
+  }
+  return `${base}/filme/${validId}`;
+}
+function detectStreamKind(url) {
+  if (!url || typeof url !== "string") return "iframe";
+  const clean = url.trim().split("#")[0].split("?")[0].toLowerCase();
+  if (clean.endsWith(".m3u8")) {
+    return "hls";
+  }
+  if (clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".ogg") || clean.endsWith(".ogv") || clean.endsWith(".mov")) {
+    return "video";
+  }
+  return "iframe";
+}
+function resolveSandboxPolicy(params) {
+  if (params.streamKind !== "iframe") {
+    return "none";
+  }
+  return params.antiAdSandbox !== false ? "strict_no_ads" : "none";
 }
 function validateWatchaFlixLang(lang, fallback = "pt") {
   if (lang === "pt" || lang === "en") {
@@ -842,6 +903,8 @@ var PlayerConfigStore = class {
         stored.defaultColorHex,
         DEFAULT_PLAYER_CONFIG.defaultColorHex
       ),
+      myembedBaseUrl: normalizeMyEmbedBaseUrl(stored.myembedBaseUrl),
+      antiAdSandbox: typeof stored.antiAdSandbox === "boolean" ? stored.antiAdSandbox : DEFAULT_PLAYER_CONFIG.antiAdSandbox,
       watchaflixBaseUrl: normalizeWatchaFlixBaseUrl(stored.watchaflixBaseUrl),
       watchaflixLang: validateWatchaFlixLang(
         stored.watchaflixLang,
@@ -870,6 +933,8 @@ var PlayerConfigStore = class {
     const nextAutoFallback = typeof partial.autoFallback === "boolean" ? partial.autoFallback : current.autoFallback;
     const nextPlayer = partial.defaultPlayer ? validateMegaEmbedPlayer(partial.defaultPlayer, current.defaultPlayer) : current.defaultPlayer;
     const nextColor = partial.defaultColorHex ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex) : current.defaultColorHex;
+    const nextMyEmbedBaseUrl = partial.myembedBaseUrl !== void 0 ? normalizeMyEmbedBaseUrl(partial.myembedBaseUrl) : current.myembedBaseUrl;
+    const nextAntiAdSandbox = typeof partial.antiAdSandbox === "boolean" ? partial.antiAdSandbox : current.antiAdSandbox;
     const nextWatchaflixBaseUrl = partial.watchaflixBaseUrl !== void 0 ? normalizeWatchaFlixBaseUrl(partial.watchaflixBaseUrl) : current.watchaflixBaseUrl;
     const nextWatchaflixLang = partial.watchaflixLang !== void 0 ? validateWatchaFlixLang(partial.watchaflixLang, current.watchaflixLang) : current.watchaflixLang;
     const nextMovieTpl = partial.customEmbedMovieTemplate !== void 0 ? sanitizeEmbedTemplate(partial.customEmbedMovieTemplate) : current.customEmbedMovieTemplate;
@@ -883,6 +948,8 @@ var PlayerConfigStore = class {
       autoFallback: nextAutoFallback,
       defaultPlayer: nextPlayer,
       defaultColorHex: nextColor,
+      myembedBaseUrl: nextMyEmbedBaseUrl,
+      antiAdSandbox: nextAntiAdSandbox,
       watchaflixBaseUrl: nextWatchaflixBaseUrl,
       watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,
@@ -2607,8 +2674,17 @@ var MegaEmbedServiceImpl = class {
     const seasonNumber = params.mediaType === "tv" ? normalizeSeasonNumber(params.seasonNumber, 1) : void 0;
     const episodeNumber = params.mediaType === "tv" ? normalizeEpisodeNumber(params.episodeNumber, 1) : void 0;
     let embedUrl = null;
-    let referrerPolicy = "no-referrer";
-    if (cfg.sourceMode === "watchaflix") {
+    let referrerPolicy = "strict-origin";
+    if (cfg.sourceMode === "myembed") {
+      embedUrl = buildMyEmbedUrl({
+        tmdbId: validId,
+        mediaType: params.mediaType,
+        seasonNumber,
+        episodeNumber,
+        baseUrl: cfg.myembedBaseUrl
+      });
+      referrerPolicy = "strict-origin";
+    } else if (cfg.sourceMode === "watchaflix") {
       embedUrl = buildWatchaFlixEmbedUrl({
         tmdbId: validId,
         mediaType: params.mediaType,
@@ -2635,17 +2711,33 @@ var MegaEmbedServiceImpl = class {
       }
     }
     if (!embedUrl) {
-      embedUrl = buildMegaEmbedUrl({
-        tmdbId: validId,
-        domain,
-        player,
-        colorHex,
-        mediaType: params.mediaType,
-        seasonNumber,
-        episodeNumber
-      });
-      referrerPolicy = "no-referrer";
+      if (cfg.sourceMode === "megaembed") {
+        embedUrl = buildMegaEmbedUrl({
+          tmdbId: validId,
+          domain,
+          player,
+          colorHex,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber
+        });
+        referrerPolicy = "no-referrer";
+      } else {
+        embedUrl = buildMyEmbedUrl({
+          tmdbId: validId,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber,
+          baseUrl: cfg.myembedBaseUrl
+        });
+        referrerPolicy = "strict-origin";
+      }
     }
+    const streamKind = detectStreamKind(embedUrl);
+    const sandboxPolicy = resolveSandboxPolicy({
+      streamKind,
+      antiAdSandbox: cfg.antiAdSandbox
+    });
     return {
       tmdbId: validId,
       mediaType: params.mediaType,
@@ -2653,6 +2745,8 @@ var MegaEmbedServiceImpl = class {
       domain,
       player,
       colorHex,
+      streamKind,
+      sandboxPolicy,
       referrerPolicy,
       seasonNumber,
       episodeNumber,
@@ -2681,14 +2775,21 @@ var PlayerServiceImpl = class {
       const remoteIso = toIsoTimestamp(remote.updatedAt, "");
       const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
       if (localTs === 0 || remoteTs >= localTs || local.updatedAt === "2026-01-01T00:00:00.000Z") {
+        const resolvedMode = resolveHydratedSourceMode({
+          remoteSourceMode: remote.sourceMode,
+          remoteAntiAdSandbox: remote.antiAdSandbox,
+          fallback: local.sourceMode
+        });
         playerConfigStore.updateConfig(
           {
-            sourceMode: remote.sourceMode,
+            sourceMode: resolvedMode,
             defaultDomain: remote.defaultDomain,
             fallbackDomain: remote.fallbackDomain,
             autoFallback: remote.autoFallback,
             defaultPlayer: remote.defaultPlayer,
             defaultColorHex: remote.defaultColorHex,
+            myembedBaseUrl: remote.myembedBaseUrl,
+            antiAdSandbox: remote.antiAdSandbox,
             watchaflixBaseUrl: remote.watchaflixBaseUrl,
             watchaflixLang: remote.watchaflixLang,
             customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
@@ -2715,7 +2816,7 @@ var PlayerServiceImpl = class {
     repositoryStore.addLog({
       level: "info",
       service: "PlayerService",
-      message: `Configura\xE7\xE3o do player atualizada: modo=${updated.sourceMode}, dom\xEDnio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`
+      message: `Configura\xE7\xE3o do player atualizada: modo=${updated.sourceMode}, antiAdSandbox=${updated.antiAdSandbox}, dom\xEDnio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`
     });
     return updated;
   }
@@ -2728,6 +2829,11 @@ var PlayerServiceImpl = class {
     const customMatch = Number.isInteger(numericId) && numericId > 0 ? SiteConfigService.getCustomMatch(numericId, params.mediaType) : null;
     if (customMatch?.customStreamUrl) {
       const cfg = playerConfigStore.getConfig();
+      const streamKind = detectStreamKind(customMatch.customStreamUrl);
+      const sandboxPolicy = resolveSandboxPolicy({
+        streamKind,
+        antiAdSandbox: cfg.antiAdSandbox
+      });
       repositoryStore.incrementPlaybackCounter();
       return {
         tmdbId: numericId,
@@ -2736,6 +2842,9 @@ var PlayerServiceImpl = class {
         domain: cfg.defaultDomain,
         player: cfg.defaultPlayer,
         colorHex: cfg.defaultColorHex,
+        streamKind,
+        sandboxPolicy,
+        referrerPolicy: "strict-origin",
         seasonNumber: params.mediaType === "tv" ? params.seasonNumber ?? 1 : void 0,
         episodeNumber: params.mediaType === "tv" ? params.episodeNumber ?? 1 : void 0
       };
@@ -2989,6 +3098,37 @@ var AdminServiceImpl = class {
         episodeNumber: 2
       });
       const cfg = playerConfigStore.getConfig();
+      if (cfg.sourceMode === "myembed") {
+        try {
+          const res = await fetch(movieSample.embedUrl, {
+            signal: AbortSignal.timeout(6e3),
+            headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html" }
+          });
+          const body = await res.text().catch(() => "");
+          const hasCloudflare = /challenges\.cloudflare|cf-turnstile|Attention Required|Just a moment/i.test(
+            body
+          );
+          const ok = res.ok && !hasCloudflare && Boolean(movieSample.embedUrl && tvSample.embedUrl);
+          return {
+            target: "player",
+            ok,
+            statusCode: res.status,
+            latencyMs: Date.now() - started,
+            message: ok ? `EmbedMovies online (${cfg.myembedBaseUrl} \xB7 HTTP ${res.status}, sem verifica\xE7\xE3o Cloudflare${cfg.antiAdSandbox ? ", Sandbox Anti-An\xFAncios ativo" : ""}).` : hasCloudflare ? `Bloqueio Cloudflare detectado em ${cfg.myembedBaseUrl} (HTTP ${res.status}).` : `EmbedMovies retornou HTTP ${res.status} ao verificar disponibilidade.`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | S\xE9rie exemplo: ${tvSample.embedUrl}`,
+            testedAt: (/* @__PURE__ */ new Date()).toISOString()
+          };
+        } catch (err) {
+          return {
+            target: "player",
+            ok: false,
+            latencyMs: Date.now() - started,
+            message: `Falha ao conectar em ${cfg.myembedBaseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+            detail: `Filme exemplo: ${movieSample.embedUrl} | S\xE9rie exemplo: ${tvSample.embedUrl}`,
+            testedAt: (/* @__PURE__ */ new Date()).toISOString()
+          };
+        }
+      }
       if (cfg.sourceMode === "watchaflix") {
         try {
           const healthUrl = `${cfg.watchaflixBaseUrl.replace(/\/+$/, "")}/health`;
@@ -3710,6 +3850,8 @@ function createApiApp() {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        streamKind: payload.streamKind ?? "iframe",
+        sandboxPolicy: payload.sandboxPolicy ?? "strict_no_ads",
         referrerPolicy: payload.referrerPolicy
       });
     } catch (err) {
@@ -3735,6 +3877,8 @@ function createApiApp() {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        streamKind: payload.streamKind ?? "iframe",
+        sandboxPolicy: payload.sandboxPolicy ?? "strict_no_ads",
         referrerPolicy: payload.referrerPolicy,
         seasonNumber: payload.seasonNumber,
         episodeNumber: payload.episodeNumber

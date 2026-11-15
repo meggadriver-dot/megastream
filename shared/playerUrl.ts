@@ -1,9 +1,11 @@
 import type {
+  IframeSandboxPolicy,
   MegaEmbedDomain,
   MegaEmbedPlayer,
   MediaType,
   PlayerConfig,
   PlayerSourceMode,
+  StreamKind,
   WatchaFlixLang,
 } from './types.ts';
 
@@ -21,10 +23,11 @@ export const ALLOWED_MEGAEMBED_PLAYERS: readonly MegaEmbedPlayer[] = [
 
 export const ALLOWED_WATCHAFLIX_LANGS: readonly WatchaFlixLang[] = ['pt', 'en'] as const;
 
+export const DEFAULT_MYEMBED_BASE_URL = 'https://myembed.biz';
 export const DEFAULT_WATCHAFLIX_BASE_URL = 'https://api.watcha.one';
 
 export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
-  sourceMode: 'megaembed',
+  sourceMode: 'myembed',
   defaultDomain: 'mgeb.lat',
   fallbackDomain: 'mgeb.space',
   autoFallback: true,
@@ -32,6 +35,8 @@ export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
   defaultPlayer: 'vidstack',
   availablePlayers: ['vidstack', 'megaplay', 'megatube', 'clappr'],
   defaultColorHex: '00a8ff',
+  myembedBaseUrl: DEFAULT_MYEMBED_BASE_URL,
+  antiAdSandbox: true,
   watchaflixBaseUrl: DEFAULT_WATCHAFLIX_BASE_URL,
   watchaflixLang: 'pt',
   customEmbedMovieTemplate: '',
@@ -39,7 +44,7 @@ export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
   embedTimeoutSeconds: 12,
   seriesSeasonEpisodeDocumented: true,
   seriesLimitationNote:
-    'Séries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:.',
+    'Séries carregam diretamente por temporada e episódio sem etapas extras de verificação.',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -130,12 +135,102 @@ export function normalizeEpisodeNumber(
 
 export function validatePlayerSourceMode(
   mode?: string | null,
-  fallback: PlayerSourceMode = 'megaembed'
+  fallback: PlayerSourceMode = DEFAULT_PLAYER_CONFIG.sourceMode
 ): PlayerSourceMode {
-  if (mode === 'watchaflix' || mode === 'custom_template' || mode === 'megaembed') {
+  if (
+    mode === 'myembed' ||
+    mode === 'watchaflix' ||
+    mode === 'custom_template' ||
+    mode === 'megaembed'
+  ) {
     return mode;
   }
   return fallback;
+}
+
+export function resolveHydratedSourceMode(params: {
+  remoteSourceMode?: string | null;
+  remoteAntiAdSandbox?: unknown;
+  fallback: PlayerSourceMode;
+}): PlayerSourceMode {
+  const validRemote = validatePlayerSourceMode(params.remoteSourceMode, params.fallback);
+  const hasExplicitPostUpgradeSave = typeof params.remoteAntiAdSandbox === 'boolean';
+  // Legacy Firestore docs created before anti-Cloudflare upgrade lacked antiAdSandbox.
+  // Upgrade watchaflix/megaembed automatically to myembed until an admin explicitly saves a choice.
+  if (!hasExplicitPostUpgradeSave && (validRemote === 'watchaflix' || validRemote === 'megaembed')) {
+    return 'myembed';
+  }
+  return validRemote;
+}
+
+export function normalizeMyEmbedBaseUrl(input?: string | null): string {
+  if (!input || typeof input !== 'string') return DEFAULT_MYEMBED_BASE_URL;
+  const trimmed = input.trim().slice(0, 300);
+  if (!trimmed) return DEFAULT_MYEMBED_BASE_URL;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_MYEMBED_BASE_URL;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    // embedmovies.org is the docs portal; actual fast iframe server lives at myembed.biz
+    if (hostname === 'embedmovies.org' || hostname === 'www.embedmovies.org') {
+      return DEFAULT_MYEMBED_BASE_URL;
+    }
+    const cleanPath = parsed.pathname.replace(/\/(filme|serie)\/.*$/i, '').replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.host}${cleanPath}`.slice(0, 300);
+  } catch {
+    return DEFAULT_MYEMBED_BASE_URL;
+  }
+}
+
+export function buildMyEmbedUrl(params: {
+  tmdbId: number;
+  mediaType?: MediaType;
+  seasonNumber?: number | string | null;
+  episodeNumber?: number | string | null;
+  baseUrl?: string | null;
+}): string {
+  const validId = normalizeTmdbId(params.tmdbId);
+  if (!validId) {
+    throw new Error('ID TMDB inválido para incorporação do player.');
+  }
+  const base = normalizeMyEmbedBaseUrl(params.baseUrl);
+  if (params.mediaType === 'tv') {
+    const season = normalizeSeasonNumber(params.seasonNumber, 1);
+    const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+    return `${base}/serie/${validId}/${season}/${episode}`;
+  }
+  return `${base}/filme/${validId}`;
+}
+
+export function detectStreamKind(url?: string | null): StreamKind {
+  if (!url || typeof url !== 'string') return 'iframe';
+  const clean = url.trim().split('#')[0].split('?')[0].toLowerCase();
+  if (clean.endsWith('.m3u8')) {
+    return 'hls';
+  }
+  if (
+    clean.endsWith('.mp4') ||
+    clean.endsWith('.webm') ||
+    clean.endsWith('.ogg') ||
+    clean.endsWith('.ogv') ||
+    clean.endsWith('.mov')
+  ) {
+    return 'video';
+  }
+  return 'iframe';
+}
+
+export function resolveSandboxPolicy(params: {
+  streamKind: StreamKind;
+  antiAdSandbox?: boolean;
+}): IframeSandboxPolicy {
+  if (params.streamKind !== 'iframe') {
+    return 'none';
+  }
+  return params.antiAdSandbox !== false ? 'strict_no_ads' : 'none';
 }
 
 export function validateWatchaFlixLang(

@@ -271,6 +271,8 @@ export function createApiApp(): Express {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        streamKind: payload.streamKind ?? 'iframe',
+        sandboxPolicy: payload.sandboxPolicy ?? 'strict_no_ads',
         referrerPolicy: payload.referrerPolicy,
       });
     } catch (err) {
@@ -303,6 +305,8 @@ export function createApiApp(): Express {
         tmdbId: payload.tmdbId,
         mediaType: payload.mediaType,
         embedUrl: payload.embedUrl,
+        streamKind: payload.streamKind ?? 'iframe',
+        sandboxPolicy: payload.sandboxPolicy ?? 'strict_no_ads',
         referrerPolicy: payload.referrerPolicy,
         seasonNumber: payload.seasonNumber,
         episodeNumber: payload.episodeNumber,
