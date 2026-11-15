@@ -8,17 +8,17 @@ import type {
 } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CatalogService } from './CatalogService.ts';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class RecommendationServiceImpl {
   isGeminiConfigured(): boolean {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    return Boolean(key && key !== 'MY_GEMINI_API_KEY');
+    return Boolean(SystemSettingsService.getActiveGeminiKey().key);
   }
 
   private createClient(): GoogleGenAI | null {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    if (!key || key === 'MY_GEMINI_API_KEY') return null;
+    const { key } = SystemSettingsService.getActiveGeminiKey();
+    if (!key) return null;
     return new GoogleGenAI({
       apiKey: key,
       httpOptions: {
@@ -35,14 +35,44 @@ class RecommendationServiceImpl {
     history: HistoryItem[];
     preferredMediaType?: 'all' | 'movie' | 'tv';
   }): Promise<AIRecommendationResponse> {
+    await SystemSettingsService.ensureHydrated();
+    const sys = SystemSettingsService.getSettings();
+    const maxItems = sys.aiMaxRecommendations || 12;
+
+    if (sys.aiMode === 'disabled') {
+      return {
+        summary: 'As recomendações automáticas por IA estão temporariamente desabilitadas pelo administrador.',
+        strategyNote: 'Recurso desativado nas configurações administrativas.',
+        suggestedQueries: [],
+        items: [],
+        source: 'fallback',
+      };
+    }
+
     const syncedCatalog = await CatalogService.getSyncedCatalog();
     const userPrompt = params.prompt.trim();
     const favTitles = params.favorites.slice(0, 8).map((f) => `${f.title} (${f.mediaType})`);
     const historyTitles = params.history.slice(0, 8).map((h) => `${h.title} (${h.mediaType})`);
 
+    if (sys.aiMode === 'catalog_smart') {
+      return this.buildDeterministicFallback(
+        userPrompt,
+        syncedCatalog,
+        favTitles,
+        historyTitles,
+        maxItems
+      );
+    }
+
     const ai = this.createClient();
     if (!ai) {
-      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles);
+      return this.buildDeterministicFallback(
+        userPrompt,
+        syncedCatalog,
+        favTitles,
+        historyTitles,
+        maxItems
+      );
     }
 
     try {
@@ -132,7 +162,7 @@ class RecommendationServiceImpl {
 
       const finalItems = deduplicateMediaByTmdbId(
         matchedItems.length > 0 ? matchedItems : syncedCatalog.slice(0, 6)
-      ).slice(0, 12);
+      ).slice(0, maxItems);
 
       return {
         summary:
@@ -151,7 +181,7 @@ class RecommendationServiceImpl {
         service: 'RecommendationService',
         message: `Fallback de recomendação acionado: ${err instanceof Error ? err.message : String(err)}`,
       });
-      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles);
+      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles, maxItems);
     }
   }
 
@@ -159,7 +189,8 @@ class RecommendationServiceImpl {
     prompt: string,
     catalog: MediaItem[],
     favTitles: string[],
-    historyTitles: string[]
+    historyTitles: string[],
+    maxItems = 8
   ): AIRecommendationResponse {
     const q = prompt.toLowerCase();
     const keywordMatches = catalog.filter((item) => {
@@ -171,7 +202,7 @@ class RecommendationServiceImpl {
     const selected = (keywordMatches.length > 0 ? keywordMatches : catalog)
       .slice()
       .sort((a, b) => b.voteAverage - a.voteAverage)
-      .slice(0, 8);
+      .slice(0, maxItems);
 
     const contextPieces = [];
     if (favTitles.length > 0) contextPieces.push(`${favTitles.length} favorito(s)`);

@@ -4,9 +4,11 @@ import { Link } from 'react-router-dom';
 import type { MediaItem } from '../../shared/types';
 import { MediaCard } from '../components/MediaCard';
 import { useAuth } from '../contexts/AuthContext';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
 
 export function FavoritesPage() {
   const { favorites, toggleFavorite, firebaseUser } = useAuth();
+  const { runtimeSettings } = useSiteConfig();
   const [filter, setFilter] = useState<'all' | 'movie' | 'tv'>('all');
 
   const filtered = favorites.filter((f) => (filter === 'all' ? true : f.mediaType === filter));
@@ -21,7 +23,9 @@ export function FavoritesPage() {
           <p className="text-sm text-slate-400 mt-1">
             {firebaseUser
               ? 'Seus filmes e séries salvos e sincronizados com sua conta.'
-              : 'Salvos neste navegador. Entre na sua conta para sincronizar na nuvem.'}
+              : runtimeSettings.allowGuestFavorites
+                ? 'Salvos neste navegador. Entre na sua conta para sincronizar na nuvem.'
+                : 'O administrador exige login na plataforma para salvar favoritos na Minha Lista.'}
           </p>
         </div>
 

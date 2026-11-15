@@ -14,6 +14,7 @@ import {
 } from '../../shared/profileUtils.ts';
 import type { StoredStreamProfile, StreamProfile } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 
 export interface UpsertProfilePayload {
   id?: string;
@@ -46,9 +47,14 @@ class ProfileServiceImpl {
   }
 
   async create(userId: string, payload: UpsertProfilePayload): Promise<StreamProfile> {
+    await SystemSettingsService.ensureHydrated();
+    const maxProfiles = Math.max(
+      1,
+      Math.min(8, SystemSettingsService.getSettings().maxProfilesPerAccount || MAX_PROFILES_PER_ACCOUNT)
+    );
     const current = this.ensureProfiles(userId);
-    if (current.length >= MAX_PROFILES_PER_ACCOUNT) {
-      throw new Error(`Limite máximo de ${MAX_PROFILES_PER_ACCOUNT} perfis por conta atingido.`);
+    if (current.length >= maxProfiles) {
+      throw new Error(`Limite máximo de ${maxProfiles} perfis por conta atingido.`);
     }
 
     const requestedId =

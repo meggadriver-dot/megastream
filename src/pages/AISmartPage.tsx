@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Bot, Send, Sparkles } from 'lucide-react';
 import type { AIRecommendationResponse } from '../../shared/types';
 import { MediaCard } from '../components/MediaCard';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { apiRequest } from '../services/apiClient';
 
 const SAMPLE_PROMPTS = [
@@ -12,6 +13,7 @@ const SAMPLE_PROMPTS = [
 ];
 
 export function AISmartPage() {
+  const { runtimeSettings } = useSiteConfig();
   const [prompt, setPrompt] = useState('');
   const [mediaType, setMediaType] = useState<'all' | 'movie' | 'tv'>('all');
   const [loading, setLoading] = useState(false);
@@ -40,6 +42,20 @@ export function AISmartPage() {
     e.preventDefault();
     void runRecommendation();
   };
+
+  if (!runtimeSettings.aiEnabled) {
+    return (
+      <div className="ms-glass rounded-3xl p-8 sm:p-10 text-center space-y-3 max-w-2xl mx-auto my-6">
+        <Bot className="w-10 h-10 text-sky-400 mx-auto" />
+        <h1 className="font-display text-2xl font-extrabold text-white">
+          IA Inteligente desativada pelo administrador
+        </h1>
+        <p className="text-sm text-slate-300">
+          O módulo de recomendações inteligentes está temporariamente pausado nas configurações de Fontes de API.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

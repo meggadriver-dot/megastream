@@ -192,10 +192,61 @@ service cloud.firestore {
 
     function isValidPlayerSettings(data) {
       return data.keys().hasAll(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
-        && data.keys().hasOnly(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
+        && data.keys().hasOnly([
+          'sourceMode', 'defaultDomain', 'fallbackDomain', 'autoFallback',
+          'defaultPlayer', 'defaultColorHex', 'customEmbedMovieTemplate',
+          'customEmbedTvTemplate', 'embedTimeoutSeconds', 'updatedAt'
+        ])
+        && (!('sourceMode' in data) || data.sourceMode in ['megaembed', 'custom_template'])
         && data.defaultDomain in ['mgeb.lat', 'mgeb.space']
+        && (!('fallbackDomain' in data) || data.fallbackDomain in ['mgeb.lat', 'mgeb.space'])
+        && (!('autoFallback' in data) || data.autoFallback is bool)
         && data.defaultPlayer in ['vidstack', 'megaplay', 'megatube', 'clappr']
         && data.defaultColorHex is string && data.defaultColorHex.size() >= 3 && data.defaultColorHex.size() <= 12
+        && (!('customEmbedMovieTemplate' in data) || (data.customEmbedMovieTemplate is string && data.customEmbedMovieTemplate.size() <= 500))
+        && (!('customEmbedTvTemplate' in data) || (data.customEmbedTvTemplate is string && data.customEmbedTvTemplate.size() <= 500))
+        && (!('embedTimeoutSeconds' in data) || (data.embedTimeoutSeconds is number && data.embedTimeoutSeconds >= 5 && data.embedTimeoutSeconds <= 30))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSystemSettings(data) {
+      return data.keys().hasAll([
+          'catalogSource', 'tmdbBaseUrl', 'tmdbImageBaseUrl', 'tmdbLanguage',
+          'tmdbImageQuality', 'includeAdult', 'cacheTtlMinutes', 'aiMode',
+          'aiMaxRecommendations', 'allowRegistration', 'requireAuthForPlayer',
+          'allowGuestFavorites', 'maxProfilesPerAccount', 'defaultUserPlan',
+          'maintenanceMessage', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'catalogSource', 'tmdbBaseUrl', 'tmdbImageBaseUrl', 'tmdbLanguage',
+          'tmdbImageQuality', 'includeAdult', 'cacheTtlMinutes', 'aiMode',
+          'aiMaxRecommendations', 'allowRegistration', 'requireAuthForPlayer',
+          'allowGuestFavorites', 'maxProfilesPerAccount', 'defaultUserPlan',
+          'maintenanceMessage', 'updatedAt'
+        ])
+        && data.catalogSource in ['auto', 'tmdb', 'demo', 'custom_only']
+        && data.tmdbBaseUrl is string && data.tmdbBaseUrl.size() >= 8 && data.tmdbBaseUrl.size() <= 300
+        && data.tmdbImageBaseUrl is string && data.tmdbImageBaseUrl.size() >= 8 && data.tmdbImageBaseUrl.size() <= 300
+        && data.tmdbLanguage in ['pt-BR', 'en-US', 'es-ES']
+        && data.tmdbImageQuality in ['w342', 'w500', 'w780']
+        && data.includeAdult is bool
+        && data.cacheTtlMinutes is number && data.cacheTtlMinutes >= 1 && data.cacheTtlMinutes <= 1440
+        && data.aiMode in ['auto', 'gemini', 'catalog_smart', 'disabled']
+        && data.aiMaxRecommendations is number && data.aiMaxRecommendations >= 4 && data.aiMaxRecommendations <= 24
+        && data.allowRegistration is bool
+        && data.requireAuthForPlayer is bool
+        && data.allowGuestFavorites is bool
+        && data.maxProfilesPerAccount is number && data.maxProfilesPerAccount >= 1 && data.maxProfilesPerAccount <= 8
+        && data.defaultUserPlan in ['free', 'monthly', 'quarterly', 'annual']
+        && data.maintenanceMessage is string && data.maintenanceMessage.size() >= 1 && data.maintenanceMessage.size() <= 240
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminSecrets(data) {
+      return data.keys().hasAll(['updatedAt'])
+        && data.keys().hasOnly(['tmdbAccessToken', 'geminiApiKey', 'updatedAt'])
+        && (!('tmdbAccessToken' in data) || (data.tmdbAccessToken is string && data.tmdbAccessToken.size() <= 500))
+        && (!('geminiApiKey' in data) || (data.geminiApiKey is string && data.geminiApiKey.size() <= 500))
         && data.updatedAt is timestamp;
     }
 
@@ -385,6 +436,27 @@ service cloud.firestore {
         && isValidPlayerSettings(incoming())
         && incoming().updatedAt == request.time;
       allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // Collection: /systemSettings/{configId}
+    match /systemSettings/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(configId)
+        && isValidSystemSettings(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(configId);
+    }
+
+    // Collection: /adminSecrets/{secretId}
+    match /adminSecrets/{secretId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(secretId)
+        && isValidAdminSecrets(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(secretId);
     }
 
     // Collection: /customCatalog/{mediaId}

@@ -22,13 +22,20 @@ var ALLOWED_MEGAEMBED_PLAYERS = [
   "clappr"
 ];
 var DEFAULT_PLAYER_CONFIG = {
+  sourceMode: "megaembed",
   defaultDomain: "mgeb.lat",
+  fallbackDomain: "mgeb.space",
+  autoFallback: true,
   availableDomains: ["mgeb.lat", "mgeb.space"],
   defaultPlayer: "vidstack",
   availablePlayers: ["vidstack", "megaplay", "megatube", "clappr"],
   defaultColorHex: "00a8ff",
+  customEmbedMovieTemplate: "",
+  customEmbedTvTemplate: "",
+  embedTimeoutSeconds: 12,
   seriesSeasonEpisodeDocumented: true,
-  seriesLimitationNote: "S\xE9ries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:."
+  seriesLimitationNote: "S\xE9ries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:.",
+  updatedAt: "2026-01-01T00:00:00.000Z"
 };
 function sanitizeHexColor(input, fallback = "00a8ff") {
   if (!input) return fallback;
@@ -40,6 +47,18 @@ function sanitizeHexColor(input, fallback = "00a8ff") {
     return cleaned.split("").map((c) => c + c).join("");
   }
   return fallback;
+}
+function sanitizeEmbedTemplate(input) {
+  if (!input || typeof input !== "string") return "";
+  const trimmed = input.trim().slice(0, 500);
+  if (!trimmed) return "";
+  if (!/^https?:\/\//i.test(trimmed)) return "";
+  return trimmed;
+}
+function sanitizeEmbedTimeoutSeconds(value, fallback = 12) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(5, Math.min(30, Math.round(n)));
 }
 function validateMegaEmbedDomain(domain, fallback = "mgeb.lat") {
   if (domain && ALLOWED_MEGAEMBED_DOMAINS.includes(domain)) {
@@ -95,6 +114,16 @@ function buildMegaEmbedUrl(params) {
   }
   return `https://${domain}/embed/${validId}?player=${encodeURIComponent(player)}#color:${color}`;
 }
+function buildCustomEmbedUrl(params) {
+  const cleanTemplate = sanitizeEmbedTemplate(params.template);
+  const validId = normalizeTmdbId(params.tmdbId);
+  if (!cleanTemplate || !validId) return null;
+  const season = normalizeSeasonNumber(params.seasonNumber, 1);
+  const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+  const player = validateMegaEmbedPlayer(params.player, DEFAULT_PLAYER_CONFIG.defaultPlayer);
+  const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
+  return cleanTemplate.replace(/\{tmdbId\}|\{TMDB_ID\}|\{id\}/g, String(validId)).replace(/\{season\}|\{SEASON\}|\{temporada\}/g, String(season)).replace(/\{episode\}|\{EPISODE\}|\{episodio\}/g, String(episode)).replace(/\{player\}/g, encodeURIComponent(player)).replace(/\{color\}/g, color).replace(/\{type\}/g, params.mediaType === "tv" ? "tv" : "movie");
+}
 function buildTmdbImageUrl(path5, size = "w500", baseUrl = "https://image.tmdb.org/t/p/") {
   if (!path5) return null;
   if (path5.startsWith("http://") || path5.startsWith("https://") || path5.startsWith("/src/") || path5.startsWith("/assets/")) {
@@ -106,8 +135,8 @@ function buildTmdbImageUrl(path5, size = "w500", baseUrl = "https://image.tmdb.o
 }
 
 // server/services/AuthenticationService.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path4 from "node:path";
 
 // server/repositories/interfaces.ts
 import fs2 from "node:fs";
@@ -389,6 +418,121 @@ function mergeCustomCatalogIntoList(baseItems, customItems, mediaTypeFilter) {
   return [...newCustoms, ...replaced];
 }
 
+// shared/systemSettingsUtils.ts
+var VALID_CATALOG_SOURCES = [
+  "auto",
+  "tmdb",
+  "demo",
+  "custom_only"
+];
+var VALID_AI_MODES = [
+  "auto",
+  "gemini",
+  "catalog_smart",
+  "disabled"
+];
+var VALID_TMDB_LANGUAGES = [
+  "pt-BR",
+  "en-US",
+  "es-ES"
+];
+var VALID_TMDB_QUALITIES = [
+  "w342",
+  "w500",
+  "w780"
+];
+var VALID_PLANS = ["free", "monthly", "quarterly", "annual"];
+var DEFAULT_SYSTEM_SETTINGS = {
+  catalogSource: "auto",
+  tmdbBaseUrl: "https://api.themoviedb.org/3",
+  tmdbImageBaseUrl: "https://image.tmdb.org/t/p/",
+  tmdbLanguage: "pt-BR",
+  tmdbImageQuality: "w500",
+  includeAdult: false,
+  cacheTtlMinutes: 10,
+  aiMode: "auto",
+  aiMaxRecommendations: 12,
+  allowRegistration: true,
+  requireAuthForPlayer: false,
+  allowGuestFavorites: true,
+  maxProfilesPerAccount: 5,
+  defaultUserPlan: "free",
+  maintenanceMessage: "Plataforma em manuten\xE7\xE3o programada. Alguns recursos podem ficar temporariamente indispon\xEDveis.",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+};
+function sanitizeHttpsApiUrl(raw, fallback, ensureTrailingSlash = false) {
+  if (!raw || typeof raw !== "string") return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed || !isValidStreamUrl(trimmed)) return fallback;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return fallback;
+    }
+    const clean = trimmed.replace(/\/+$/, "");
+    return ensureTrailingSlash ? `${clean}/` : clean;
+  } catch {
+    return fallback;
+  }
+}
+function clampInt(value, min, max, fallback) {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const rounded = Math.round(num);
+  return Math.max(min, Math.min(max, rounded));
+}
+function sanitizeSystemSettings(input, current = DEFAULT_SYSTEM_SETTINGS, preserveUpdatedAt = false) {
+  const catalogSource = input.catalogSource && VALID_CATALOG_SOURCES.includes(input.catalogSource) ? input.catalogSource : current.catalogSource;
+  const tmdbBaseUrl = input.tmdbBaseUrl !== void 0 ? sanitizeHttpsApiUrl(input.tmdbBaseUrl, current.tmdbBaseUrl, false) : current.tmdbBaseUrl;
+  const tmdbImageBaseUrl = input.tmdbImageBaseUrl !== void 0 ? sanitizeHttpsApiUrl(input.tmdbImageBaseUrl, current.tmdbImageBaseUrl, true) : current.tmdbImageBaseUrl;
+  const tmdbLanguage = input.tmdbLanguage && VALID_TMDB_LANGUAGES.includes(input.tmdbLanguage) ? input.tmdbLanguage : current.tmdbLanguage;
+  const tmdbImageQuality = input.tmdbImageQuality && VALID_TMDB_QUALITIES.includes(input.tmdbImageQuality) ? input.tmdbImageQuality : current.tmdbImageQuality;
+  const aiMode = input.aiMode && VALID_AI_MODES.includes(input.aiMode) ? input.aiMode : current.aiMode;
+  const defaultUserPlan = input.defaultUserPlan && VALID_PLANS.includes(input.defaultUserPlan) ? input.defaultUserPlan : current.defaultUserPlan;
+  const maintenanceMessage = typeof input.maintenanceMessage === "string" ? sanitizePlainText(input.maintenanceMessage, 240) || current.maintenanceMessage : current.maintenanceMessage;
+  const preservedIso = preserveUpdatedAt ? toIsoTimestamp(input.updatedAt, "") : "";
+  return {
+    catalogSource,
+    tmdbBaseUrl,
+    tmdbImageBaseUrl,
+    tmdbLanguage,
+    tmdbImageQuality,
+    includeAdult: typeof input.includeAdult === "boolean" ? input.includeAdult : current.includeAdult,
+    cacheTtlMinutes: input.cacheTtlMinutes !== void 0 ? clampInt(input.cacheTtlMinutes, 1, 1440, current.cacheTtlMinutes) : current.cacheTtlMinutes,
+    aiMode,
+    aiMaxRecommendations: input.aiMaxRecommendations !== void 0 ? clampInt(input.aiMaxRecommendations, 4, 24, current.aiMaxRecommendations) : current.aiMaxRecommendations,
+    allowRegistration: typeof input.allowRegistration === "boolean" ? input.allowRegistration : current.allowRegistration,
+    requireAuthForPlayer: typeof input.requireAuthForPlayer === "boolean" ? input.requireAuthForPlayer : current.requireAuthForPlayer,
+    allowGuestFavorites: typeof input.allowGuestFavorites === "boolean" ? input.allowGuestFavorites : current.allowGuestFavorites,
+    maxProfilesPerAccount: input.maxProfilesPerAccount !== void 0 ? clampInt(input.maxProfilesPerAccount, 1, 8, current.maxProfilesPerAccount) : current.maxProfilesPerAccount,
+    defaultUserPlan,
+    maintenanceMessage,
+    updatedAt: preservedIso || (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function extractPublicRuntimeSettings(settings, embedTimeoutSeconds = 12) {
+  return {
+    allowRegistration: settings.allowRegistration,
+    requireAuthForPlayer: settings.requireAuthForPlayer,
+    allowGuestFavorites: settings.allowGuestFavorites,
+    maxProfilesPerAccount: settings.maxProfilesPerAccount,
+    maintenanceMessage: settings.maintenanceMessage,
+    aiEnabled: settings.aiMode !== "disabled",
+    embedTimeoutSeconds: clampInt(embedTimeoutSeconds, 5, 30, 12),
+    updatedAt: settings.updatedAt
+  };
+}
+function maskSecretValue(secret) {
+  const trimmed = typeof secret === "string" ? secret.trim() : "";
+  if (!trimmed) return "";
+  if (trimmed.length <= 8) return "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+  return `${trimmed.slice(0, 4)}\u2022\u2022\u2022\u2022${trimmed.slice(-4)}`;
+}
+function sanitizeSecretToken(raw, maxLength = 500) {
+  if (typeof raw !== "string") return "";
+  return raw.replace(/[\r\n\t\s]+/g, "").slice(0, maxLength);
+}
+
 // server/repositories/interfaces.ts
 var DATA_FILE = process.env.VERCEL ? "/tmp/.megastream-store.json" : path2.resolve(process.cwd(), ".megastream-store.json");
 var JsonRepositoryStore = class {
@@ -411,6 +555,8 @@ var JsonRepositoryStore = class {
       channels: {},
       subscriptions: {},
       siteConfig: { ...DEFAULT_SITE_CONFIG },
+      systemSettings: { ...DEFAULT_SYSTEM_SETTINGS },
+      adminSecrets: {},
       customCatalog: {},
       logs: [
         {
@@ -551,6 +697,22 @@ var JsonRepositoryStore = class {
     this.save();
     return settings;
   }
+  getSystemSettings() {
+    return this.state.systemSettings ?? { ...DEFAULT_SYSTEM_SETTINGS };
+  }
+  saveSystemSettings(settings) {
+    this.state.systemSettings = settings;
+    this.save();
+    return settings;
+  }
+  getAdminSecrets() {
+    return this.state.adminSecrets ?? {};
+  }
+  saveAdminSecrets(secrets) {
+    this.state.adminSecrets = secrets;
+    this.save();
+    return secrets;
+  }
   getCustomCatalog() {
     return Object.values(this.state.customCatalog ?? {}).sort(
       (a, b) => b.updatedAt.localeCompare(a.updatedAt)
@@ -598,162 +760,74 @@ var JsonRepositoryStore = class {
 };
 var repositoryStore = new JsonRepositoryStore();
 
-// server/services/AuthenticationService.ts
-var ADMIN_EMAILS = /* @__PURE__ */ new Set(["meggadriver@gmail.com"]);
-function getFirebaseProjectId() {
-  try {
-    const cfgPath = path3.resolve(process.cwd(), "firebase-applet-config.json");
-    if (fs3.existsSync(cfgPath)) {
-      const cfg = JSON.parse(fs3.readFileSync(cfgPath, "utf-8"));
-      if (cfg.projectId) return cfg.projectId;
+// server/config/playerConfig.ts
+var PlayerConfigStore = class {
+  getPersisted() {
+    const stored = repositoryStore.getPlayerSettings();
+    if (!stored) {
+      return { ...DEFAULT_PLAYER_CONFIG };
     }
-  } catch {
-  }
-  return "gen-lang-client-0094430568";
-}
-var AuthenticationServiceImpl = class {
-  constructor() {
-    this.projectId = getFirebaseProjectId();
-  }
-  async verifyBearerToken(authHeader) {
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return null;
-    }
-    const token = authHeader.slice(7).trim();
-    if (!token) return null;
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    try {
-      const payloadJson = Buffer.from(parts[1], "base64url").toString("utf-8");
-      const payload = JSON.parse(payloadJson);
-      const uid = payload.user_id || payload.sub;
-      if (!uid || !payload.email) return null;
-      if (payload.exp && payload.exp * 1e3 < Date.now()) {
-        return null;
-      }
-      if (payload.aud && payload.aud !== this.projectId) {
-        return null;
-      }
-      const existingUser = repositoryStore.getUser(uid);
-      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase());
-      const isAdmin = isAdminEmail && Boolean(payload.email_verified) || existingUser?.role === "admin";
-      return {
-        uid,
-        email: payload.email,
-        name: payload.name || payload.email.split("@")[0],
-        picture: payload.picture,
-        emailVerified: Boolean(payload.email_verified),
-        isAdmin
-      };
-    } catch {
-      return null;
-    }
-  }
-  ensureUserRecord(identity) {
-    const existing = repositoryStore.getUser(identity.uid);
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const isBootAdmin = ADMIN_EMAILS.has(identity.email.toLowerCase()) && identity.emailVerified;
-    if (existing) {
-      if (isBootAdmin && existing.role !== "admin") {
-        const promoted = { ...existing, role: "admin", updatedAt: now };
-        return repositoryStore.upsertUser(promoted);
-      }
-      return existing;
-    }
-    const created = {
-      uid: identity.uid,
-      name: identity.name,
-      email: identity.email,
-      photoUrl: identity.picture,
-      plan: "free",
-      role: isBootAdmin ? "admin" : "user",
-      blocked: false,
-      preferredTheme: "cinematografico",
-      preferredLanguage: "pt-BR",
-      preferredQuality: "1080p",
-      parentalControl: false,
-      notificationsEnabled: true,
-      createdAt: now,
-      updatedAt: now
+    const sourceMode = stored.sourceMode === "custom_template" ? "custom_template" : "megaembed";
+    return {
+      ...DEFAULT_PLAYER_CONFIG,
+      sourceMode,
+      defaultDomain: validateMegaEmbedDomain(
+        stored.defaultDomain,
+        DEFAULT_PLAYER_CONFIG.defaultDomain
+      ),
+      fallbackDomain: validateMegaEmbedDomain(
+        stored.fallbackDomain,
+        DEFAULT_PLAYER_CONFIG.fallbackDomain
+      ),
+      autoFallback: typeof stored.autoFallback === "boolean" ? stored.autoFallback : DEFAULT_PLAYER_CONFIG.autoFallback,
+      defaultPlayer: validateMegaEmbedPlayer(
+        stored.defaultPlayer,
+        DEFAULT_PLAYER_CONFIG.defaultPlayer
+      ),
+      defaultColorHex: sanitizeHexColor(
+        stored.defaultColorHex,
+        DEFAULT_PLAYER_CONFIG.defaultColorHex
+      ),
+      customEmbedMovieTemplate: sanitizeEmbedTemplate(stored.customEmbedMovieTemplate),
+      customEmbedTvTemplate: sanitizeEmbedTemplate(stored.customEmbedTvTemplate),
+      embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
+        stored.embedTimeoutSeconds,
+        DEFAULT_PLAYER_CONFIG.embedTimeoutSeconds
+      ),
+      updatedAt: stored.updatedAt ?? DEFAULT_PLAYER_CONFIG.updatedAt
     };
-    repositoryStore.upsertUser(created);
-    repositoryStore.addLog({
-      level: "info",
-      service: "AuthenticationService",
-      message: `Novo perfil sincronizado: ${created.email} (${created.role}).`
+  }
+  getConfig() {
+    return this.getPersisted();
+  }
+  updateConfig(partial, preserveUpdatedAt = false) {
+    const current = this.getPersisted();
+    const nextSourceMode = partial.sourceMode === "custom_template" ? "custom_template" : partial.sourceMode === "megaembed" ? "megaembed" : current.sourceMode;
+    const nextDomain = partial.defaultDomain ? validateMegaEmbedDomain(partial.defaultDomain, current.defaultDomain) : current.defaultDomain;
+    const nextFallback = partial.fallbackDomain ? validateMegaEmbedDomain(partial.fallbackDomain, current.fallbackDomain) : current.fallbackDomain;
+    const nextAutoFallback = typeof partial.autoFallback === "boolean" ? partial.autoFallback : current.autoFallback;
+    const nextPlayer = partial.defaultPlayer ? validateMegaEmbedPlayer(partial.defaultPlayer, current.defaultPlayer) : current.defaultPlayer;
+    const nextColor = partial.defaultColorHex ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex) : current.defaultColorHex;
+    const nextMovieTpl = partial.customEmbedMovieTemplate !== void 0 ? sanitizeEmbedTemplate(partial.customEmbedMovieTemplate) : current.customEmbedMovieTemplate;
+    const nextTvTpl = partial.customEmbedTvTemplate !== void 0 ? sanitizeEmbedTemplate(partial.customEmbedTvTemplate) : current.customEmbedTvTemplate;
+    const nextTimeout = partial.embedTimeoutSeconds !== void 0 ? sanitizeEmbedTimeoutSeconds(partial.embedTimeoutSeconds, current.embedTimeoutSeconds) : current.embedTimeoutSeconds;
+    const updatedAt = preserveUpdatedAt && partial.updatedAt ? partial.updatedAt : (/* @__PURE__ */ new Date()).toISOString();
+    repositoryStore.savePlayerSettings({
+      sourceMode: nextSourceMode,
+      defaultDomain: nextDomain,
+      fallbackDomain: nextFallback,
+      autoFallback: nextAutoFallback,
+      defaultPlayer: nextPlayer,
+      defaultColorHex: nextColor,
+      customEmbedMovieTemplate: nextMovieTpl,
+      customEmbedTvTemplate: nextTvTpl,
+      embedTimeoutSeconds: nextTimeout,
+      updatedAt
     });
-    return created;
+    return this.getPersisted();
   }
 };
-var AuthenticationService = new AuthenticationServiceImpl();
-
-// server/middleware/security.ts
-var rateBuckets = /* @__PURE__ */ new Map();
-function rateLimitMiddleware(maxRequests = 180, windowMs = 6e4) {
-  return (req, res, next) => {
-    const ip = req.ip || "local";
-    const now = Date.now();
-    const bucket = rateBuckets.get(ip);
-    if (!bucket || now > bucket.resetAt) {
-      rateBuckets.set(ip, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-    if (bucket.count >= maxRequests) {
-      return res.status(429).json({
-        error: "Limite de requisi\xE7\xF5es excedido. Aguarde alguns instantes e tente novamente."
-      });
-    }
-    bucket.count += 1;
-    next();
-  };
-}
-async function requireAuth(req, res, next) {
-  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
-  if (!identity) {
-    return res.status(401).json({ error: "Autentica\xE7\xE3o necess\xE1ria." });
-  }
-  const user = AuthenticationService.ensureUserRecord(identity);
-  if (user.blocked) {
-    return res.status(403).json({ error: "Conta suspensa pelo administrador." });
-  }
-  req.identity = { ...identity, isAdmin: identity.isAdmin || user.role === "admin" };
-  next();
-}
-async function optionalAuth(req, _res, next) {
-  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
-  if (identity) {
-    const user = AuthenticationService.ensureUserRecord(identity);
-    req.identity = { ...identity, isAdmin: identity.isAdmin || user.role === "admin" };
-  }
-  next();
-}
-async function requireAdmin(req, res, next) {
-  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
-  if (!identity) {
-    return res.status(401).json({ error: "Autentica\xE7\xE3o de administrador necess\xE1ria." });
-  }
-  const user = AuthenticationService.ensureUserRecord(identity);
-  const isAdmin = identity.isAdmin || user.role === "admin";
-  if (!isAdmin) {
-    repositoryStore.addLog({
-      level: "warn",
-      service: "Security",
-      message: `Tentativa de acesso administrativo negada para ${identity.email}.`
-    });
-    return res.status(403).json({ error: "Permiss\xE3o de administrador negada." });
-  }
-  req.identity = { ...identity, isAdmin: true };
-  next();
-}
-function globalErrorHandler(err, _req, res, _next) {
-  const message = err instanceof Error ? err.message : "Erro interno do servidor.";
-  repositoryStore.addLog({
-    level: "error",
-    service: "API",
-    message
-  });
-  res.status(500).json({ error: message });
-}
+var playerConfigStore = new PlayerConfigStore();
 
 // server/services/CacheService.ts
 var CacheServiceImpl = class {
@@ -803,13 +877,13 @@ var CacheServiceImpl = class {
 var CacheService = new CacheServiceImpl();
 
 // server/services/FirestoreRestService.ts
-import fs4 from "node:fs";
-import path4 from "node:path";
+import fs3 from "node:fs";
+import path3 from "node:path";
 function loadConfig() {
   try {
-    const cfgPath = path4.resolve(process.cwd(), "firebase-applet-config.json");
-    if (fs4.existsSync(cfgPath)) {
-      const parsed = JSON.parse(fs4.readFileSync(cfgPath, "utf-8"));
+    const cfgPath = path3.resolve(process.cwd(), "firebase-applet-config.json");
+    if (fs3.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs3.readFileSync(cfgPath, "utf-8"));
       if (parsed.projectId && parsed.firestoreDatabaseId) {
         return {
           projectId: parsed.projectId,
@@ -901,6 +975,318 @@ var FirestoreRestServiceImpl = class {
   }
 };
 var FirestoreRestService = new FirestoreRestServiceImpl();
+
+// server/services/SystemSettingsService.ts
+var SystemSettingsServiceImpl = class {
+  constructor() {
+    this.lastHydratedAt = 0;
+    this.hydrationTtlMs = 2e4;
+  }
+  async ensureHydrated(force = false) {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+    const remote = await FirestoreRestService.getDocument(
+      "systemSettings/global"
+    );
+    if (remote) {
+      const local = repositoryStore.getSystemSettings();
+      const localTs = Date.parse(local.updatedAt || DEFAULT_SYSTEM_SETTINGS.updatedAt) || 0;
+      const remoteIso = toIsoTimestamp(remote.updatedAt, "");
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      const isLocalDefault = local.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt;
+      if (isLocalDefault || remoteTs >= localTs) {
+        const merged = sanitizeSystemSettings(remote, local, true);
+        repositoryStore.saveSystemSettings(merged);
+      }
+    }
+    this.lastHydratedAt = Date.now();
+  }
+  getSettings() {
+    return repositoryStore.getSystemSettings();
+  }
+  async getSettingsAsync() {
+    await this.ensureHydrated();
+    return repositoryStore.getSystemSettings();
+  }
+  async getPublicRuntimeSettingsAsync() {
+    await this.ensureHydrated();
+    const sys = repositoryStore.getSystemSettings();
+    const playerCfg = playerConfigStore.getConfig();
+    return extractPublicRuntimeSettings(sys, playerCfg.embedTimeoutSeconds);
+  }
+  getSecrets() {
+    return repositoryStore.getAdminSecrets();
+  }
+  getSecretsStatus() {
+    const secrets = repositoryStore.getAdminSecrets();
+    const envTmdb = process.env.TMDB_ACCESS_TOKEN?.trim() ?? "";
+    const envGemini = process.env.GEMINI_API_KEY?.trim() ?? "";
+    const hasEnvTmdbToken = Boolean(envTmdb && envTmdb !== "MY_TMDB_ACCESS_TOKEN");
+    const hasEnvGeminiKey = Boolean(envGemini && envGemini !== "MY_GEMINI_API_KEY");
+    const customTmdb = secrets.tmdbAccessToken?.trim() ?? "";
+    const customGemini = secrets.geminiApiKey?.trim() ?? "";
+    return {
+      hasCustomTmdbToken: Boolean(customTmdb),
+      tmdbTokenMask: maskSecretValue(customTmdb),
+      hasEnvTmdbToken,
+      hasCustomGeminiKey: Boolean(customGemini),
+      geminiKeyMask: maskSecretValue(customGemini),
+      hasEnvGeminiKey
+    };
+  }
+  async getAdminPayloadAsync() {
+    await this.ensureHydrated();
+    return {
+      settings: repositoryStore.getSystemSettings(),
+      secretsStatus: this.getSecretsStatus()
+    };
+  }
+  updateSettings(payload) {
+    const current = repositoryStore.getSystemSettings();
+    const next = sanitizeSystemSettings(payload, current, false);
+    repositoryStore.saveSystemSettings(next);
+    const currentSecrets = repositoryStore.getAdminSecrets();
+    let secretsChanged = false;
+    const nextSecrets = { ...currentSecrets };
+    if (payload.clearTmdbAccessToken) {
+      delete nextSecrets.tmdbAccessToken;
+      secretsChanged = true;
+    } else if (typeof payload.tmdbAccessToken === "string") {
+      const cleanToken = sanitizeSecretToken(payload.tmdbAccessToken, 500);
+      if (cleanToken) {
+        nextSecrets.tmdbAccessToken = cleanToken;
+        secretsChanged = true;
+      }
+    }
+    if (payload.clearGeminiApiKey) {
+      delete nextSecrets.geminiApiKey;
+      secretsChanged = true;
+    } else if (typeof payload.geminiApiKey === "string") {
+      const cleanKey = sanitizeSecretToken(payload.geminiApiKey, 500);
+      if (cleanKey) {
+        nextSecrets.geminiApiKey = cleanKey;
+        secretsChanged = true;
+      }
+    }
+    if (secretsChanged) {
+      nextSecrets.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      repositoryStore.saveAdminSecrets(nextSecrets);
+    }
+    this.lastHydratedAt = Date.now();
+    CacheService.clear("catalog:");
+    CacheService.clear("tmdb:");
+    repositoryStore.addLog({
+      level: "info",
+      service: "SystemSettingsService",
+      message: `Fontes de API e pol\xEDticas atualizadas: cat\xE1logo=${next.catalogSource}, idioma=${next.tmdbLanguage}, IA=${next.aiMode}.`
+    });
+    return {
+      settings: next,
+      secretsStatus: this.getSecretsStatus()
+    };
+  }
+  resetSettingsToDefaults() {
+    const defaults = {
+      ...DEFAULT_SYSTEM_SETTINGS,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    repositoryStore.saveSystemSettings(defaults);
+    this.lastHydratedAt = Date.now();
+    CacheService.clear("catalog:");
+    CacheService.clear("tmdb:");
+    repositoryStore.addLog({
+      level: "warn",
+      service: "SystemSettingsService",
+      message: "Configura\xE7\xF5es de APIs e pol\xEDticas restauradas para o padr\xE3o de f\xE1brica."
+    });
+    return {
+      settings: defaults,
+      secretsStatus: this.getSecretsStatus()
+    };
+  }
+  getActiveTmdbToken() {
+    const custom = repositoryStore.getAdminSecrets().tmdbAccessToken?.trim();
+    if (custom) {
+      return { token: custom, source: "admin_override" };
+    }
+    const envToken = process.env.TMDB_ACCESS_TOKEN?.trim();
+    if (envToken && envToken !== "MY_TMDB_ACCESS_TOKEN") {
+      return { token: envToken, source: "env" };
+    }
+    return { token: null, source: "none" };
+  }
+  getActiveGeminiKey() {
+    const custom = repositoryStore.getAdminSecrets().geminiApiKey?.trim();
+    if (custom) {
+      return { key: custom, source: "admin_override" };
+    }
+    const envKey = process.env.GEMINI_API_KEY?.trim();
+    if (envKey && envKey !== "MY_GEMINI_API_KEY") {
+      return { key: envKey, source: "env" };
+    }
+    return { key: null, source: "none" };
+  }
+};
+var SystemSettingsService = new SystemSettingsServiceImpl();
+
+// server/services/AuthenticationService.ts
+var ADMIN_EMAILS = /* @__PURE__ */ new Set(["meggadriver@gmail.com"]);
+function getFirebaseProjectId() {
+  try {
+    const cfgPath = path4.resolve(process.cwd(), "firebase-applet-config.json");
+    if (fs4.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs4.readFileSync(cfgPath, "utf-8"));
+      if (cfg.projectId) return cfg.projectId;
+    }
+  } catch {
+  }
+  return "gen-lang-client-0094430568";
+}
+var AuthenticationServiceImpl = class {
+  constructor() {
+    this.projectId = getFirebaseProjectId();
+  }
+  async verifyBearerToken(authHeader) {
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return null;
+    }
+    const token = authHeader.slice(7).trim();
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    try {
+      const payloadJson = Buffer.from(parts[1], "base64url").toString("utf-8");
+      const payload = JSON.parse(payloadJson);
+      const uid = payload.user_id || payload.sub;
+      if (!uid || !payload.email) return null;
+      if (payload.exp && payload.exp * 1e3 < Date.now()) {
+        return null;
+      }
+      if (payload.aud && payload.aud !== this.projectId) {
+        return null;
+      }
+      const existingUser = repositoryStore.getUser(uid);
+      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase());
+      const isAdmin = isAdminEmail && Boolean(payload.email_verified) || existingUser?.role === "admin";
+      return {
+        uid,
+        email: payload.email,
+        name: payload.name || payload.email.split("@")[0],
+        picture: payload.picture,
+        emailVerified: Boolean(payload.email_verified),
+        isAdmin
+      };
+    } catch {
+      return null;
+    }
+  }
+  ensureUserRecord(identity) {
+    const existing = repositoryStore.getUser(identity.uid);
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const isBootAdmin = ADMIN_EMAILS.has(identity.email.toLowerCase()) && identity.emailVerified;
+    if (existing) {
+      if (isBootAdmin && existing.role !== "admin") {
+        const promoted = { ...existing, role: "admin", updatedAt: now };
+        return repositoryStore.upsertUser(promoted);
+      }
+      return existing;
+    }
+    const defaultPlan = SystemSettingsService.getSettings().defaultUserPlan || "free";
+    const created = {
+      uid: identity.uid,
+      name: identity.name,
+      email: identity.email,
+      photoUrl: identity.picture,
+      plan: defaultPlan,
+      role: isBootAdmin ? "admin" : "user",
+      blocked: false,
+      preferredTheme: "cinematografico",
+      preferredLanguage: "pt-BR",
+      preferredQuality: "1080p",
+      parentalControl: false,
+      notificationsEnabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    repositoryStore.upsertUser(created);
+    repositoryStore.addLog({
+      level: "info",
+      service: "AuthenticationService",
+      message: `Novo perfil sincronizado: ${created.email} (${created.role}).`
+    });
+    return created;
+  }
+};
+var AuthenticationService = new AuthenticationServiceImpl();
+
+// server/middleware/security.ts
+var rateBuckets = /* @__PURE__ */ new Map();
+function rateLimitMiddleware(maxRequests = 180, windowMs = 6e4) {
+  return (req, res, next) => {
+    const ip = req.ip || "local";
+    const now = Date.now();
+    const bucket = rateBuckets.get(ip);
+    if (!bucket || now > bucket.resetAt) {
+      rateBuckets.set(ip, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (bucket.count >= maxRequests) {
+      return res.status(429).json({
+        error: "Limite de requisi\xE7\xF5es excedido. Aguarde alguns instantes e tente novamente."
+      });
+    }
+    bucket.count += 1;
+    next();
+  };
+}
+async function requireAuth(req, res, next) {
+  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
+  if (!identity) {
+    return res.status(401).json({ error: "Autentica\xE7\xE3o necess\xE1ria." });
+  }
+  const user = AuthenticationService.ensureUserRecord(identity);
+  if (user.blocked) {
+    return res.status(403).json({ error: "Conta suspensa pelo administrador." });
+  }
+  req.identity = { ...identity, isAdmin: identity.isAdmin || user.role === "admin" };
+  next();
+}
+async function optionalAuth(req, _res, next) {
+  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
+  if (identity) {
+    const user = AuthenticationService.ensureUserRecord(identity);
+    req.identity = { ...identity, isAdmin: identity.isAdmin || user.role === "admin" };
+  }
+  next();
+}
+async function requireAdmin(req, res, next) {
+  const identity = await AuthenticationService.verifyBearerToken(req.headers.authorization);
+  if (!identity) {
+    return res.status(401).json({ error: "Autentica\xE7\xE3o de administrador necess\xE1ria." });
+  }
+  const user = AuthenticationService.ensureUserRecord(identity);
+  const isAdmin = identity.isAdmin || user.role === "admin";
+  if (!isAdmin) {
+    repositoryStore.addLog({
+      level: "warn",
+      service: "Security",
+      message: `Tentativa de acesso administrativo negada para ${identity.email}.`
+    });
+    return res.status(403).json({ error: "Permiss\xE3o de administrador negada." });
+  }
+  req.identity = { ...identity, isAdmin: true };
+  next();
+}
+function globalErrorHandler(err, _req, res, _next) {
+  const message = err instanceof Error ? err.message : "Erro interno do servidor.";
+  repositoryStore.addLog({
+    level: "error",
+    service: "API",
+    message
+  });
+  res.status(500).json({ error: message });
+}
 
 // server/services/SiteConfigService.ts
 var SiteConfigServiceImpl = class {
@@ -1396,42 +1782,69 @@ function getDemoSeasonDetail(tmdbId, seasonNumber) {
 }
 
 // server/services/TMDBService.ts
-var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var TMDBServiceImpl = class {
   constructor() {
-    this.imageBaseUrl = "https://image.tmdb.org/t/p/";
-  }
-  isConfigured() {
-    const token = process.env.TMDB_ACCESS_TOKEN?.trim();
-    return Boolean(token && token !== "MY_TMDB_ACCESS_TOKEN");
+    this.detectedImageBaseUrl = null;
   }
   getToken() {
-    const token = process.env.TMDB_ACCESS_TOKEN?.trim();
-    if (!token || token === "MY_TMDB_ACCESS_TOKEN") return null;
-    return token;
+    return SystemSettingsService.getActiveTmdbToken().token;
+  }
+  isTokenAvailable() {
+    return Boolean(this.getToken());
+  }
+  isConfigured() {
+    const settings = SystemSettingsService.getSettings();
+    if (settings.catalogSource === "demo" || settings.catalogSource === "custom_only") {
+      return false;
+    }
+    return this.isTokenAvailable();
+  }
+  isCustomOnly() {
+    return SystemSettingsService.getSettings().catalogSource === "custom_only";
+  }
+  getActiveImageBaseUrl() {
+    const configured = SystemSettingsService.getSettings().tmdbImageBaseUrl;
+    if (configured && configured !== "https://image.tmdb.org/t/p/") {
+      return configured;
+    }
+    return this.detectedImageBaseUrl || configured || "https://image.tmdb.org/t/p/";
+  }
+  getDemoOrCustomBaseCatalog() {
+    const customAsMedia = repositoryStore.getCustomCatalog().filter((c) => c.active).map(customMediaToMediaItem);
+    if (this.isCustomOnly()) {
+      return deduplicateMediaByTmdbId(customAsMedia);
+    }
+    return deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]);
   }
   async request(endpoint, params = {}) {
     const token = this.getToken();
     if (!token) {
       throw new Error("TMDB_ACCESS_TOKEN n\xE3o configurado");
     }
-    const url = new URL(`${TMDB_BASE_URL}${endpoint}`);
+    const settings = SystemSettingsService.getSettings();
+    const baseUrl = (settings.tmdbBaseUrl || "https://api.themoviedb.org/3").replace(/\/+$/, "");
+    const url = new URL(`${baseUrl}${endpoint}`);
     if (!params.language) {
-      url.searchParams.set("language", "pt-BR");
+      url.searchParams.set("language", settings.tmdbLanguage || "pt-BR");
     }
     for (const [k, v] of Object.entries(params)) {
       if (v !== void 0 && v !== null && String(v).trim() !== "") {
         url.searchParams.set(k, String(v));
       }
     }
+    const isBearerJwt = token.length > 40 || token.includes(".");
+    if (!isBearerJwt) {
+      url.searchParams.set("api_key", token);
+    }
     const cacheKey = `tmdb:${url.toString()}`;
     const cached = CacheService.get(cacheKey);
     if (cached) return cached;
+    const headers = { Accept: "application/json" };
+    if (isBearerJwt) {
+      headers.Authorization = `Bearer ${token}`;
+    }
     const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json"
-      },
+      headers,
       signal: AbortSignal.timeout(12e3)
     });
     if (!response.ok) {
@@ -1444,26 +1857,100 @@ var TMDBServiceImpl = class {
       throw new Error(`TMDB API retornou status ${response.status}`);
     }
     const data = await response.json();
-    CacheService.set(cacheKey, data, 10 * 60 * 1e3);
+    const ttlMs = Math.max(1, settings.cacheTtlMinutes || 10) * 60 * 1e3;
+    CacheService.set(cacheKey, data, ttlMs);
     return data;
   }
+  async testConnection() {
+    await SystemSettingsService.ensureHydrated();
+    const started = Date.now();
+    const settings = SystemSettingsService.getSettings();
+    const tokenInfo = SystemSettingsService.getActiveTmdbToken();
+    if (settings.catalogSource === "demo" || settings.catalogSource === "custom_only") {
+      return {
+        target: "tmdb",
+        ok: true,
+        latencyMs: Date.now() - started,
+        message: `Fonte ativa configurada como "${settings.catalogSource}". Chamadas externas TMDB est\xE3o desabilitadas por escolha do administrador.`,
+        detail: `Base configurada: ${settings.tmdbBaseUrl}`,
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    if (!tokenInfo.token) {
+      return {
+        target: "tmdb",
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: "Nenhum token TMDB encontrado (nem em Secrets nem nas Configura\xE7\xF5es de API).",
+        detail: "Informe um TMDB Access Token (v4) ou API Key (v3) em Fontes de API ou use o modo Demonstra\xE7\xE3o.",
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    try {
+      const baseUrl = (settings.tmdbBaseUrl || "https://api.themoviedb.org/3").replace(/\/+$/, "");
+      const url = new URL(`${baseUrl}/configuration`);
+      const isBearerJwt = tokenInfo.token.length > 40 || tokenInfo.token.includes(".");
+      const headers = { Accept: "application/json" };
+      if (isBearerJwt) {
+        headers.Authorization = `Bearer ${tokenInfo.token}`;
+      } else {
+        url.searchParams.set("api_key", tokenInfo.token);
+      }
+      const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(1e4) });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) {
+        return {
+          target: "tmdb",
+          ok: false,
+          latencyMs,
+          statusCode: res.status,
+          message: `Falha ao autenticar no TMDB (${res.status}). Verifique o token configurado (${tokenInfo.source}).`,
+          detail: baseUrl,
+          testedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+      }
+      return {
+        target: "tmdb",
+        ok: true,
+        latencyMs,
+        statusCode: res.status,
+        message: `Conex\xE3o TMDB validada com sucesso via ${tokenInfo.source === "admin_override" ? "Token do Painel Admin" : "Secret do Servidor"}.`,
+        detail: `${baseUrl} \xB7 idioma ${settings.tmdbLanguage}`,
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    } catch (err) {
+      return {
+        target: "tmdb",
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: `Erro de rede ao conectar em ${settings.tmdbBaseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+  }
   async ensureImageConfig() {
-    if (!this.isConfigured()) return this.imageBaseUrl;
+    if (!this.isConfigured()) return this.getActiveImageBaseUrl();
+    const settings = SystemSettingsService.getSettings();
+    if (settings.tmdbImageBaseUrl && settings.tmdbImageBaseUrl !== "https://image.tmdb.org/t/p/") {
+      return settings.tmdbImageBaseUrl;
+    }
     const cached = CacheService.get("tmdb:image_base_url");
     if (cached) return cached;
     try {
       const cfg = await this.request("/configuration", {});
       if (cfg.images?.secure_base_url) {
-        this.imageBaseUrl = cfg.images.secure_base_url;
-        CacheService.set("tmdb:image_base_url", this.imageBaseUrl, 60 * 60 * 1e3);
+        this.detectedImageBaseUrl = cfg.images.secure_base_url;
+        CacheService.set("tmdb:image_base_url", this.detectedImageBaseUrl, 60 * 60 * 1e3);
       }
     } catch {
     }
-    return this.imageBaseUrl;
+    return this.getActiveImageBaseUrl();
   }
   mapMedia(raw, forcedType) {
     const mediaType = forcedType ?? (raw.media_type === "tv" ? "tv" : "movie");
     const releaseDate = raw.release_date ?? raw.first_air_date ?? "";
+    const imageBase = this.getActiveImageBaseUrl();
+    const posterQuality = SystemSettingsService.getSettings().tmdbImageQuality || "w500";
     return {
       id: raw.id,
       tmdbId: raw.id,
@@ -1471,8 +1958,8 @@ var TMDBServiceImpl = class {
       title: raw.title ?? raw.name ?? "Sem t\xEDtulo",
       originalTitle: raw.original_title ?? raw.original_name ?? raw.title ?? raw.name ?? "",
       overview: raw.overview || "Sinopse indispon\xEDvel no momento.",
-      posterPath: buildTmdbImageUrl(raw.poster_path, "w500", this.imageBaseUrl),
-      backdropPath: buildTmdbImageUrl(raw.backdrop_path, "w1280", this.imageBaseUrl),
+      posterPath: buildTmdbImageUrl(raw.poster_path, posterQuality, imageBase),
+      backdropPath: buildTmdbImageUrl(raw.backdrop_path, "w1280", imageBase),
       releaseDate,
       releaseYear: releaseDate ? releaseDate.slice(0, 4) : "",
       voteAverage: Number((raw.vote_average ?? 0).toFixed(1)),
@@ -1487,6 +1974,7 @@ var TMDBServiceImpl = class {
     };
   }
   async getGenres(mediaType) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
       return mediaType === "movie" ? DEMO_MOVIE_GENRES : DEMO_TV_GENRES;
     }
@@ -1494,8 +1982,9 @@ var TMDBServiceImpl = class {
     return res.genres ?? [];
   }
   async getMovieList(category, page = 1) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType: "movie",
         sortBy: category === "top_rated" ? "rating" : category === "upcoming" ? "release_date" : "popularity",
         page,
@@ -1515,8 +2004,9 @@ var TMDBServiceImpl = class {
     };
   }
   async getSeriesList(category, page = 1) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType: "tv",
         sortBy: category === "top_rated" ? "rating" : category === "airing_today" ? "release_date" : "popularity",
         page,
@@ -1536,8 +2026,13 @@ var TMDBServiceImpl = class {
     };
   }
   async getTrending(page = 1) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, { sortBy: "popularity", page, pageSize: 20 });
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
+        sortBy: "popularity",
+        page,
+        pageSize: 20
+      });
       return { ...subset, source: "demo", demoMode: true };
     }
     await this.ensureImageConfig();
@@ -1553,18 +2048,14 @@ var TMDBServiceImpl = class {
     };
   }
   async discover(params) {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const page = Math.max(1, params.page ?? 1);
     if (!this.isConfigured()) {
-      const customAsMedia = repositoryStore.getCustomCatalog().filter((c) => c.active).map(customMediaToMediaItem);
-      const subset = filterAndSortMedia(
-        deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]),
-        {
-          ...params,
-          page,
-          pageSize: 20
-        }
-      );
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
+        ...params,
+        page,
+        pageSize: 20
+      });
       return { ...subset, source: "demo", demoMode: true };
     }
     await this.ensureImageConfig();
@@ -1626,8 +2117,9 @@ var TMDBServiceImpl = class {
     };
   }
   async search(query, mediaType = "all", page = 1) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType,
         query,
         page,
@@ -1637,7 +2129,8 @@ var TMDBServiceImpl = class {
     }
     await this.ensureImageConfig();
     const endpoint = mediaType === "movie" ? "/search/movie" : mediaType === "tv" ? "/search/tv" : "/search/multi";
-    const res = await this.request(endpoint, { query, page, include_adult: "false" });
+    const includeAdult = SystemSettingsService.getSettings().includeAdult ? "true" : "false";
+    const res = await this.request(endpoint, { query, page, include_adult: includeAdult });
     const valid = (res.results ?? []).filter(
       (r) => mediaType === "all" ? r.media_type === "movie" || r.media_type === "tv" : true
     );
@@ -1653,7 +2146,7 @@ var TMDBServiceImpl = class {
     };
   }
   async getDetail(tmdbId, mediaType) {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const customMatch = repositoryStore.getCustomCatalog().find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);
     if (!this.isConfigured()) {
       const demo = getDemoMediaDetail(tmdbId, mediaType);
@@ -1712,11 +2205,12 @@ var TMDBServiceImpl = class {
     }
     const base = this.mapMedia(raw, mediaType);
     const director = raw.credits?.crew?.find((c) => c.job === "Director" || c.job === "Creator")?.name ?? null;
+    const imageBase = this.getActiveImageBaseUrl();
     const cast = (raw.credits?.cast ?? []).slice(0, 14).map((c) => ({
       id: c.id,
       name: c.name,
       character: c.character,
-      profilePath: buildTmdbImageUrl(c.profile_path, "w185", this.imageBaseUrl)
+      profilePath: buildTmdbImageUrl(c.profile_path, "w185", imageBase)
     }));
     const videos = (raw.videos?.results ?? []).filter((v) => v.site === "YouTube");
     const recommendations = deduplicateMediaByTmdbId(
@@ -1742,7 +2236,7 @@ var TMDBServiceImpl = class {
         seasonNumber: s.season_number,
         name: s.name,
         overview: s.overview,
-        posterPath: buildTmdbImageUrl(s.poster_path, "w342", this.imageBaseUrl),
+        posterPath: buildTmdbImageUrl(s.poster_path, "w342", imageBase),
         episodeCount: s.episode_count,
         airDate: s.air_date ?? ""
       }))
@@ -1762,10 +2256,12 @@ var TMDBServiceImpl = class {
     return detail;
   }
   async getSeasonEpisodes(tmdbId, seasonNumber) {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
       return getDemoSeasonDetail(tmdbId, seasonNumber);
     }
     await this.ensureImageConfig();
+    const imageBase = this.getActiveImageBaseUrl();
     const raw = await this.request(`/tv/${tmdbId}/season/${seasonNumber}`);
     const episodes = (raw.episodes ?? []).map((ep) => ({
       id: ep.id,
@@ -1773,7 +2269,7 @@ var TMDBServiceImpl = class {
       seasonNumber: ep.season_number,
       name: ep.name,
       overview: ep.overview || "Descri\xE7\xE3o do epis\xF3dio indispon\xEDvel.",
-      stillPath: buildTmdbImageUrl(ep.still_path, "w500", this.imageBaseUrl),
+      stillPath: buildTmdbImageUrl(ep.still_path, "w500", imageBase),
       runtime: ep.runtime,
       airDate: ep.air_date ?? "",
       voteAverage: Number((ep.vote_average ?? 0).toFixed(1))
@@ -1783,7 +2279,7 @@ var TMDBServiceImpl = class {
       seasonNumber: raw.season_number,
       name: raw.name,
       overview: raw.overview,
-      posterPath: buildTmdbImageUrl(raw.poster_path, "w342", this.imageBaseUrl),
+      posterPath: buildTmdbImageUrl(raw.poster_path, "w342", imageBase),
       episodeCount: episodes.length,
       airDate: raw.air_date ?? "",
       episodes
@@ -1799,6 +2295,7 @@ var CatalogServiceImpl = class {
     this.syncedGenres = { movie: [], tv: [] };
   }
   async syncCatalog() {
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const pages = TMDBService.isConfigured() ? [1, 2, 3] : [1];
     const [
       popularMoviesPages,
@@ -1857,7 +2354,7 @@ var CatalogServiceImpl = class {
     return this.syncedCatalog;
   }
   async getHomeSections() {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const cached = CacheService.get("catalog:home");
     if (cached) return cached;
     const [
@@ -1920,7 +2417,8 @@ var CatalogServiceImpl = class {
       source: popularMovies.source,
       demoMode: popularMovies.demoMode
     };
-    CacheService.set("catalog:home", payload, 5 * 60 * 1e3);
+    const ttlMs = Math.max(1, SystemSettingsService.getSettings().cacheTtlMinutes || 5) * 60 * 1e3;
+    CacheService.set("catalog:home", payload, ttlMs);
     return payload;
   }
   getCachedGenreCount() {
@@ -2029,16 +2527,152 @@ var ChannelServiceImpl = class {
 };
 var ChannelService = new ChannelServiceImpl();
 
+// server/services/MegaEmbedService.ts
+var MegaEmbedServiceImpl = class {
+  getEmbedPayload(params) {
+    const validId = normalizeTmdbId(params.tmdbId);
+    if (!validId) {
+      throw new Error("Identificador TMDB inv\xE1lido.");
+    }
+    const cfg = playerConfigStore.getConfig();
+    const domain = validateMegaEmbedDomain(params.domain, cfg.defaultDomain);
+    const player = validateMegaEmbedPlayer(params.player, cfg.defaultPlayer);
+    const colorHex = sanitizeHexColor(params.colorHex, cfg.defaultColorHex);
+    const seasonNumber = params.mediaType === "tv" ? normalizeSeasonNumber(params.seasonNumber, 1) : void 0;
+    const episodeNumber = params.mediaType === "tv" ? normalizeEpisodeNumber(params.episodeNumber, 1) : void 0;
+    let embedUrl = null;
+    if (cfg.sourceMode === "custom_template") {
+      const tpl = params.mediaType === "tv" ? cfg.customEmbedTvTemplate : cfg.customEmbedMovieTemplate;
+      if (tpl) {
+        embedUrl = buildCustomEmbedUrl({
+          template: tpl,
+          tmdbId: validId,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber,
+          player,
+          colorHex
+        });
+      }
+    }
+    if (!embedUrl) {
+      embedUrl = buildMegaEmbedUrl({
+        tmdbId: validId,
+        domain,
+        player,
+        colorHex,
+        mediaType: params.mediaType,
+        seasonNumber,
+        episodeNumber
+      });
+    }
+    return {
+      tmdbId: validId,
+      mediaType: params.mediaType,
+      embedUrl,
+      domain,
+      player,
+      colorHex,
+      seasonNumber,
+      episodeNumber,
+      ...params.mediaType === "tv" && !cfg.seriesSeasonEpisodeDocumented ? {
+        seriesSupportNote: cfg.seriesLimitationNote
+      } : {}
+    };
+  }
+};
+var MegaEmbedService = new MegaEmbedServiceImpl();
+
+// server/services/PlayerService.ts
+var PlayerServiceImpl = class {
+  constructor() {
+    this.lastHydratedAt = 0;
+    this.hydrationTtlMs = 2e4;
+  }
+  async ensureHydrated(force = false) {
+    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
+      return;
+    }
+    const remote = await FirestoreRestService.getDocument("playerSettings/global");
+    if (remote) {
+      const local = playerConfigStore.getConfig();
+      const localTs = Date.parse(local.updatedAt || "") || 0;
+      const remoteIso = toIsoTimestamp(remote.updatedAt, "");
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      if (localTs === 0 || remoteTs >= localTs || local.updatedAt === "2026-01-01T00:00:00.000Z") {
+        playerConfigStore.updateConfig(
+          {
+            sourceMode: remote.sourceMode,
+            defaultDomain: remote.defaultDomain,
+            fallbackDomain: remote.fallbackDomain,
+            autoFallback: remote.autoFallback,
+            defaultPlayer: remote.defaultPlayer,
+            defaultColorHex: remote.defaultColorHex,
+            customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
+            customEmbedTvTemplate: remote.customEmbedTvTemplate,
+            embedTimeoutSeconds: remote.embedTimeoutSeconds,
+            updatedAt: remoteIso || void 0
+          },
+          true
+        );
+      }
+    }
+    this.lastHydratedAt = Date.now();
+  }
+  getConfig() {
+    return playerConfigStore.getConfig();
+  }
+  async getConfigAsync() {
+    await this.ensureHydrated();
+    return playerConfigStore.getConfig();
+  }
+  updateConfig(partial) {
+    const updated = playerConfigStore.updateConfig(partial);
+    this.lastHydratedAt = Date.now();
+    repositoryStore.addLog({
+      level: "info",
+      service: "PlayerService",
+      message: `Configura\xE7\xE3o do player atualizada: modo=${updated.sourceMode}, dom\xEDnio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`
+    });
+    return updated;
+  }
+  async resolveStreamAsync(params) {
+    await Promise.all([this.ensureHydrated(), SiteConfigService.ensureHydrated()]);
+    return this.resolveStream(params);
+  }
+  resolveStream(params) {
+    const numericId = Number(params.tmdbId);
+    const customMatch = Number.isInteger(numericId) && numericId > 0 ? SiteConfigService.getCustomMatch(numericId, params.mediaType) : null;
+    if (customMatch?.customStreamUrl) {
+      const cfg = playerConfigStore.getConfig();
+      repositoryStore.incrementPlaybackCounter();
+      return {
+        tmdbId: numericId,
+        mediaType: params.mediaType,
+        embedUrl: customMatch.customStreamUrl,
+        domain: cfg.defaultDomain,
+        player: cfg.defaultPlayer,
+        colorHex: cfg.defaultColorHex,
+        seasonNumber: params.mediaType === "tv" ? params.seasonNumber ?? 1 : void 0,
+        episodeNumber: params.mediaType === "tv" ? params.episodeNumber ?? 1 : void 0
+      };
+    }
+    const result = MegaEmbedService.getEmbedPayload(params);
+    repositoryStore.incrementPlaybackCounter();
+    return result;
+  }
+};
+var PlayerService = new PlayerServiceImpl();
+
 // server/services/RecommendationService.ts
 import { GoogleGenAI, Type } from "@google/genai";
 var RecommendationServiceImpl = class {
   isGeminiConfigured() {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    return Boolean(key && key !== "MY_GEMINI_API_KEY");
+    return Boolean(SystemSettingsService.getActiveGeminiKey().key);
   }
   createClient() {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    if (!key || key === "MY_GEMINI_API_KEY") return null;
+    const { key } = SystemSettingsService.getActiveGeminiKey();
+    if (!key) return null;
     return new GoogleGenAI({
       apiKey: key,
       httpOptions: {
@@ -2049,13 +2683,40 @@ var RecommendationServiceImpl = class {
     });
   }
   async recommend(params) {
+    await SystemSettingsService.ensureHydrated();
+    const sys = SystemSettingsService.getSettings();
+    const maxItems = sys.aiMaxRecommendations || 12;
+    if (sys.aiMode === "disabled") {
+      return {
+        summary: "As recomenda\xE7\xF5es autom\xE1ticas por IA est\xE3o temporariamente desabilitadas pelo administrador.",
+        strategyNote: "Recurso desativado nas configura\xE7\xF5es administrativas.",
+        suggestedQueries: [],
+        items: [],
+        source: "fallback"
+      };
+    }
     const syncedCatalog = await CatalogService.getSyncedCatalog();
     const userPrompt = params.prompt.trim();
     const favTitles = params.favorites.slice(0, 8).map((f) => `${f.title} (${f.mediaType})`);
     const historyTitles = params.history.slice(0, 8).map((h) => `${h.title} (${h.mediaType})`);
+    if (sys.aiMode === "catalog_smart") {
+      return this.buildDeterministicFallback(
+        userPrompt,
+        syncedCatalog,
+        favTitles,
+        historyTitles,
+        maxItems
+      );
+    }
     const ai = this.createClient();
     if (!ai) {
-      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles);
+      return this.buildDeterministicFallback(
+        userPrompt,
+        syncedCatalog,
+        favTitles,
+        historyTitles,
+        maxItems
+      );
     }
     try {
       const catalogContext = syncedCatalog.slice(0, 28).map((m) => ({
@@ -2131,7 +2792,7 @@ var RecommendationServiceImpl = class {
       }
       const finalItems = deduplicateMediaByTmdbId(
         matchedItems.length > 0 ? matchedItems : syncedCatalog.slice(0, 6)
-      ).slice(0, 12);
+      ).slice(0, maxItems);
       return {
         summary: parsed.summary || "Selecionamos t\xEDtulos reais do cat\xE1logo TMDB alinhados ao seu perfil e solicita\xE7\xE3o.",
         strategyNote: parsed.strategyNote || "Curadoria combinando an\xE1lise sem\xE2ntica Gemini e dados oficiais do TMDB.",
@@ -2145,17 +2806,17 @@ var RecommendationServiceImpl = class {
         service: "RecommendationService",
         message: `Fallback de recomenda\xE7\xE3o acionado: ${err instanceof Error ? err.message : String(err)}`
       });
-      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles);
+      return this.buildDeterministicFallback(userPrompt, syncedCatalog, favTitles, historyTitles, maxItems);
     }
   }
-  buildDeterministicFallback(prompt, catalog, favTitles, historyTitles) {
+  buildDeterministicFallback(prompt, catalog, favTitles, historyTitles, maxItems = 8) {
     const q = prompt.toLowerCase();
     const keywordMatches = catalog.filter((item) => {
       if (!q) return true;
       const hay = `${item.title} ${item.originalTitle} ${item.overview}`.toLowerCase();
       return q.split(/\s+/).some((word) => word.length > 3 && hay.includes(word));
     });
-    const selected = (keywordMatches.length > 0 ? keywordMatches : catalog).slice().sort((a, b) => b.voteAverage - a.voteAverage).slice(0, 8);
+    const selected = (keywordMatches.length > 0 ? keywordMatches : catalog).slice().sort((a, b) => b.voteAverage - a.voteAverage).slice(0, maxItems);
     const contextPieces = [];
     if (favTitles.length > 0) contextPieces.push(`${favTitles.length} favorito(s)`);
     if (historyTitles.length > 0) contextPieces.push(`${historyTitles.length} item(ns) no hist\xF3rico`);
@@ -2173,7 +2834,12 @@ var RecommendationService = new RecommendationServiceImpl();
 // server/services/AdminService.ts
 var AdminServiceImpl = class {
   async getDashboardStats() {
-    await Promise.all([ChannelService.ensureHydrated(), SiteConfigService.ensureHydrated()]);
+    await Promise.all([
+      ChannelService.ensureHydrated(),
+      SiteConfigService.ensureHydrated(),
+      SystemSettingsService.ensureHydrated(),
+      PlayerService.ensureHydrated()
+    ]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
     const synced = await CatalogService.getSyncedCatalog();
@@ -2203,18 +2869,70 @@ var AdminServiceImpl = class {
     };
   }
   async getIntegrationStatus() {
+    await Promise.all([SystemSettingsService.ensureHydrated(), PlayerService.ensureHydrated()]);
     const synced = await CatalogService.getSyncedCatalog();
+    const sys = SystemSettingsService.getSettings();
+    const tmdbToken = SystemSettingsService.getActiveTmdbToken();
+    const geminiKey = SystemSettingsService.getActiveGeminiKey();
+    const playerCfg = playerConfigStore.getConfig();
     return {
       tmdbConfigured: TMDBService.isConfigured(),
+      tmdbRuntimeSource: sys.catalogSource,
+      tmdbActiveTokenSource: tmdbToken.source,
       geminiConfigured: RecommendationService.isGeminiConfigured(),
+      geminiActiveKeySource: geminiKey.source,
       firebaseConfigured: true,
       megaEmbedConfigured: true,
+      playerSourceMode: playerCfg.sourceMode,
       paymentGatewayConfigured: false,
       demoMode: !TMDBService.isConfigured(),
       cacheEntries: CacheService.size(),
       lastSyncAt: repositoryStore.getLastSyncAt(),
       catalogSyncedCount: synced.length
     };
+  }
+  async runDiagnostic(target) {
+    const started = Date.now();
+    if (target === "tmdb") {
+      return TMDBService.testConnection();
+    }
+    if (target === "player") {
+      await PlayerService.ensureHydrated();
+      const movieSample = PlayerService.resolveStream({ tmdbId: 693134, mediaType: "movie" });
+      const tvSample = PlayerService.resolveStream({
+        tmdbId: 1399,
+        mediaType: "tv",
+        seasonNumber: 1,
+        episodeNumber: 2
+      });
+      const cfg = playerConfigStore.getConfig();
+      return {
+        target: "player",
+        ok: Boolean(movieSample.embedUrl && tvSample.embedUrl),
+        latencyMs: Date.now() - started,
+        message: `Resolu\xE7\xE3o de player validada (${cfg.sourceMode === "custom_template" ? "Template Customizado" : `MegaEmbed \xB7 ${cfg.defaultDomain}`}).`,
+        detail: `Filme exemplo: ${movieSample.embedUrl} | S\xE9rie exemplo: ${tvSample.embedUrl}`,
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    try {
+      const ping = await FirestoreRestService.getDocument("siteConfig/global");
+      return {
+        target: "firestore",
+        ok: true,
+        latencyMs: Date.now() - started,
+        message: ping ? "Conex\xE3o REST com Cloud Firestore ativa e documento global encontrado." : "Conex\xE3o REST com Cloud Firestore respondeu (documento ainda n\xE3o criado na nuvem).",
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    } catch (err) {
+      return {
+        target: "firestore",
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: `Erro ao consultar Firestore: ${err instanceof Error ? err.message : String(err)}`,
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
   }
   getLogs(limit = 100) {
     return repositoryStore.getLogs(limit);
@@ -2302,142 +3020,6 @@ var HistoryServiceImpl = class {
   }
 };
 var HistoryService = new HistoryServiceImpl();
-
-// server/config/playerConfig.ts
-var PlayerConfigStore = class {
-  getPersisted() {
-    const stored = repositoryStore.getPlayerSettings();
-    if (!stored) {
-      return { ...DEFAULT_PLAYER_CONFIG };
-    }
-    return {
-      ...DEFAULT_PLAYER_CONFIG,
-      defaultDomain: validateMegaEmbedDomain(stored.defaultDomain, DEFAULT_PLAYER_CONFIG.defaultDomain),
-      defaultPlayer: validateMegaEmbedPlayer(stored.defaultPlayer, DEFAULT_PLAYER_CONFIG.defaultPlayer),
-      defaultColorHex: sanitizeHexColor(stored.defaultColorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex)
-    };
-  }
-  getConfig() {
-    return this.getPersisted();
-  }
-  updateConfig(partial) {
-    const current = this.getPersisted();
-    const nextDomain = partial.defaultDomain ? validateMegaEmbedDomain(partial.defaultDomain, current.defaultDomain) : current.defaultDomain;
-    const nextPlayer = partial.defaultPlayer ? validateMegaEmbedPlayer(partial.defaultPlayer, current.defaultPlayer) : current.defaultPlayer;
-    const nextColor = partial.defaultColorHex ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex) : current.defaultColorHex;
-    repositoryStore.savePlayerSettings({
-      defaultDomain: nextDomain,
-      defaultPlayer: nextPlayer,
-      defaultColorHex: nextColor
-    });
-    return this.getPersisted();
-  }
-};
-var playerConfigStore = new PlayerConfigStore();
-
-// server/services/MegaEmbedService.ts
-var MegaEmbedServiceImpl = class {
-  getEmbedPayload(params) {
-    const validId = normalizeTmdbId(params.tmdbId);
-    if (!validId) {
-      throw new Error("Identificador TMDB inv\xE1lido.");
-    }
-    const cfg = playerConfigStore.getConfig();
-    const domain = validateMegaEmbedDomain(params.domain, cfg.defaultDomain);
-    const player = validateMegaEmbedPlayer(params.player, cfg.defaultPlayer);
-    const colorHex = sanitizeHexColor(params.colorHex, cfg.defaultColorHex);
-    const seasonNumber = params.mediaType === "tv" ? normalizeSeasonNumber(params.seasonNumber, 1) : void 0;
-    const episodeNumber = params.mediaType === "tv" ? normalizeEpisodeNumber(params.episodeNumber, 1) : void 0;
-    const embedUrl = buildMegaEmbedUrl({
-      tmdbId: validId,
-      domain,
-      player,
-      colorHex,
-      mediaType: params.mediaType,
-      seasonNumber,
-      episodeNumber
-    });
-    return {
-      tmdbId: validId,
-      mediaType: params.mediaType,
-      embedUrl,
-      domain,
-      player,
-      colorHex,
-      seasonNumber,
-      episodeNumber,
-      ...params.mediaType === "tv" && !cfg.seriesSeasonEpisodeDocumented ? {
-        seriesSupportNote: cfg.seriesLimitationNote
-      } : {}
-    };
-  }
-};
-var MegaEmbedService = new MegaEmbedServiceImpl();
-
-// server/services/PlayerService.ts
-var PlayerServiceImpl = class {
-  constructor() {
-    this.lastHydratedAt = 0;
-    this.hydrationTtlMs = 2e4;
-  }
-  async ensureHydrated(force = false) {
-    if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
-      return;
-    }
-    const remote = await FirestoreRestService.getDocument("playerSettings/global");
-    if (remote) {
-      playerConfigStore.updateConfig({
-        defaultDomain: remote.defaultDomain,
-        defaultPlayer: remote.defaultPlayer,
-        defaultColorHex: remote.defaultColorHex
-      });
-    }
-    this.lastHydratedAt = Date.now();
-  }
-  getConfig() {
-    return playerConfigStore.getConfig();
-  }
-  async getConfigAsync() {
-    await this.ensureHydrated();
-    return playerConfigStore.getConfig();
-  }
-  updateConfig(partial) {
-    const updated = playerConfigStore.updateConfig(partial);
-    this.lastHydratedAt = Date.now();
-    repositoryStore.addLog({
-      level: "info",
-      service: "PlayerService",
-      message: `Configura\xE7\xE3o do player atualizada: ${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`
-    });
-    return updated;
-  }
-  async resolveStreamAsync(params) {
-    await Promise.all([this.ensureHydrated(), SiteConfigService.ensureHydrated()]);
-    return this.resolveStream(params);
-  }
-  resolveStream(params) {
-    const numericId = Number(params.tmdbId);
-    const customMatch = Number.isInteger(numericId) && numericId > 0 ? SiteConfigService.getCustomMatch(numericId, params.mediaType) : null;
-    if (customMatch?.customStreamUrl) {
-      const cfg = playerConfigStore.getConfig();
-      repositoryStore.incrementPlaybackCounter();
-      return {
-        tmdbId: numericId,
-        mediaType: params.mediaType,
-        embedUrl: customMatch.customStreamUrl,
-        domain: cfg.defaultDomain,
-        player: cfg.defaultPlayer,
-        colorHex: cfg.defaultColorHex,
-        seasonNumber: params.mediaType === "tv" ? params.seasonNumber ?? 1 : void 0,
-        episodeNumber: params.mediaType === "tv" ? params.episodeNumber ?? 1 : void 0
-      };
-    }
-    const result = MegaEmbedService.getEmbedPayload(params);
-    repositoryStore.incrementPlaybackCounter();
-    return result;
-  }
-};
-var PlayerService = new PlayerServiceImpl();
 
 // server/services/ProfileService.ts
 import crypto from "node:crypto";
@@ -2602,9 +3184,14 @@ var ProfileServiceImpl = class {
     return this.ensureProfiles(userId, ownerName).map(toPublicStreamProfile);
   }
   async create(userId, payload) {
+    await SystemSettingsService.ensureHydrated();
+    const maxProfiles = Math.max(
+      1,
+      Math.min(8, SystemSettingsService.getSettings().maxProfilesPerAccount || MAX_PROFILES_PER_ACCOUNT)
+    );
     const current = this.ensureProfiles(userId);
-    if (current.length >= MAX_PROFILES_PER_ACCOUNT) {
-      throw new Error(`Limite m\xE1ximo de ${MAX_PROFILES_PER_ACCOUNT} perfis por conta atingido.`);
+    if (current.length >= maxProfiles) {
+      throw new Error(`Limite m\xE1ximo de ${maxProfiles} perfis por conta atingido.`);
     }
     const requestedId = typeof payload.id === "string" && isValidProfileId(payload.id) && !current.some((p) => p.id === payload.id) ? payload.id : null;
     const profileId = requestedId ?? `prof_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -2813,7 +3400,8 @@ function createApiApp() {
   app2.set("trust proxy", 1);
   app2.use(express.json({ limit: "1mb" }));
   app2.use("/api", rateLimitMiddleware(240, 6e4));
-  app2.get("/api/health", (_req, res) => {
+  app2.get("/api/health", async (_req, res) => {
+    await SystemSettingsService.ensureHydrated().catch(() => null);
     res.json({
       ok: true,
       service: "megastream-api",
@@ -2825,6 +3413,13 @@ function createApiApp() {
   app2.get("/api/site-config", async (_req, res, next) => {
     try {
       res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app2.get("/api/system-config", async (_req, res, next) => {
+    try {
+      res.json(await SystemSettingsService.getPublicRuntimeSettingsAsync());
     } catch (err) {
       next(err);
     }
@@ -2989,8 +3584,13 @@ function createApiApp() {
       next(err);
     }
   });
-  app2.get("/api/player/movie/:tmdbId", async (req, res) => {
+  app2.get("/api/player/movie/:tmdbId", optionalAuth, async (req, res) => {
     try {
+      await SystemSettingsService.ensureHydrated();
+      const sys = SystemSettingsService.getSettings();
+      if (sys.requireAuthForPlayer && !req.identity) {
+        return res.status(401).json({ error: "Fa\xE7a login na plataforma para assistir a este t\xEDtulo." });
+      }
       const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: "movie"
@@ -3004,8 +3604,13 @@ function createApiApp() {
       res.status(400).json({ error: err instanceof Error ? err.message : "Erro ao carregar reprodu\xE7\xE3o." });
     }
   });
-  app2.get("/api/player/tv/:tmdbId", async (req, res) => {
+  app2.get("/api/player/tv/:tmdbId", optionalAuth, async (req, res) => {
     try {
+      await SystemSettingsService.ensureHydrated();
+      const sys = SystemSettingsService.getSettings();
+      if (sys.requireAuthForPlayer && !req.identity) {
+        return res.status(401).json({ error: "Fa\xE7a login na plataforma para assistir a esta s\xE9rie." });
+      }
       const seasonNumber = typeof req.query.season === "string" && req.query.season.trim() !== "" ? Number(req.query.season) : void 0;
       const episodeNumber = typeof req.query.episode === "string" && req.query.episode.trim() !== "" ? Number(req.query.episode) : void 0;
       const payload = await PlayerService.resolveStreamAsync({
@@ -3226,6 +3831,30 @@ function createApiApp() {
   app2.put("/api/admin/site-config", requireAdmin, (req, res) => {
     const updated = SiteConfigService.updateConfig(req.body ?? {});
     res.json(updated);
+  });
+  app2.get("/api/admin/system-settings", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await SystemSettingsService.getAdminPayloadAsync());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app2.put("/api/admin/system-settings", requireAdmin, (req, res) => {
+    const updated = SystemSettingsService.updateSettings(req.body ?? {});
+    res.json(updated);
+  });
+  app2.post("/api/admin/system-settings/reset", requireAdmin, (_req, res) => {
+    const reset = SystemSettingsService.resetSettingsToDefaults();
+    res.json(reset);
+  });
+  app2.post("/api/admin/diagnostics/test", requireAdmin, async (req, res, next) => {
+    try {
+      const target = req.body?.target === "player" || req.body?.target === "firestore" ? req.body.target : "tmdb";
+      const result = await AdminService.runDiagnostic(target);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
   });
   app2.get("/api/admin/catalog/custom", requireAdmin, async (_req, res, next) => {
     try {

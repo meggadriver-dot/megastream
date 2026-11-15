@@ -165,15 +165,73 @@
     },
     "PlayerSettings": {
       "title": "PlayerSettings",
-      "description": "Server-side player engine, domain, and accent settings managed exclusively by administrators.",
+      "description": "Server-side player engine, domain, fallback, custom template, and timeout settings managed exclusively by administrators.",
       "type": "object",
       "properties": {
+        "sourceMode": { "type": "string", "enum": ["megaembed", "custom_template"] },
         "defaultDomain": { "type": "string", "enum": ["mgeb.lat", "mgeb.space"] },
+        "fallbackDomain": { "type": "string", "enum": ["mgeb.lat", "mgeb.space"] },
+        "autoFallback": { "type": "boolean" },
         "defaultPlayer": { "type": "string", "enum": ["vidstack", "megaplay", "megatube", "clappr"] },
         "defaultColorHex": { "type": "string", "minLength": 3, "maxLength": 12 },
+        "customEmbedMovieTemplate": { "type": "string", "maxLength": 500 },
+        "customEmbedTvTemplate": { "type": "string", "maxLength": 500 },
+        "embedTimeoutSeconds": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["defaultDomain", "defaultPlayer", "defaultColorHex", "updatedAt"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global API sources, catalog/AI behavior, access policies, and profile limits managed exclusively by administrators.",
+      "type": "object",
+      "properties": {
+        "catalogSource": { "type": "string", "enum": ["auto", "tmdb", "demo", "custom_only"] },
+        "tmdbBaseUrl": { "type": "string", "minLength": 8, "maxLength": 300 },
+        "tmdbImageBaseUrl": { "type": "string", "minLength": 8, "maxLength": 300 },
+        "tmdbLanguage": { "type": "string", "enum": ["pt-BR", "en-US", "es-ES"] },
+        "tmdbImageQuality": { "type": "string", "enum": ["w342", "w500", "w780"] },
+        "includeAdult": { "type": "boolean" },
+        "cacheTtlMinutes": { "type": "number" },
+        "aiMode": { "type": "string", "enum": ["auto", "gemini", "catalog_smart", "disabled"] },
+        "aiMaxRecommendations": { "type": "number" },
+        "allowRegistration": { "type": "boolean" },
+        "requireAuthForPlayer": { "type": "boolean" },
+        "allowGuestFavorites": { "type": "boolean" },
+        "maxProfilesPerAccount": { "type": "number" },
+        "defaultUserPlan": { "type": "string", "enum": ["free", "monthly", "quarterly", "annual"] },
+        "maintenanceMessage": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "catalogSource",
+        "tmdbBaseUrl",
+        "tmdbImageBaseUrl",
+        "tmdbLanguage",
+        "tmdbImageQuality",
+        "includeAdult",
+        "cacheTtlMinutes",
+        "aiMode",
+        "aiMaxRecommendations",
+        "allowRegistration",
+        "requireAuthForPlayer",
+        "allowGuestFavorites",
+        "maxProfilesPerAccount",
+        "defaultUserPlan",
+        "maintenanceMessage",
+        "updatedAt"
+      ]
+    },
+    "AdminSecrets": {
+      "title": "AdminSecrets",
+      "description": "Admin-only runtime API token overrides for TMDB and Gemini.",
+      "type": "object",
+      "properties": {
+        "tmdbAccessToken": { "type": "string", "maxLength": 500 },
+        "geminiApiKey": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["updatedAt"]
     }
   },
   "firestore": {
@@ -215,7 +273,15 @@
     },
     "/playerSettings/{configId}": {
       "schema": { "$ref": "#/entities/PlayerSettings" },
-      "description": "Global player domain, engine, and color settings managed exclusively by administrators."
+      "description": "Global player domain, engine, custom template, and timeout settings managed exclusively by administrators."
+    },
+    "/systemSettings/{configId}": {
+      "schema": { "$ref": "#/entities/SystemSettings" },
+      "description": "Global API sources, AI behavior, and platform security policies managed exclusively by administrators."
+    },
+    "/adminSecrets/{secretId}": {
+      "schema": { "$ref": "#/entities/AdminSecrets" },
+      "description": "Admin-only API key overrides never exposed to non-admin users."
     }
   }
 }

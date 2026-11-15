@@ -1,4 +1,5 @@
 import {
+  buildCustomEmbedUrl,
   buildMegaEmbedUrl,
   normalizeEpisodeNumber,
   normalizeSeasonNumber,
@@ -34,15 +35,34 @@ class MegaEmbedServiceImpl {
     const episodeNumber =
       params.mediaType === 'tv' ? normalizeEpisodeNumber(params.episodeNumber, 1) : undefined;
 
-    const embedUrl = buildMegaEmbedUrl({
-      tmdbId: validId,
-      domain,
-      player,
-      colorHex,
-      mediaType: params.mediaType,
-      seasonNumber,
-      episodeNumber,
-    });
+    let embedUrl: string | null = null;
+    if (cfg.sourceMode === 'custom_template') {
+      const tpl =
+        params.mediaType === 'tv' ? cfg.customEmbedTvTemplate : cfg.customEmbedMovieTemplate;
+      if (tpl) {
+        embedUrl = buildCustomEmbedUrl({
+          template: tpl,
+          tmdbId: validId,
+          mediaType: params.mediaType,
+          seasonNumber,
+          episodeNumber,
+          player,
+          colorHex,
+        });
+      }
+    }
+
+    if (!embedUrl) {
+      embedUrl = buildMegaEmbedUrl({
+        tmdbId: validId,
+        domain,
+        player,
+        colorHex,
+        mediaType: params.mediaType,
+        seasonNumber,
+        episodeNumber,
+      });
+    }
 
     return {
       tmdbId: validId,

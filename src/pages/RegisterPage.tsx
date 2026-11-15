@@ -3,9 +3,11 @@ import { Lock, Mail, User } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
 import { useAuth } from '../contexts/AuthContext';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
 
 export function RegisterPage() {
   const { registerWithEmail, signInWithGoogle } = useAuth();
+  const { runtimeSettings, siteConfig } = useSiteConfig();
   const navigate = useNavigate();
 
   const [name, setName] = useState('');
@@ -75,6 +77,37 @@ export function RegisterPage() {
       setLoading(false);
     }
   };
+
+  if (!runtimeSettings.allowRegistration) {
+    return (
+      <div className="max-w-lg mx-auto py-12">
+        <div className="ms-glass rounded-3xl p-8 text-center space-y-4">
+          <Logo />
+          <h1 className="font-display text-2xl font-extrabold text-white pt-2">
+            Novos cadastros desabilitados
+          </h1>
+          <p className="text-sm text-slate-300 leading-relaxed">
+            O administrador de {siteConfig.siteName} desativou temporariamente o registro de novas contas. Caso já possua acesso, entre com suas credenciais.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+            <Link
+              to="/login"
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
+              style={{ backgroundColor: 'var(--ms-accent)' }}
+            >
+              Ir para Login
+            </Link>
+            <Link
+              to="/"
+              className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white"
+            >
+              Voltar ao Início
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto py-4 sm:py-8">

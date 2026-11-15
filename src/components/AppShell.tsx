@@ -29,7 +29,7 @@ interface AppShellProps {
 
 export function AppShell({ children, hideChrome = false }: AppShellProps) {
   const { firebaseUser, profile, activeProfile, openProfileGate } = useAuth();
-  const { siteConfig } = useSiteConfig();
+  const { siteConfig, runtimeSettings } = useSiteConfig();
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const navigate = useNavigate();
@@ -284,7 +284,7 @@ export function AppShell({ children, hideChrome = false }: AppShellProps) {
           <div className="px-4 sm:px-6 lg:px-8 pt-4 max-w-[1440px] w-full mx-auto">
             <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-2.5 flex items-center gap-2.5 text-xs sm:text-sm text-amber-200">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>Plataforma em manutenção programada. Alguns recursos podem ficar temporariamente indisponíveis.</span>
+              <span>{runtimeSettings.maintenanceMessage}</span>
             </div>
           </div>
         )}

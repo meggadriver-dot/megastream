@@ -1,13 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildCustomEmbedUrl,
   buildMegaEmbedUrl,
   buildTmdbImageUrl,
   normalizeTmdbId,
+  sanitizeEmbedTemplate,
+  sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
 } from './playerUrl.ts';
+import {
+  DEFAULT_SYSTEM_SETTINGS,
+  extractPublicRuntimeSettings,
+  maskSecretValue,
+  sanitizeSecretToken,
+  sanitizeSystemSettings,
+} from './systemSettingsUtils.ts';
 import {
   deduplicateMediaByTmdbId,
   filterAndSortMedia,
@@ -487,6 +497,72 @@ test('deduplicateProfilesById and canDeleteProfile handle duplicates and enforce
   assert.equal(canDeleteProfile(deduped, 'missing').allowed, false);
   assert.equal(canDeleteProfile([{ id: 'profile_main' }], 'profile_main').allowed, false);
 });
+
+test('buildCustomEmbedUrl and embed sanitization support custom templates safely', () => {
+  assert.equal(sanitizeEmbedTemplate('javascript:alert(1)'), '');
+  assert.equal(sanitizeEmbedTimeoutSeconds(2), 5);
+  assert.equal(sanitizeEmbedTimeoutSeconds(99), 30);
+
+  const movieUrl = buildCustomEmbedUrl({
+    template: 'https://embed.example.com/v1/movie/{tmdbId}?engine={player}&accent={color}',
+    tmdbId: 693134,
+    mediaType: 'movie',
+    player: 'megaplay',
+    colorHex: '#fb542b',
+  });
+  assert.equal(movieUrl, 'https://embed.example.com/v1/movie/693134?engine=megaplay&accent=fb542b');
+
+  const tvUrl = buildCustomEmbedUrl({
+    template: 'https://embed.example.com/tv/{tmdbId}/{season}/{episode}',
+    tmdbId: 1399,
+    mediaType: 'tv',
+    seasonNumber: 3,
+    episodeNumber: 9,
+  });
+  assert.equal(tvUrl, 'https://embed.example.com/tv/1399/3/9');
+});
+
+test('sanitizeSystemSettings, extractPublicRuntimeSettings, and secret masking enforce bounds', () => {
+  const updated = sanitizeSystemSettings(
+    {
+      catalogSource: 'custom_only',
+      tmdbBaseUrl: 'https://proxy.tmdb.example/3/',
+      tmdbImageBaseUrl: 'https://img.example.com/t/p',
+      tmdbLanguage: 'en-US',
+      tmdbImageQuality: 'w780',
+      cacheTtlMinutes: 9999,
+      aiMode: 'disabled',
+      aiMaxRecommendations: 2,
+      maxProfilesPerAccount: 15,
+      allowRegistration: false,
+      requireAuthForPlayer: true,
+      allowGuestFavorites: false,
+      defaultUserPlan: 'monthly',
+    },
+    DEFAULT_SYSTEM_SETTINGS
+  );
+
+  assert.equal(updated.catalogSource, 'custom_only');
+  assert.equal(updated.tmdbBaseUrl, 'https://proxy.tmdb.example/3');
+  assert.equal(updated.tmdbImageBaseUrl, 'https://img.example.com/t/p/');
+  assert.equal(updated.cacheTtlMinutes, 1440);
+  assert.equal(updated.aiMaxRecommendations, 4);
+  assert.equal(updated.maxProfilesPerAccount, 8);
+  assert.equal(updated.defaultUserPlan, 'monthly');
+
+  const publicRuntime = extractPublicRuntimeSettings(updated, 25);
+  assert.equal(publicRuntime.allowRegistration, false);
+  assert.equal(publicRuntime.requireAuthForPlayer, true);
+  assert.equal(publicRuntime.allowGuestFavorites, false);
+  assert.equal(publicRuntime.aiEnabled, false);
+  assert.equal(publicRuntime.embedTimeoutSeconds, 25);
+  assert.equal('tmdbBaseUrl' in publicRuntime, false);
+
+  assert.equal(maskSecretValue('abcdef1234567890'), 'abcd••••7890');
+  assert.equal(maskSecretValue('short'), '••••••••');
+  assert.equal(sanitizeSecretToken('  tok_123 \n\t abc '), 'tok_123abc');
+});
+
 
 
 

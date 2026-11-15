@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_SITE_CONFIG } from '../../shared/siteConfigUtils.ts';
+import { DEFAULT_SYSTEM_SETTINGS } from '../../shared/systemSettingsUtils.ts';
 import type {
   CustomMediaItem,
   FavoriteItem,
@@ -8,17 +9,32 @@ import type {
   LiveChannel,
   MegaEmbedDomain,
   MegaEmbedPlayer,
+  PlayerSourceMode,
   SiteConfig,
   StoredStreamProfile,
   SubscriptionRecord,
   SystemLogEntry,
+  SystemSettings,
   UserProfile,
 } from '../../shared/types.ts';
 
 export interface StoredPlayerSettings {
+  sourceMode?: PlayerSourceMode;
   defaultDomain: MegaEmbedDomain;
+  fallbackDomain?: MegaEmbedDomain;
+  autoFallback?: boolean;
   defaultPlayer: MegaEmbedPlayer;
   defaultColorHex: string;
+  customEmbedMovieTemplate?: string;
+  customEmbedTvTemplate?: string;
+  embedTimeoutSeconds?: number;
+  updatedAt?: string;
+}
+
+export interface StoredAdminSecrets {
+  tmdbAccessToken?: string;
+  geminiApiKey?: string;
+  updatedAt?: string;
 }
 
 export interface IRepositoryStore {
@@ -44,6 +60,10 @@ export interface IRepositoryStore {
   saveSiteConfig(config: SiteConfig): SiteConfig;
   getPlayerSettings(): StoredPlayerSettings | null;
   savePlayerSettings(settings: StoredPlayerSettings): StoredPlayerSettings;
+  getSystemSettings(): SystemSettings;
+  saveSystemSettings(settings: SystemSettings): SystemSettings;
+  getAdminSecrets(): StoredAdminSecrets;
+  saveAdminSecrets(secrets: StoredAdminSecrets): StoredAdminSecrets;
   getCustomCatalog(): CustomMediaItem[];
   upsertCustomMedia(item: CustomMediaItem): CustomMediaItem;
   deleteCustomMedia(id: string): boolean;
@@ -64,6 +84,8 @@ interface PersistedState {
   subscriptions: Record<string, SubscriptionRecord>;
   siteConfig?: SiteConfig;
   playerSettings?: StoredPlayerSettings;
+  systemSettings?: SystemSettings;
+  adminSecrets?: StoredAdminSecrets;
   customCatalog?: Record<string, CustomMediaItem>;
   logs: SystemLogEntry[];
   totalPlaybacks: number;
@@ -98,6 +120,8 @@ class JsonRepositoryStore implements IRepositoryStore {
       channels: {},
       subscriptions: {},
       siteConfig: { ...DEFAULT_SITE_CONFIG },
+      systemSettings: { ...DEFAULT_SYSTEM_SETTINGS },
+      adminSecrets: {},
       customCatalog: {},
       logs: [
         {
@@ -261,6 +285,26 @@ class JsonRepositoryStore implements IRepositoryStore {
     this.state.playerSettings = settings;
     this.save();
     return settings;
+  }
+
+  getSystemSettings(): SystemSettings {
+    return this.state.systemSettings ?? { ...DEFAULT_SYSTEM_SETTINGS };
+  }
+
+  saveSystemSettings(settings: SystemSettings): SystemSettings {
+    this.state.systemSettings = settings;
+    this.save();
+    return settings;
+  }
+
+  getAdminSecrets(): StoredAdminSecrets {
+    return this.state.adminSecrets ?? {};
+  }
+
+  saveAdminSecrets(secrets: StoredAdminSecrets): StoredAdminSecrets {
+    this.state.adminSecrets = secrets;
+    this.save();
+    return secrets;
   }
 
   getCustomCatalog(): CustomMediaItem[] {

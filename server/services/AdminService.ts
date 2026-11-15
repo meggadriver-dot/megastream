@@ -1,15 +1,29 @@
-import type { AdminDashboardStats, IntegrationStatus, SystemLogEntry } from '../../shared/types.ts';
+import type {
+  AdminDashboardStats,
+  DiagnosticResult,
+  IntegrationStatus,
+  SystemLogEntry,
+} from '../../shared/types.ts';
+import { playerConfigStore } from '../config/playerConfig.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
 import { CatalogService } from './CatalogService.ts';
 import { ChannelService } from './ChannelService.ts';
+import { FirestoreRestService } from './FirestoreRestService.ts';
+import { PlayerService } from './PlayerService.ts';
 import { RecommendationService } from './RecommendationService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class AdminServiceImpl {
   async getDashboardStats(): Promise<AdminDashboardStats> {
-    await Promise.all([ChannelService.ensureHydrated(), SiteConfigService.ensureHydrated()]);
+    await Promise.all([
+      ChannelService.ensureHydrated(),
+      SiteConfigService.ensureHydrated(),
+      SystemSettingsService.ensureHydrated(),
+      PlayerService.ensureHydrated(),
+    ]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
     const synced = await CatalogService.getSyncedCatalog();
@@ -41,18 +55,77 @@ class AdminServiceImpl {
   }
 
   async getIntegrationStatus(): Promise<IntegrationStatus> {
+    await Promise.all([SystemSettingsService.ensureHydrated(), PlayerService.ensureHydrated()]);
     const synced = await CatalogService.getSyncedCatalog();
+    const sys = SystemSettingsService.getSettings();
+    const tmdbToken = SystemSettingsService.getActiveTmdbToken();
+    const geminiKey = SystemSettingsService.getActiveGeminiKey();
+    const playerCfg = playerConfigStore.getConfig();
+
     return {
       tmdbConfigured: TMDBService.isConfigured(),
+      tmdbRuntimeSource: sys.catalogSource,
+      tmdbActiveTokenSource: tmdbToken.source,
       geminiConfigured: RecommendationService.isGeminiConfigured(),
+      geminiActiveKeySource: geminiKey.source,
       firebaseConfigured: true,
       megaEmbedConfigured: true,
+      playerSourceMode: playerCfg.sourceMode,
       paymentGatewayConfigured: false,
       demoMode: !TMDBService.isConfigured(),
       cacheEntries: CacheService.size(),
       lastSyncAt: repositoryStore.getLastSyncAt(),
       catalogSyncedCount: synced.length,
     };
+  }
+
+  async runDiagnostic(target: 'tmdb' | 'player' | 'firestore'): Promise<DiagnosticResult> {
+    const started = Date.now();
+    if (target === 'tmdb') {
+      return TMDBService.testConnection();
+    }
+
+    if (target === 'player') {
+      await PlayerService.ensureHydrated();
+      const movieSample = PlayerService.resolveStream({ tmdbId: 693134, mediaType: 'movie' });
+      const tvSample = PlayerService.resolveStream({
+        tmdbId: 1399,
+        mediaType: 'tv',
+        seasonNumber: 1,
+        episodeNumber: 2,
+      });
+      const cfg = playerConfigStore.getConfig();
+      return {
+        target: 'player',
+        ok: Boolean(movieSample.embedUrl && tvSample.embedUrl),
+        latencyMs: Date.now() - started,
+        message: `Resolução de player validada (${cfg.sourceMode === 'custom_template' ? 'Template Customizado' : `MegaEmbed · ${cfg.defaultDomain}`}).`,
+        detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
+        testedAt: new Date().toISOString(),
+      };
+    }
+
+    // Firestore REST check
+    try {
+      const ping = await FirestoreRestService.getDocument<Record<string, unknown>>('siteConfig/global');
+      return {
+        target: 'firestore',
+        ok: true,
+        latencyMs: Date.now() - started,
+        message: ping
+          ? 'Conexão REST com Cloud Firestore ativa e documento global encontrado.'
+          : 'Conexão REST com Cloud Firestore respondeu (documento ainda não criado na nuvem).',
+        testedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      return {
+        target: 'firestore',
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: `Erro ao consultar Firestore: ${err instanceof Error ? err.message : String(err)}`,
+        testedAt: new Date().toISOString(),
+      };
+    }
   }
 
   getLogs(limit = 100): SystemLogEntry[] {

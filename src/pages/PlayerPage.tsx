@@ -16,6 +16,7 @@ import { formatRuntimeMinutes } from '../../shared/catalogUtils';
 import { PLAYER_LAST_ROUTE_KEY, resolvePlayerBackTarget } from '../../shared/playerNavigation';
 import type { MediaDetail, MediaType, SeasonDetail } from '../../shared/types';
 import { useAuth } from '../contexts/AuthContext';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { apiRequest } from '../services/apiClient';
 
 interface CleanStreamPayload {
@@ -31,6 +32,7 @@ export function PlayerPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { recordPlayback, history, loading: authLoading, firebaseUser } = useAuth();
+  const { runtimeSettings } = useSiteConfig();
 
   const mediaType: MediaType = type === 'tv' ? 'tv' : 'movie';
   const rawSeason = searchParams.get('season');
@@ -72,8 +74,10 @@ export function PlayerPage() {
   }, [tmdbId, mediaType, seasonParam]);
 
   // Resolve playback URL from backend using admin's global configuration
+  const authBlocked = runtimeSettings.requireAuthForPlayer && !authLoading && !firebaseUser;
+
   const loadEmbed = useCallback(async () => {
-    if (!tmdbId) return;
+    if (!tmdbId || authBlocked) return;
     setEmbedData(null);
     setIframeLoading(true);
     setIframeTimedOut(false);
@@ -93,7 +97,7 @@ export function PlayerPage() {
       setErrorMsg(err instanceof Error ? err.message : 'Não foi possível iniciar a reprodução.');
       setIframeLoading(false);
     }
-  }, [tmdbId, mediaType, seasonParam, episodeParam]);
+  }, [tmdbId, authBlocked, mediaType, seasonParam, episodeParam]);
 
   useEffect(() => {
     void loadEmbed();
@@ -132,14 +136,15 @@ export function PlayerPage() {
     recordPlayback,
   ]);
 
-  // Timeout guard if embedded iframe does not fire onLoad within 12s
+  // Timeout guard if embedded iframe does not fire onLoad within configured seconds
   useEffect(() => {
-    if (!iframeLoading) return;
+    if (!iframeLoading || authBlocked) return;
+    const timeoutMs = Math.max(5, Math.min(30, runtimeSettings.embedTimeoutSeconds || 12)) * 1000;
     const timer = setTimeout(() => {
       setIframeTimedOut(true);
-    }, 12000);
+    }, timeoutMs);
     return () => clearTimeout(timer);
-  }, [iframeLoading, reloadNonce, embedData?.embedUrl]);
+  }, [iframeLoading, authBlocked, reloadNonce, embedData?.embedUrl, runtimeSettings.embedTimeoutSeconds]);
 
   const handleFullscreenLandscape = async () => {
     try {
@@ -244,51 +249,81 @@ export function PlayerPage() {
             className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border shadow-2xl"
             style={{ borderColor: 'var(--ms-border)' }}
           >
-            {embedData?.embedUrl && !errorMsg && (
-              <iframe
-                key={`${embedData.embedUrl}-${reloadNonce}`}
-                src={embedData.embedUrl}
-                title={detail?.title || 'Player de vídeo'}
-                className="w-full h-full border-0"
-                allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                referrerPolicy="no-referrer"
-                onLoad={() => {
-                  setIframeLoading(false);
-                  setIframeTimedOut(false);
-                }}
-                onError={() => {
-                  setIframeLoading(false);
-                  setErrorMsg('Não foi possível iniciar a reprodução deste título no momento.');
-                }}
-              />
-            )}
-
-            {iframeLoading && !errorMsg && (
-              <div className="absolute inset-0 bg-[#050814]/90 flex flex-col items-center justify-center gap-3 p-6 text-center pointer-events-none">
-                <div className="w-10 h-10 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
-                <p className="text-sm font-medium text-white">Carregando reprodução...</p>
-                {iframeTimedOut && (
-                  <p className="text-xs text-slate-300 max-w-md pointer-events-auto">
-                    O vídeo está demorando para iniciar. Clique em Recarregar no topo para tentar novamente.
+            {authBlocked ? (
+              <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-4 p-6 text-center">
+                <AlertTriangle className="w-10 h-10 text-sky-400" />
+                <div className="space-y-1 max-w-md">
+                  <p className="text-base font-bold text-white">Login necessário para assistir</p>
+                  <p className="text-xs sm:text-sm text-slate-300">
+                    O administrador restringiu o player apenas para usuários autenticados na plataforma.
                   </p>
+                </div>
+                <div className="flex flex-wrap gap-2.5 justify-center">
+                  <Link
+                    to="/login"
+                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
+                    style={{ backgroundColor: 'var(--ms-accent)' }}
+                  >
+                    Entrar na Conta
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleExitPlayer}
+                    className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white cursor-pointer"
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {embedData?.embedUrl && !errorMsg && (
+                  <iframe
+                    key={`${embedData.embedUrl}-${reloadNonce}`}
+                    src={embedData.embedUrl}
+                    title={detail?.title || 'Player de vídeo'}
+                    className="w-full h-full border-0"
+                    allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                    referrerPolicy="no-referrer"
+                    onLoad={() => {
+                      setIframeLoading(false);
+                      setIframeTimedOut(false);
+                    }}
+                    onError={() => {
+                      setIframeLoading(false);
+                      setErrorMsg('Não foi possível iniciar a reprodução deste título no momento.');
+                    }}
+                  />
                 )}
-              </div>
-            )}
 
-            {errorMsg && (
-              <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-3 p-6 text-center">
-                <AlertTriangle className="w-10 h-10 text-amber-400" />
-                <p className="text-base font-semibold text-white">{errorMsg}</p>
-                <button
-                  type="button"
-                  onClick={() => setReloadNonce((n) => n + 1)}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
-                  style={{ backgroundColor: 'var(--ms-accent)' }}
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Tentar Novamente
-                </button>
-              </div>
+                {iframeLoading && !errorMsg && (
+                  <div className="absolute inset-0 bg-[#050814]/90 flex flex-col items-center justify-center gap-3 p-6 text-center pointer-events-none">
+                    <div className="w-10 h-10 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
+                    <p className="text-sm font-medium text-white">Carregando reprodução...</p>
+                    {iframeTimedOut && (
+                      <p className="text-xs text-slate-300 max-w-md pointer-events-auto">
+                        O vídeo está demorando para iniciar. Clique em Recarregar no topo para tentar novamente.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {errorMsg && (
+                  <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-3 p-6 text-center">
+                    <AlertTriangle className="w-10 h-10 text-amber-400" />
+                    <p className="text-base font-semibold text-white">{errorMsg}</p>
+                    <button
+                      type="button"
+                      onClick={() => setReloadNonce((n) => n + 1)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                      style={{ backgroundColor: 'var(--ms-accent)' }}
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      Tentar Novamente
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
 

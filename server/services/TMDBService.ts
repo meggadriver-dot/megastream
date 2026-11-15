@@ -3,6 +3,7 @@ import { deduplicateMediaByTmdbId, filterAndSortMedia } from '../../shared/catal
 import { customMediaToMediaItem } from '../../shared/siteConfigUtils.ts';
 import type {
   CastMember,
+  DiagnosticResult,
   GenreItem,
   MediaDetail,
   MediaItem,
@@ -21,8 +22,7 @@ import {
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
-
-const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 
 interface TmdbRawMedia {
   id: number;
@@ -47,17 +47,45 @@ interface TmdbRawMedia {
 }
 
 class TMDBServiceImpl {
-  private imageBaseUrl = 'https://image.tmdb.org/t/p/';
-
-  isConfigured(): boolean {
-    const token = process.env.TMDB_ACCESS_TOKEN?.trim();
-    return Boolean(token && token !== 'MY_TMDB_ACCESS_TOKEN');
-  }
+  private detectedImageBaseUrl: string | null = null;
 
   private getToken(): string | null {
-    const token = process.env.TMDB_ACCESS_TOKEN?.trim();
-    if (!token || token === 'MY_TMDB_ACCESS_TOKEN') return null;
-    return token;
+    return SystemSettingsService.getActiveTmdbToken().token;
+  }
+
+  isTokenAvailable(): boolean {
+    return Boolean(this.getToken());
+  }
+
+  isConfigured(): boolean {
+    const settings = SystemSettingsService.getSettings();
+    if (settings.catalogSource === 'demo' || settings.catalogSource === 'custom_only') {
+      return false;
+    }
+    return this.isTokenAvailable();
+  }
+
+  private isCustomOnly(): boolean {
+    return SystemSettingsService.getSettings().catalogSource === 'custom_only';
+  }
+
+  private getActiveImageBaseUrl(): string {
+    const configured = SystemSettingsService.getSettings().tmdbImageBaseUrl;
+    if (configured && configured !== 'https://image.tmdb.org/t/p/') {
+      return configured;
+    }
+    return this.detectedImageBaseUrl || configured || 'https://image.tmdb.org/t/p/';
+  }
+
+  private getDemoOrCustomBaseCatalog(): MediaItem[] {
+    const customAsMedia = repositoryStore
+      .getCustomCatalog()
+      .filter((c) => c.active)
+      .map(customMediaToMediaItem);
+    if (this.isCustomOnly()) {
+      return deduplicateMediaByTmdbId(customAsMedia);
+    }
+    return deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]);
   }
 
   private async request<T>(endpoint: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
@@ -66,9 +94,11 @@ class TMDBServiceImpl {
       throw new Error('TMDB_ACCESS_TOKEN não configurado');
     }
 
-    const url = new URL(`${TMDB_BASE_URL}${endpoint}`);
+    const settings = SystemSettingsService.getSettings();
+    const baseUrl = (settings.tmdbBaseUrl || 'https://api.themoviedb.org/3').replace(/\/+$/, '');
+    const url = new URL(`${baseUrl}${endpoint}`);
     if (!params.language) {
-      url.searchParams.set('language', 'pt-BR');
+      url.searchParams.set('language', settings.tmdbLanguage || 'pt-BR');
     }
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && String(v).trim() !== '') {
@@ -76,15 +106,22 @@ class TMDBServiceImpl {
       }
     }
 
+    const isBearerJwt = token.length > 40 || token.includes('.');
+    if (!isBearerJwt) {
+      url.searchParams.set('api_key', token);
+    }
+
     const cacheKey = `tmdb:${url.toString()}`;
     const cached = CacheService.get<T>(cacheKey);
     if (cached) return cached;
 
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (isBearerJwt) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-      },
+      headers,
       signal: AbortSignal.timeout(12_000),
     });
 
@@ -99,30 +136,111 @@ class TMDBServiceImpl {
     }
 
     const data = (await response.json()) as T;
-    CacheService.set(cacheKey, data, 10 * 60 * 1000);
+    const ttlMs = Math.max(1, settings.cacheTtlMinutes || 10) * 60 * 1000;
+    CacheService.set(cacheKey, data, ttlMs);
     return data;
   }
 
+  async testConnection(): Promise<DiagnosticResult> {
+    await SystemSettingsService.ensureHydrated();
+    const started = Date.now();
+    const settings = SystemSettingsService.getSettings();
+    const tokenInfo = SystemSettingsService.getActiveTmdbToken();
+
+    if (settings.catalogSource === 'demo' || settings.catalogSource === 'custom_only') {
+      return {
+        target: 'tmdb',
+        ok: true,
+        latencyMs: Date.now() - started,
+        message: `Fonte ativa configurada como "${settings.catalogSource}". Chamadas externas TMDB estão desabilitadas por escolha do administrador.`,
+        detail: `Base configurada: ${settings.tmdbBaseUrl}`,
+        testedAt: new Date().toISOString(),
+      };
+    }
+
+    if (!tokenInfo.token) {
+      return {
+        target: 'tmdb',
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: 'Nenhum token TMDB encontrado (nem em Secrets nem nas Configurações de API).',
+        detail: 'Informe um TMDB Access Token (v4) ou API Key (v3) em Fontes de API ou use o modo Demonstração.',
+        testedAt: new Date().toISOString(),
+      };
+    }
+
+    try {
+      const baseUrl = (settings.tmdbBaseUrl || 'https://api.themoviedb.org/3').replace(/\/+$/, '');
+      const url = new URL(`${baseUrl}/configuration`);
+      const isBearerJwt = tokenInfo.token.length > 40 || tokenInfo.token.includes('.');
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (isBearerJwt) {
+        headers.Authorization = `Bearer ${tokenInfo.token}`;
+      } else {
+        url.searchParams.set('api_key', tokenInfo.token);
+      }
+
+      const res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(10_000) });
+      const latencyMs = Date.now() - started;
+
+      if (!res.ok) {
+        return {
+          target: 'tmdb',
+          ok: false,
+          latencyMs,
+          statusCode: res.status,
+          message: `Falha ao autenticar no TMDB (${res.status}). Verifique o token configurado (${tokenInfo.source}).`,
+          detail: baseUrl,
+          testedAt: new Date().toISOString(),
+        };
+      }
+
+      return {
+        target: 'tmdb',
+        ok: true,
+        latencyMs,
+        statusCode: res.status,
+        message: `Conexão TMDB validada com sucesso via ${tokenInfo.source === 'admin_override' ? 'Token do Painel Admin' : 'Secret do Servidor'}.`,
+        detail: `${baseUrl} · idioma ${settings.tmdbLanguage}`,
+        testedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      return {
+        target: 'tmdb',
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: `Erro de rede ao conectar em ${settings.tmdbBaseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+        testedAt: new Date().toISOString(),
+      };
+    }
+  }
+
   async ensureImageConfig(): Promise<string> {
-    if (!this.isConfigured()) return this.imageBaseUrl;
+    if (!this.isConfigured()) return this.getActiveImageBaseUrl();
+    const settings = SystemSettingsService.getSettings();
+    if (settings.tmdbImageBaseUrl && settings.tmdbImageBaseUrl !== 'https://image.tmdb.org/t/p/') {
+      return settings.tmdbImageBaseUrl;
+    }
     const cached = CacheService.get<string>('tmdb:image_base_url');
     if (cached) return cached;
     try {
       const cfg = await this.request<{ images?: { secure_base_url?: string } }>('/configuration', {});
       if (cfg.images?.secure_base_url) {
-        this.imageBaseUrl = cfg.images.secure_base_url;
-        CacheService.set('tmdb:image_base_url', this.imageBaseUrl, 60 * 60 * 1000);
+        this.detectedImageBaseUrl = cfg.images.secure_base_url;
+        CacheService.set('tmdb:image_base_url', this.detectedImageBaseUrl, 60 * 60 * 1000);
       }
     } catch {
       // Retain official default
     }
-    return this.imageBaseUrl;
+    return this.getActiveImageBaseUrl();
   }
 
   private mapMedia(raw: TmdbRawMedia, forcedType?: MediaType): MediaItem {
     const mediaType: MediaType =
       forcedType ?? (raw.media_type === 'tv' ? 'tv' : 'movie');
     const releaseDate = raw.release_date ?? raw.first_air_date ?? '';
+    const imageBase = this.getActiveImageBaseUrl();
+    const posterQuality = SystemSettingsService.getSettings().tmdbImageQuality || 'w500';
     return {
       id: raw.id,
       tmdbId: raw.id,
@@ -130,8 +248,8 @@ class TMDBServiceImpl {
       title: raw.title ?? raw.name ?? 'Sem título',
       originalTitle: raw.original_title ?? raw.original_name ?? raw.title ?? raw.name ?? '',
       overview: raw.overview || 'Sinopse indisponível no momento.',
-      posterPath: buildTmdbImageUrl(raw.poster_path, 'w500', this.imageBaseUrl),
-      backdropPath: buildTmdbImageUrl(raw.backdrop_path, 'w1280', this.imageBaseUrl),
+      posterPath: buildTmdbImageUrl(raw.poster_path, posterQuality, imageBase),
+      backdropPath: buildTmdbImageUrl(raw.backdrop_path, 'w1280', imageBase),
       releaseDate,
       releaseYear: releaseDate ? releaseDate.slice(0, 4) : '',
       voteAverage: Number((raw.vote_average ?? 0).toFixed(1)),
@@ -147,6 +265,7 @@ class TMDBServiceImpl {
   }
 
   async getGenres(mediaType: MediaType): Promise<GenreItem[]> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
       return mediaType === 'movie' ? DEMO_MOVIE_GENRES : DEMO_TV_GENRES;
     }
@@ -158,8 +277,9 @@ class TMDBServiceImpl {
     category: 'popular' | 'now_playing' | 'top_rated' | 'upcoming',
     page = 1
   ): Promise<PaginatedCatalogResponse> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType: 'movie',
         sortBy: category === 'top_rated' ? 'rating' : category === 'upcoming' ? 'release_date' : 'popularity',
         page,
@@ -190,8 +310,9 @@ class TMDBServiceImpl {
     category: 'popular' | 'top_rated' | 'on_the_air' | 'airing_today',
     page = 1
   ): Promise<PaginatedCatalogResponse> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType: 'tv',
         sortBy: category === 'top_rated' ? 'rating' : category === 'airing_today' ? 'release_date' : 'popularity',
         page,
@@ -219,8 +340,13 @@ class TMDBServiceImpl {
   }
 
   async getTrending(page = 1): Promise<PaginatedCatalogResponse> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, { sortBy: 'popularity', page, pageSize: 20 });
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
+        sortBy: 'popularity',
+        page,
+        pageSize: 20,
+      });
       return { ...subset, source: 'demo', demoMode: true };
     }
     await this.ensureImageConfig();
@@ -253,22 +379,15 @@ class TMDBServiceImpl {
     query?: string;
     page?: number;
   }): Promise<PaginatedCatalogResponse> {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const page = Math.max(1, params.page ?? 1);
 
     if (!this.isConfigured()) {
-      const customAsMedia = repositoryStore
-        .getCustomCatalog()
-        .filter((c) => c.active)
-        .map(customMediaToMediaItem);
-      const subset = filterAndSortMedia(
-        deduplicateMediaByTmdbId([...customAsMedia, ...DEMO_MEDIA_CATALOG]),
-        {
-          ...params,
-          page,
-          pageSize: 20,
-        }
-      );
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
+        ...params,
+        page,
+        pageSize: 20,
+      });
       return { ...subset, source: 'demo', demoMode: true };
     }
 
@@ -357,8 +476,9 @@ class TMDBServiceImpl {
     mediaType: 'all' | 'movie' | 'tv' = 'all',
     page = 1
   ): Promise<PaginatedCatalogResponse> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      const subset = filterAndSortMedia(DEMO_MEDIA_CATALOG, {
+      const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType,
         query,
         page,
@@ -375,12 +495,13 @@ class TMDBServiceImpl {
           ? '/search/tv'
           : '/search/multi';
 
+    const includeAdult = SystemSettingsService.getSettings().includeAdult ? 'true' : 'false';
     const res = await this.request<{
       results: TmdbRawMedia[];
       page: number;
       total_pages: number;
       total_results: number;
-    }>(endpoint, { query, page, include_adult: 'false' });
+    }>(endpoint, { query, page, include_adult: includeAdult });
 
     const valid = (res.results ?? []).filter((r) =>
       mediaType === 'all' ? r.media_type === 'movie' || r.media_type === 'tv' : true
@@ -399,7 +520,7 @@ class TMDBServiceImpl {
   }
 
   async getDetail(tmdbId: number, mediaType: MediaType): Promise<MediaDetail | null> {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const customMatch = repositoryStore
       .getCustomCatalog()
       .find((c) => c.active && c.tmdbId === tmdbId && c.mediaType === mediaType);
@@ -498,11 +619,12 @@ class TMDBServiceImpl {
     const director =
       raw.credits?.crew?.find((c) => c.job === 'Director' || c.job === 'Creator')?.name ?? null;
 
+    const imageBase = this.getActiveImageBaseUrl();
     const cast: CastMember[] = (raw.credits?.cast ?? []).slice(0, 14).map((c) => ({
       id: c.id,
       name: c.name,
       character: c.character,
-      profilePath: buildTmdbImageUrl(c.profile_path, 'w185', this.imageBaseUrl),
+      profilePath: buildTmdbImageUrl(c.profile_path, 'w185', imageBase),
     }));
 
     const videos: VideoItem[] = (raw.videos?.results ?? []).filter((v) => v.site === 'YouTube');
@@ -530,7 +652,7 @@ class TMDBServiceImpl {
         seasonNumber: s.season_number,
         name: s.name,
         overview: s.overview,
-        posterPath: buildTmdbImageUrl(s.poster_path, 'w342', this.imageBaseUrl),
+        posterPath: buildTmdbImageUrl(s.poster_path, 'w342', imageBase),
         episodeCount: s.episode_count,
         airDate: s.air_date ?? '',
       })),
@@ -553,10 +675,12 @@ class TMDBServiceImpl {
   }
 
   async getSeasonEpisodes(tmdbId: number, seasonNumber: number): Promise<SeasonDetail> {
+    await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
       return getDemoSeasonDetail(tmdbId, seasonNumber);
     }
     await this.ensureImageConfig();
+    const imageBase = this.getActiveImageBaseUrl();
     const raw = await this.request<{
       id: number;
       season_number: number;
@@ -583,7 +707,7 @@ class TMDBServiceImpl {
       seasonNumber: ep.season_number,
       name: ep.name,
       overview: ep.overview || 'Descrição do episódio indisponível.',
-      stillPath: buildTmdbImageUrl(ep.still_path, 'w500', this.imageBaseUrl),
+      stillPath: buildTmdbImageUrl(ep.still_path, 'w500', imageBase),
       runtime: ep.runtime,
       airDate: ep.air_date ?? '',
       voteAverage: Number((ep.vote_average ?? 0).toFixed(1)),
@@ -594,7 +718,7 @@ class TMDBServiceImpl {
       seasonNumber: raw.season_number,
       name: raw.name,
       overview: raw.overview,
-      posterPath: buildTmdbImageUrl(raw.poster_path, 'w342', this.imageBaseUrl),
+      posterPath: buildTmdbImageUrl(raw.poster_path, 'w342', imageBase),
       episodeCount: episodes.length,
       airDate: raw.air_date ?? '',
       episodes,

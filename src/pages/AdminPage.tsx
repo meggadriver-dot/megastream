@@ -19,8 +19,9 @@ import {
   FileText,
   Film,
   Globe,
-  Layers,
+  KeyRound,
   Lock,
+  LogIn,
   LogOut,
   Menu,
   Palette,
@@ -28,36 +29,47 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
-  Sliders,
   Trash2,
   Tv,
   Users,
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { DEFAULT_PLAYER_CONFIG } from '../../shared/playerUrl';
 import {
   DEFAULT_SITE_CONFIG,
   sanitizeCustomMediaInput,
   sanitizeSiteConfig,
   toIsoTimestamp,
 } from '../../shared/siteConfigUtils';
+import {
+  DEFAULT_SYSTEM_SETTINGS,
+  extractPublicRuntimeSettings,
+  sanitizeSystemSettings,
+} from '../../shared/systemSettingsUtils';
 import type {
   AdminDashboardStats,
+  AdminSecretsStatus,
+  AdminSystemSettingsResponse,
   AdminTab,
   ChannelCategory,
   CustomMediaItem,
+  DiagnosticResult,
   IntegrationStatus,
   LiveChannel,
   MediaType,
-  MegaEmbedDomain,
-  MegaEmbedPlayer,
   PlanId,
   PlayerConfig,
   SiteConfig,
   SystemLogEntry,
+  SystemSettings,
   ThemeId,
   UserProfile,
 } from '../../shared/types';
+import { AdminApiSourcesTab } from '../components/admin/AdminApiSourcesTab';
+import { AdminDiagnosticsTab } from '../components/admin/AdminDiagnosticsTab';
+import { AdminPlayerTab } from '../components/admin/AdminPlayerTab';
+import { AdminPoliciesPanel } from '../components/admin/AdminPoliciesPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -83,6 +95,13 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     items: [{ id: 'site', label: 'Personalizar Site', icon: Palette }],
   },
   {
+    group: 'APIs & Fontes',
+    items: [
+      { id: 'apis', label: 'Fontes de API', icon: KeyRound },
+      { id: 'players', label: 'Players & Embed', icon: Play },
+    ],
+  },
+  {
     group: 'Conteúdo',
     items: [
       { id: 'catalog', label: 'Catálogo & Mídias', icon: Film },
@@ -90,11 +109,10 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    group: 'Sistema & Acesso',
+    group: 'Acesso & Sistema',
     items: [
-      { id: 'players', label: 'Players & Fontes', icon: Play },
-      { id: 'users', label: 'Usuários & Planos', icon: Users },
-      { id: 'logs', label: 'Logs & Integrações', icon: FileText },
+      { id: 'users', label: 'Usuários & Políticas', icon: Users },
+      { id: 'logs', label: 'Logs & Diagnósticos', icon: FileText },
     ],
   },
 ];
@@ -102,16 +120,17 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
 const TAB_TITLES: Record<AdminTab, string> = {
   dashboard: 'Dashboard Geral',
   site: 'Personalização do Site',
+  apis: 'Fontes de API, Catálogo e IA',
+  players: 'Players, Fontes e Embed',
   catalog: 'Catálogo & Mídias',
   channels: 'Canais Ao Vivo',
-  players: 'Players, Fontes e Domínios',
-  users: 'Usuários & Assinaturas',
-  logs: 'Logs & Integrações',
+  users: 'Usuários, Planos & Políticas',
+  logs: 'Logs, Integrações & Diagnósticos',
 };
 
 export function AdminPage() {
   const { firebaseUser, profile, signInWithGoogle, logout } = useAuth();
-  const { siteConfig, applySiteConfig } = useSiteConfig();
+  const { siteConfig, applySiteConfig, applyRuntimeSettings } = useSiteConfig();
   const { themes } = useTheme();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
@@ -123,8 +142,16 @@ export function AdminPage() {
   const [channels, setChannels] = useState<LiveChannel[]>([]);
   const [customCatalog, setCustomCatalog] = useState<CustomMediaItem[]>([]);
   const [playerConfig, setPlayerConfig] = useState<PlayerConfig | null>(null);
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>(DEFAULT_SYSTEM_SETTINGS);
+  const [secretsStatus, setSecretsStatus] = useState<AdminSecretsStatus | null>(null);
+  const [tmdbTokenInput, setTmdbTokenInput] = useState('');
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
   const [siteDraft, setSiteDraft] = useState<SiteConfig>(siteConfig);
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
+  const [diagnostics, setDiagnostics] = useState<
+    Partial<Record<'tmdb' | 'player' | 'firestore', DiagnosticResult>>
+  >({});
+  const [testingTarget, setTestingTarget] = useState<'tmdb' | 'player' | 'firestore' | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -197,8 +224,11 @@ export function AdminPage() {
         logRes,
         sCfg,
         customRes,
+        sysRes,
         fsSiteSnap,
         fsPlayerSnap,
+        fsSystemSnap,
+        fsSecretsSnap,
         fsCustomSnap,
         fsChannelsSnap,
         fsUsersSnap,
@@ -212,8 +242,11 @@ export function AdminPage() {
         apiRequest<{ items: SystemLogEntry[] }>('/api/admin/logs'),
         apiRequest<SiteConfig>('/api/admin/site-config'),
         apiRequest<{ items: CustomMediaItem[] }>('/api/admin/catalog/custom'),
+        apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings'),
         getDoc(doc(db, 'siteConfig', 'global')).catch(() => null),
         getDoc(doc(db, 'playerSettings', 'global')).catch(() => null),
+        getDoc(doc(db, 'systemSettings', 'global')).catch(() => null),
+        getDoc(doc(db, 'adminSecrets', 'apiKeys')).catch(() => null),
         getDocs(collection(db, 'customCatalog')).catch(() => null),
         getDocs(collection(db, 'channels')).catch(() => null),
         getDocs(collection(db, 'users')).catch(() => null),
@@ -236,21 +269,83 @@ export function AdminPage() {
       setSiteDraft(effectiveSite);
       applySiteConfig(effectiveSite);
 
-      // 2. Player Config (prefer Firestore if saved)
-      let effectivePlayer = pCfg;
+      // 2. Player Config (prefer newest between Firestore & API)
+      let effectivePlayer: PlayerConfig = { ...DEFAULT_PLAYER_CONFIG, ...pCfg };
       if (fsPlayerSnap?.exists()) {
         const fsData = fsPlayerSnap.data() as Partial<PlayerConfig>;
-        effectivePlayer = {
-          ...pCfg,
-          defaultDomain: (fsData.defaultDomain as MegaEmbedDomain) || pCfg.defaultDomain,
-          defaultPlayer: (fsData.defaultPlayer as MegaEmbedPlayer) || pCfg.defaultPlayer,
-          defaultColorHex:
-            typeof fsData.defaultColorHex === 'string' && fsData.defaultColorHex
-              ? fsData.defaultColorHex
-              : pCfg.defaultColorHex,
-        };
+        const fsTs = Date.parse(toIsoTimestamp(fsData.updatedAt, '')) || 0;
+        const apiTs = Date.parse(effectivePlayer.updatedAt || '') || 0;
+        if (!effectivePlayer.updatedAt || effectivePlayer.updatedAt === DEFAULT_PLAYER_CONFIG.updatedAt || fsTs >= apiTs) {
+          effectivePlayer = {
+            ...effectivePlayer,
+            sourceMode: fsData.sourceMode === 'custom_template' ? 'custom_template' : effectivePlayer.sourceMode,
+            defaultDomain: fsData.defaultDomain || effectivePlayer.defaultDomain,
+            fallbackDomain: fsData.fallbackDomain || effectivePlayer.fallbackDomain,
+            autoFallback: typeof fsData.autoFallback === 'boolean' ? fsData.autoFallback : effectivePlayer.autoFallback,
+            defaultPlayer: fsData.defaultPlayer || effectivePlayer.defaultPlayer,
+            defaultColorHex:
+              typeof fsData.defaultColorHex === 'string' && fsData.defaultColorHex
+                ? fsData.defaultColorHex
+                : effectivePlayer.defaultColorHex,
+            customEmbedMovieTemplate:
+              typeof fsData.customEmbedMovieTemplate === 'string'
+                ? fsData.customEmbedMovieTemplate
+                : effectivePlayer.customEmbedMovieTemplate,
+            customEmbedTvTemplate:
+              typeof fsData.customEmbedTvTemplate === 'string'
+                ? fsData.customEmbedTvTemplate
+                : effectivePlayer.customEmbedTvTemplate,
+            embedTimeoutSeconds:
+              typeof fsData.embedTimeoutSeconds === 'number'
+                ? fsData.embedTimeoutSeconds
+                : effectivePlayer.embedTimeoutSeconds,
+          };
+        }
       }
       setPlayerConfig(effectivePlayer);
+
+      // 2b. System Settings & Runtime Token Overrides (cold-start sync from Firestore if needed)
+      let effectiveSystem = sanitizeSystemSettings(sysRes.settings, DEFAULT_SYSTEM_SETTINGS, true);
+      let effectiveSecrets = sysRes.secretsStatus;
+      if (fsSystemSnap?.exists()) {
+        const fsSys = sanitizeSystemSettings(
+          fsSystemSnap.data() as Partial<SystemSettings>,
+          DEFAULT_SYSTEM_SETTINGS,
+          true
+        );
+        const fsTs = Date.parse(fsSys.updatedAt) || 0;
+        const apiTs = Date.parse(effectiveSystem.updatedAt) || 0;
+        if (effectiveSystem.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt || fsTs >= apiTs) {
+          effectiveSystem = fsSys;
+        }
+      }
+      if (fsSecretsSnap?.exists()) {
+        const secData = fsSecretsSnap.data() as {
+          tmdbAccessToken?: string;
+          geminiApiKey?: string;
+        };
+        const needsTmdbSync = Boolean(secData.tmdbAccessToken && !effectiveSecrets.hasCustomTmdbToken);
+        const needsGeminiSync = Boolean(secData.geminiApiKey && !effectiveSecrets.hasCustomGeminiKey);
+        if (needsTmdbSync || needsGeminiSync) {
+          const synced = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
+            method: 'PUT',
+            body: JSON.stringify({
+              ...effectiveSystem,
+              ...(needsTmdbSync ? { tmdbAccessToken: secData.tmdbAccessToken } : {}),
+              ...(needsGeminiSync ? { geminiApiKey: secData.geminiApiKey } : {}),
+            }),
+          }).catch(() => null);
+          if (synced) {
+            effectiveSystem = synced.settings;
+            effectiveSecrets = synced.secretsStatus;
+          }
+        }
+      }
+      setSystemSettings(effectiveSystem);
+      setSecretsStatus(effectiveSecrets);
+      applyRuntimeSettings(
+        extractPublicRuntimeSettings(effectiveSystem, effectivePlayer.embedTimeoutSeconds)
+      );
 
       // 3. Custom Catalog (merge API + Firestore by id)
       const customMap = new Map<string, CustomMediaItem>();
@@ -340,7 +435,7 @@ export function AdminPage() {
     } finally {
       setLoading(false);
     }
-  }, [applySiteConfig]);
+  }, [applyRuntimeSettings, applySiteConfig]);
 
   useEffect(() => {
     if (firebaseUser) {
@@ -379,6 +474,25 @@ export function AdminPage() {
 
       setSiteDraft(saved);
       applySiteConfig(saved, true);
+
+      // Also persist maintenanceMessage in systemSettings if changed from Site tab
+      const sysUpdated = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...systemSettings,
+          maintenanceMessage: systemSettings.maintenanceMessage,
+        }),
+      });
+      await persistSystemSettingsToFirestore(sysUpdated.settings);
+      setSystemSettings(sysUpdated.settings);
+      applyRuntimeSettings(
+        extractPublicRuntimeSettings(
+          sysUpdated.settings,
+          playerConfig?.embedTimeoutSeconds ?? 12
+        ),
+        true
+      );
+
       showFeedback('Personalização e configurações do site salvas na nuvem e aplicadas.');
     } catch (err) {
       showError(err, 'Erro ao salvar configurações do site.');
@@ -682,19 +796,223 @@ export function AdminPage() {
       });
 
       await setDoc(doc(db, 'playerSettings', 'global'), {
+        sourceMode: updated.sourceMode,
         defaultDomain: updated.defaultDomain,
+        fallbackDomain: updated.fallbackDomain,
+        autoFallback: updated.autoFallback,
         defaultPlayer: updated.defaultPlayer,
         defaultColorHex: updated.defaultColorHex,
+        customEmbedMovieTemplate: updated.customEmbedMovieTemplate,
+        customEmbedTvTemplate: updated.customEmbedTvTemplate,
+        embedTimeoutSeconds: updated.embedTimeoutSeconds,
         updatedAt: serverTimestamp(),
       });
 
       setPlayerConfig(updated);
-      showFeedback('Configuração global de players e domínios salva na nuvem.');
+      applyRuntimeSettings(
+        extractPublicRuntimeSettings(systemSettings, updated.embedTimeoutSeconds),
+        true
+      );
+      showFeedback('Configuração global de players, templates e fallback salva na nuvem.');
     } catch (err) {
       showError(err, 'Erro ao salvar configuração de players.');
     } finally {
       setSaving(false);
     }
+  };
+
+  // --- System Settings & API Sources Helpers ---
+  const persistSystemSettingsToFirestore = async (settings: SystemSettings) => {
+    await setDoc(doc(db, 'systemSettings', 'global'), {
+      catalogSource: settings.catalogSource,
+      tmdbBaseUrl: settings.tmdbBaseUrl,
+      tmdbImageBaseUrl: settings.tmdbImageBaseUrl,
+      tmdbLanguage: settings.tmdbLanguage,
+      tmdbImageQuality: settings.tmdbImageQuality,
+      includeAdult: settings.includeAdult,
+      cacheTtlMinutes: settings.cacheTtlMinutes,
+      aiMode: settings.aiMode,
+      aiMaxRecommendations: settings.aiMaxRecommendations,
+      allowRegistration: settings.allowRegistration,
+      requireAuthForPlayer: settings.requireAuthForPlayer,
+      allowGuestFavorites: settings.allowGuestFavorites,
+      maxProfilesPerAccount: settings.maxProfilesPerAccount,
+      defaultUserPlan: settings.defaultUserPlan,
+      maintenanceMessage: settings.maintenanceMessage,
+      updatedAt: serverTimestamp(),
+    });
+  };
+
+  const handleSaveSystemSettings = async (
+    e: React.FormEvent,
+    customFeedback = 'Fontes de API e configurações do sistema salvas e aplicadas.'
+  ) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      const payload: Record<string, unknown> = { ...systemSettings };
+      if (tmdbTokenInput.trim()) payload.tmdbAccessToken = tmdbTokenInput.trim();
+      if (geminiKeyInput.trim()) payload.geminiApiKey = geminiKeyInput.trim();
+
+      const res = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+
+      await persistSystemSettingsToFirestore(res.settings);
+
+      if (tmdbTokenInput.trim() || geminiKeyInput.trim()) {
+        const secretsSnap = await getDoc(doc(db, 'adminSecrets', 'apiKeys')).catch(() => null);
+        const existingSecrets = secretsSnap?.exists()
+          ? (secretsSnap.data() as { tmdbAccessToken?: string; geminiApiKey?: string })
+          : {};
+        await setDoc(doc(db, 'adminSecrets', 'apiKeys'), {
+          ...(tmdbTokenInput.trim()
+            ? { tmdbAccessToken: tmdbTokenInput.trim() }
+            : existingSecrets.tmdbAccessToken
+              ? { tmdbAccessToken: existingSecrets.tmdbAccessToken }
+              : {}),
+          ...(geminiKeyInput.trim()
+            ? { geminiApiKey: geminiKeyInput.trim() }
+            : existingSecrets.geminiApiKey
+              ? { geminiApiKey: existingSecrets.geminiApiKey }
+              : {}),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      setSystemSettings(res.settings);
+      setSecretsStatus(res.secretsStatus);
+      setTmdbTokenInput('');
+      setGeminiKeyInput('');
+      applyRuntimeSettings(
+        extractPublicRuntimeSettings(res.settings, playerConfig?.embedTimeoutSeconds ?? 12),
+        true
+      );
+      const dash = await apiRequest<{
+        stats: AdminDashboardStats;
+        integrations: IntegrationStatus;
+      }>('/api/admin/dashboard').catch(() => null);
+      if (dash) {
+        setStats(dash.stats);
+        setIntegrations(dash.integrations);
+      }
+      showFeedback(customFeedback);
+    } catch (err) {
+      showError(err, 'Erro ao salvar configurações do sistema.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearSecret = async (target: 'tmdb' | 'gemini') => {
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      const res = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
+        method: 'PUT',
+        body: JSON.stringify(
+          target === 'tmdb' ? { clearTmdbAccessToken: true } : { clearGeminiApiKey: true }
+        ),
+      });
+
+      const secretsSnap = await getDoc(doc(db, 'adminSecrets', 'apiKeys')).catch(() => null);
+      if (secretsSnap?.exists()) {
+        const data = secretsSnap.data() as { tmdbAccessToken?: string; geminiApiKey?: string };
+        const nextDoc: Record<string, unknown> = { updatedAt: serverTimestamp() };
+        if (target !== 'tmdb' && data.tmdbAccessToken) {
+          nextDoc.tmdbAccessToken = data.tmdbAccessToken;
+        }
+        if (target !== 'gemini' && data.geminiApiKey) {
+          nextDoc.geminiApiKey = data.geminiApiKey;
+        }
+        await setDoc(doc(db, 'adminSecrets', 'apiKeys'), nextDoc);
+      }
+
+      setSecretsStatus(res.secretsStatus);
+      showFeedback(
+        target === 'tmdb'
+          ? 'Token customizado do TMDB removido. Voltando para configuração padrão.'
+          : 'Chave Gemini customizada removida. Voltando para configuração padrão.'
+      );
+    } catch (err) {
+      showError(err, 'Erro ao limpar credencial.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetSystemSettings = async () => {
+    setSaving(true);
+    try {
+      ensureVerifiedAdminSession();
+      const res = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings/reset', {
+        method: 'POST',
+      });
+      await persistSystemSettingsToFirestore(res.settings);
+      setSystemSettings(res.settings);
+      setSecretsStatus(res.secretsStatus);
+      applyRuntimeSettings(
+        extractPublicRuntimeSettings(res.settings, playerConfig?.embedTimeoutSeconds ?? 12),
+        true
+      );
+      showFeedback('Fontes de API e políticas restauradas ao padrão de fábrica.');
+    } catch (err) {
+      showError(err, 'Erro ao restaurar padrões.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRunDiagnostic = async (target: 'tmdb' | 'player' | 'firestore') => {
+    setTestingTarget(target);
+    try {
+      const result = await apiRequest<DiagnosticResult>('/api/admin/diagnostics/test', {
+        method: 'POST',
+        body: JSON.stringify({ target }),
+      });
+      setDiagnostics((prev) => ({ ...prev, [target]: result }));
+    } catch (err) {
+      setDiagnostics((prev) => ({
+        ...prev,
+        [target]: {
+          target,
+          ok: false,
+          latencyMs: 0,
+          message: err instanceof Error ? err.message : 'Falha ao executar diagnóstico.',
+          testedAt: new Date().toISOString(),
+        },
+      }));
+    } finally {
+      setTestingTarget(null);
+    }
+  };
+
+  const handleRunAllDiagnostics = async () => {
+    for (const target of ['tmdb', 'player', 'firestore'] as const) {
+      await handleRunDiagnostic(target);
+    }
+    showFeedback('Diagnósticos completos finalizados.');
+  };
+
+  const handleExportBackup = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      siteConfig: siteDraft,
+      systemSettings,
+      playerConfig,
+      channels,
+      customCatalog,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `megastream-config-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showFeedback('Backup JSON exportado (sem credenciais ou chaves secretas).');
   };
 
   // RESTRICTED ADMIN GATE (Separate Standalone View — Never leaks server/source/domain details!)
@@ -714,20 +1032,29 @@ export function AdminPage() {
             </h1>
             <p className="text-sm text-slate-400 leading-relaxed">
               {authError ||
-                'Entre com uma conta administradora autorizada para gerenciar aparência do site, catálogo, players, canais e usuários.'}
+                'Entre com uma conta administradora autorizada para gerenciar aparência do site, APIs, catálogo, players, canais e usuários.'}
             </p>
           </div>
 
           <div className="flex flex-col gap-2.5 pt-2">
             {!firebaseUser ? (
-              <button
-                type="button"
-                onClick={() => void signInWithGoogle()}
-                className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
-                style={{ backgroundColor: 'var(--ms-accent)' }}
-              >
-                Entrar como Administrador
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void signInWithGoogle()}
+                  className="w-full h-11 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                  style={{ backgroundColor: 'var(--ms-accent)' }}
+                >
+                  Entrar com Google (Admin)
+                </button>
+                <Link
+                  to="/login"
+                  className="w-full h-11 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white flex items-center justify-center gap-2"
+                >
+                  <LogIn className="w-4 h-4" />
+                  Entrar com E-mail e Senha
+                </Link>
+              </>
             ) : (
               <button
                 type="button"
@@ -981,27 +1308,27 @@ export function AdminPage() {
                   </div>
 
                   {/* Quick Admin Actions */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <button
                       type="button"
                       onClick={() => setActiveTab('site')}
                       className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
                     >
                       <Palette className="w-5 h-5 text-sky-400" />
-                      <p className="text-sm font-bold text-white">Personalizar Identidade do Site</p>
+                      <p className="text-sm font-bold text-white">Personalizar Site</p>
                       <p className="text-xs text-slate-400">
-                        Alterar nome, logo, tema padrão, cor de destaque, avisos e módulos.
+                        Alterar nome, logo, tema padrão, cor de destaque e módulos.
                       </p>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setActiveTab('catalog')}
+                      onClick={() => setActiveTab('apis')}
                       className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
                     >
-                      <Film className="w-5 h-5 text-sky-400" />
-                      <p className="text-sm font-bold text-white">Adicionar ou Editar Títulos</p>
+                      <KeyRound className="w-5 h-5 text-sky-400" />
+                      <p className="text-sm font-bold text-white">Fontes de API</p>
                       <p className="text-xs text-slate-400">
-                        Cadastrar filmes/séries, personalizar sinopses, capas e links de vídeo.
+                        Trocar origem do catálogo (TMDB/Demo/Custom), idioma e IA.
                       </p>
                     </button>
                     <button
@@ -1010,9 +1337,20 @@ export function AdminPage() {
                       className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
                     >
                       <Play className="w-5 h-5 text-sky-400" />
-                      <p className="text-sm font-bold text-white">Configurar Fontes & Players</p>
+                      <p className="text-sm font-bold text-white">Players & Embed</p>
                       <p className="text-xs text-slate-400">
-                        Definir domínio padrão, motor de reprodução e parâmetros internos.
+                        Configurar domínios, fallback automático e templates customizados.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('catalog')}
+                      className="text-left rounded-2xl bg-[#0c1224] border border-white/10 p-5 hover:border-sky-400/50 transition-colors cursor-pointer space-y-1.5"
+                    >
+                      <Film className="w-5 h-5 text-sky-400" />
+                      <p className="text-sm font-bold text-white">Catálogo & Mídias</p>
+                      <p className="text-xs text-slate-400">
+                        Adicionar ou editar filmes, séries, capas e URLs personalizadas.
                       </p>
                     </button>
                   </div>
@@ -1284,6 +1622,26 @@ export function AdminPage() {
                       ))}
                     </div>
 
+                    <div className="pt-2 border-t border-white/10">
+                      <label htmlFor="site-maint-msg" className="block text-xs text-slate-300 mb-1">
+                        Mensagem de Manutenção Programada
+                      </label>
+                      <input
+                        id="site-maint-msg"
+                        type="text"
+                        maxLength={240}
+                        value={systemSettings.maintenanceMessage}
+                        onChange={(e) =>
+                          setSystemSettings({
+                            ...systemSettings,
+                            maintenanceMessage: e.target.value,
+                          })
+                        }
+                        placeholder="Mensagem exibida no banner quando o Modo Manutenção estiver ativo"
+                        className="w-full h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
+                      />
+                    </div>
+
                     <div className="flex justify-end pt-2">
                       <button
                         type="submit"
@@ -1296,6 +1654,31 @@ export function AdminPage() {
                     </div>
                   </section>
                 </form>
+              )}
+
+              {/* TAB: API SOURCES */}
+              {activeTab === 'apis' && (
+                <AdminApiSourcesTab
+                  systemSettings={systemSettings}
+                  onChange={setSystemSettings}
+                  secretsStatus={secretsStatus}
+                  tmdbTokenInput={tmdbTokenInput}
+                  onTmdbTokenInputChange={setTmdbTokenInput}
+                  geminiKeyInput={geminiKeyInput}
+                  onGeminiKeyInputChange={setGeminiKeyInput}
+                  saving={saving}
+                  testingTarget={testingTarget}
+                  tmdbDiagnostic={diagnostics.tmdb ?? null}
+                  onSave={(e) =>
+                    void handleSaveSystemSettings(
+                      e,
+                      'Fontes de API, endpoints e credenciais atualizados com sucesso.'
+                    )
+                  }
+                  onClearSecret={(target) => void handleClearSecret(target)}
+                  onTestTmdb={() => void handleRunDiagnostic('tmdb')}
+                  onResetDefaults={() => void handleResetSystemSettings()}
+                />
               )}
 
               {/* TAB: CATALOG & CUSTOM MEDIA */}
@@ -1766,277 +2149,130 @@ export function AdminPage() {
 
               {/* TAB: PLAYERS & SOURCES (ADMIN ONLY) */}
               {activeTab === 'players' && playerConfig && (
-                <form
-                  onSubmit={handleSavePlayerConfig}
-                  className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-5 max-w-3xl"
-                >
-                  <div>
-                    <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
-                      <Sliders className="w-4 h-4 text-sky-400" />
-                      Configuração Interna de Players, Fontes e Domínios
-                    </h2>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Estas definições controlam o servidor e provedores de reprodução em segundo plano e nunca são exibidas na tela pública do usuário.
-                    </p>
-                  </div>
+                <AdminPlayerTab
+                  playerConfig={playerConfig}
+                  onChange={setPlayerConfig}
+                  saving={saving}
+                  testingPlayer={testingTarget === 'player'}
+                  playerDiagnostic={diagnostics.player ?? null}
+                  onSave={(e) => void handleSavePlayerConfig(e)}
+                  onTestPlayer={() => void handleRunDiagnostic('player')}
+                />
+              )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div>
-                      <label htmlFor="adm-domain" className="block text-xs text-slate-300 mb-1">
-                        Domínio Padrão (MegaEmbed)
-                      </label>
-                      <select
-                        id="adm-domain"
-                        value={playerConfig.defaultDomain}
-                        onChange={(e) =>
-                          setPlayerConfig({
-                            ...playerConfig,
-                            defaultDomain: e.target.value as MegaEmbedDomain,
-                          })
-                        }
-                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
-                      >
-                        {playerConfig.availableDomains.map((d) => (
-                          <option key={d} value={d}>
-                            {d}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+              {/* TAB: USERS, PLANS & POLICIES */}
+              {activeTab === 'users' && (
+                <div className="space-y-6">
+                  <AdminPoliciesPanel
+                    systemSettings={systemSettings}
+                    onChange={setSystemSettings}
+                    saving={saving}
+                    onSave={(e) =>
+                      void handleSaveSystemSettings(
+                        e,
+                        'Políticas de acesso, cadastro e perfis atualizadas.'
+                      )
+                    }
+                  />
 
-                    <div>
-                      <label htmlFor="adm-player" className="block text-xs text-slate-300 mb-1">
-                        Player Padrão
-                      </label>
-                      <select
-                        id="adm-player"
-                        value={playerConfig.defaultPlayer}
-                        onChange={(e) =>
-                          setPlayerConfig({
-                            ...playerConfig,
-                            defaultPlayer: e.target.value as MegaEmbedPlayer,
-                          })
-                        }
-                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white"
-                      >
-                        {playerConfig.availablePlayers.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label htmlFor="adm-color" className="block text-xs text-slate-300 mb-1">
-                        Cor do Player (#color:)
-                      </label>
+                  <div className="rounded-2xl bg-[#0c1224] border border-white/10 overflow-hidden">
+                    <div className="p-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
+                      <h2 className="font-display text-base font-bold text-white">
+                        Contas Cadastradas ({filteredUsers.length})
+                      </h2>
                       <input
-                        id="adm-color"
-                        type="text"
-                        value={playerConfig.defaultColorHex}
-                        onChange={(e) =>
-                          setPlayerConfig({
-                            ...playerConfig,
-                            defaultColorHex: e.target.value.replace('#', ''),
-                          })
-                        }
-                        className="w-full h-10 px-3 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+                        type="search"
+                        value={userSearch}
+                        onChange={(e) => setUserSearch(e.target.value)}
+                        placeholder="Filtrar por nome ou e-mail..."
+                        className="h-9 px-3.5 rounded-xl bg-black/40 border border-white/10 text-xs text-white w-full sm:w-64"
                       />
                     </div>
-                  </div>
-
-                  <div className="rounded-xl bg-black/30 border border-white/10 p-4 text-xs text-slate-300 space-y-1">
-                    <p className="font-semibold text-white">Padrão de roteamento ativo:</p>
-                    <p className="font-mono-tabular text-sky-300">
-                      Filmes: https://{playerConfig.defaultDomain}/embed/{'{TMDB_ID}'}?player={playerConfig.defaultPlayer}#color:{playerConfig.defaultColorHex}
-                    </p>
-                    <p className="font-mono-tabular text-sky-300">
-                      Séries: https://{playerConfig.defaultDomain}/embed/{'{TMDB_ID}'}/{'{SEASON}'}/{'{EPISODE}'}?player={playerConfig.defaultPlayer}#color:{playerConfig.defaultColorHex}
-                    </p>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer disabled:opacity-60"
-                    style={{ backgroundColor: 'var(--ms-accent)' }}
-                  >
-                    {saving ? 'Salvando...' : 'Salvar Configuração de Players'}
-                  </button>
-                </form>
-              )}
-
-              {/* TAB: USERS & PLANS */}
-              {activeTab === 'users' && (
-                <div className="rounded-2xl bg-[#0c1224] border border-white/10 overflow-hidden">
-                  <div className="p-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
-                    <h2 className="font-display text-base font-bold text-white">
-                      Contas Cadastradas ({filteredUsers.length})
-                    </h2>
-                    <input
-                      type="search"
-                      value={userSearch}
-                      onChange={(e) => setUserSearch(e.target.value)}
-                      placeholder="Filtrar por nome ou e-mail..."
-                      className="h-9 px-3.5 rounded-xl bg-black/40 border border-white/10 text-xs text-white w-full sm:w-64"
-                    />
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-white/10 text-xs text-slate-400">
-                          <th className="p-4">Nome</th>
-                          <th className="p-4">E-mail</th>
-                          <th className="p-4">Permissão</th>
-                          <th className="p-4">Plano</th>
-                          <th className="p-4">Status</th>
-                          <th className="p-4 text-right">Ações</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/10">
-                        {filteredUsers.map((u) => (
-                          <tr key={u.uid} className="hover:bg-white/5">
-                            <td className="p-4 font-semibold text-white">{u.name}</td>
-                            <td className="p-4 text-slate-300">{u.email}</td>
-                            <td className="p-4">
-                              <select
-                                value={u.role}
-                                onChange={(e) =>
-                                  void handleUserUpdate(u, {
-                                    role: e.target.value as 'user' | 'admin',
-                                  })
-                                }
-                                aria-label={`Permissão de ${u.email}`}
-                                className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-white"
-                              >
-                                <option value="user">Usuário</option>
-                                <option value="admin">Administrador</option>
-                              </select>
-                            </td>
-                            <td className="p-4">
-                              <select
-                                value={u.plan}
-                                onChange={(e) =>
-                                  void handleUserUpdate(u, { plan: e.target.value as PlanId })
-                                }
-                                aria-label={`Plano de ${u.email}`}
-                                className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-sky-300 uppercase"
-                              >
-                                <option value="free">Free</option>
-                                <option value="monthly">Mensal</option>
-                                <option value="quarterly">Trimestral</option>
-                                <option value="annual">Anual</option>
-                              </select>
-                            </td>
-                            <td className="p-4 text-xs">
-                              {u.blocked ? (
-                                <span className="text-red-300">Bloqueado</span>
-                              ) : (
-                                <span className="text-emerald-300">Ativo</span>
-                              )}
-                            </td>
-                            <td className="p-4 text-right">
-                              <button
-                                type="button"
-                                onClick={() => void handleUserUpdate(u, { blocked: !u.blocked })}
-                                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-white cursor-pointer"
-                              >
-                                {u.blocked ? 'Desbloquear' : 'Bloquear'}
-                              </button>
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-white/10 text-xs text-slate-400">
+                            <th className="p-4">Nome</th>
+                            <th className="p-4">E-mail</th>
+                            <th className="p-4">Permissão</th>
+                            <th className="p-4">Plano</th>
+                            <th className="p-4">Status</th>
+                            <th className="p-4 text-right">Ações</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-white/10">
+                          {filteredUsers.map((u) => (
+                            <tr key={u.uid} className="hover:bg-white/5">
+                              <td className="p-4 font-semibold text-white">{u.name}</td>
+                              <td className="p-4 text-slate-300">{u.email}</td>
+                              <td className="p-4">
+                                <select
+                                  value={u.role}
+                                  onChange={(e) =>
+                                    void handleUserUpdate(u, {
+                                      role: e.target.value as 'user' | 'admin',
+                                    })
+                                  }
+                                  aria-label={`Permissão de ${u.email}`}
+                                  className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-white"
+                                >
+                                  <option value="user">Usuário</option>
+                                  <option value="admin">Administrador</option>
+                                </select>
+                              </td>
+                              <td className="p-4">
+                                <select
+                                  value={u.plan}
+                                  onChange={(e) =>
+                                    void handleUserUpdate(u, { plan: e.target.value as PlanId })
+                                  }
+                                  aria-label={`Plano de ${u.email}`}
+                                  className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-xs text-sky-300 uppercase"
+                                >
+                                  <option value="free">Free</option>
+                                  <option value="monthly">Mensal</option>
+                                  <option value="quarterly">Trimestral</option>
+                                  <option value="annual">Anual</option>
+                                </select>
+                              </td>
+                              <td className="p-4 text-xs">
+                                {u.blocked ? (
+                                  <span className="text-red-300">Bloqueado</span>
+                                ) : (
+                                  <span className="text-emerald-300">Ativo</span>
+                                )}
+                              </td>
+                              <td className="p-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleUserUpdate(u, { blocked: !u.blocked })}
+                                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-white cursor-pointer whitespace-nowrap"
+                                >
+                                  {u.blocked ? 'Desbloquear' : 'Bloquear'}
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               )}
 
-              {/* TAB: LOGS & INTEGRATIONS */}
+              {/* TAB: LOGS, INTEGRATIONS & DIAGNOSTICS */}
               {activeTab === 'logs' && (
-                <div className="space-y-6">
-                  {integrations && (
-                    <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-4">
-                      <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
-                        <Layers className="w-4 h-4 text-sky-400" />
-                        Status das Integrações do Servidor
-                      </h2>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
-                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
-                          <p className="font-semibold text-white">TMDB API v3</p>
-                          <p
-                            className={
-                              integrations.tmdbConfigured
-                                ? 'text-emerald-300 text-xs'
-                                : 'text-amber-300 text-xs'
-                            }
-                          >
-                            {integrations.tmdbConfigured
-                              ? 'TMDB_ACCESS_TOKEN conectado'
-                              : 'Modo Demonstração'}
-                          </p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
-                          <p className="font-semibold text-white">Gemini IA</p>
-                          <p
-                            className={
-                              integrations.geminiConfigured
-                                ? 'text-emerald-300 text-xs'
-                                : 'text-amber-300 text-xs'
-                            }
-                          >
-                            {integrations.geminiConfigured
-                              ? 'GEMINI_API_KEY ativa no servidor'
-                              : 'Chave pendente nos Secrets'}
-                          </p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
-                          <p className="font-semibold text-white">MegaEmbed API</p>
-                          <p className="text-emerald-300 text-xs">
-                            mgeb.lat / mgeb.space ativo
-                          </p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-black/30 border border-white/10 space-y-1">
-                          <p className="font-semibold text-white">Firebase & Cloud</p>
-                          <p className="text-emerald-300 text-xs">
-                            Firestore & Auth conectados
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="rounded-2xl bg-[#0c1224] border border-white/10 p-6 space-y-3">
-                    <h2 className="font-display text-base font-bold text-white">
-                      Registros Recentes do Sistema
-                    </h2>
-                    <div className="space-y-2 max-h-[420px] overflow-y-auto font-mono-tabular text-xs">
-                      {logs.map((log) => (
-                        <div
-                          key={log.id}
-                          className="p-3 rounded-xl bg-black/35 border border-white/5 flex flex-wrap gap-3 items-baseline"
-                        >
-                          <span className="text-slate-500">
-                            {new Date(log.timestamp).toLocaleString('pt-BR')}
-                          </span>
-                          <span
-                            className={
-                              log.level === 'error'
-                                ? 'text-red-400'
-                                : log.level === 'warn'
-                                  ? 'text-amber-300'
-                                  : 'text-sky-300'
-                            }
-                          >
-                            [{log.service}]
-                          </span>
-                          <span className="text-slate-200">{log.message}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <AdminDiagnosticsTab
+                  integrations={integrations}
+                  logs={logs}
+                  diagnostics={diagnostics}
+                  testingTarget={testingTarget}
+                  onRunDiagnostic={(target) => void handleRunDiagnostic(target)}
+                  onRunAllDiagnostics={() => void handleRunAllDiagnostics()}
+                  onExportBackup={handleExportBackup}
+                  onClearCache={() => void handleClearCache()}
+                  onSyncCatalog={() => void handleSyncCatalog()}
+                />
               )}
             </>
           )}

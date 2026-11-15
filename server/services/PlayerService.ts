@@ -1,3 +1,4 @@
+import { toIsoTimestamp } from '../../shared/siteConfigUtils.ts';
 import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/types.ts';
 import { playerConfigStore } from '../config/playerConfig.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
@@ -15,17 +16,40 @@ class PlayerServiceImpl {
     }
 
     const remote = await FirestoreRestService.getDocument<{
+      sourceMode?: string;
       defaultDomain?: string;
+      fallbackDomain?: string;
+      autoFallback?: boolean;
       defaultPlayer?: string;
       defaultColorHex?: string;
+      customEmbedMovieTemplate?: string;
+      customEmbedTvTemplate?: string;
+      embedTimeoutSeconds?: number;
+      updatedAt?: unknown;
     }>('playerSettings/global');
 
     if (remote) {
-      playerConfigStore.updateConfig({
-        defaultDomain: remote.defaultDomain as PlayerConfig['defaultDomain'],
-        defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
-        defaultColorHex: remote.defaultColorHex,
-      });
+      const local = playerConfigStore.getConfig();
+      const localTs = Date.parse(local.updatedAt || '') || 0;
+      const remoteIso = toIsoTimestamp(remote.updatedAt, '');
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      if (localTs === 0 || remoteTs >= localTs || local.updatedAt === '2026-01-01T00:00:00.000Z') {
+        playerConfigStore.updateConfig(
+          {
+            sourceMode: remote.sourceMode as PlayerConfig['sourceMode'],
+            defaultDomain: remote.defaultDomain as PlayerConfig['defaultDomain'],
+            fallbackDomain: remote.fallbackDomain as PlayerConfig['fallbackDomain'],
+            autoFallback: remote.autoFallback,
+            defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
+            defaultColorHex: remote.defaultColorHex,
+            customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
+            customEmbedTvTemplate: remote.customEmbedTvTemplate,
+            embedTimeoutSeconds: remote.embedTimeoutSeconds,
+            updatedAt: remoteIso || undefined,
+          },
+          true
+        );
+      }
     }
 
     this.lastHydratedAt = Date.now();
@@ -46,7 +70,7 @@ class PlayerServiceImpl {
     repositoryStore.addLog({
       level: 'info',
       service: 'PlayerService',
-      message: `Configuração do player atualizada: ${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`,
+      message: `Configuração do player atualizada: modo=${updated.sourceMode}, domínio=${updated.defaultDomain} (${updated.defaultPlayer}, #${updated.defaultColorHex}).`,
     });
     return updated;
   }

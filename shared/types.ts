@@ -113,14 +113,31 @@ export interface PaginatedCatalogResponse {
   demoMode: boolean;
 }
 
+export type PlayerSourceMode = 'megaembed' | 'custom_template';
+
+export type CatalogSourceMode = 'auto' | 'tmdb' | 'demo' | 'custom_only';
+
+export type AiMode = 'auto' | 'gemini' | 'catalog_smart' | 'disabled';
+
+export type TmdbLanguage = 'pt-BR' | 'en-US' | 'es-ES';
+
+export type TmdbImageQuality = 'w342' | 'w500' | 'w780';
+
 export interface PlayerConfig {
+  sourceMode: PlayerSourceMode;
   defaultDomain: MegaEmbedDomain;
+  fallbackDomain: MegaEmbedDomain;
+  autoFallback: boolean;
   availableDomains: MegaEmbedDomain[];
   defaultPlayer: MegaEmbedPlayer;
   availablePlayers: MegaEmbedPlayer[];
   defaultColorHex: string;
+  customEmbedMovieTemplate: string;
+  customEmbedTvTemplate: string;
+  embedTimeoutSeconds: number;
   seriesSeasonEpisodeDocumented: boolean;
   seriesLimitationNote: string;
+  updatedAt?: string;
 }
 
 export interface EmbedPlayResponse {
@@ -251,14 +268,72 @@ export interface SystemLogEntry {
 
 export interface IntegrationStatus {
   tmdbConfigured: boolean;
+  tmdbRuntimeSource: CatalogSourceMode;
+  tmdbActiveTokenSource: 'env' | 'admin_override' | 'none';
   geminiConfigured: boolean;
+  geminiActiveKeySource: 'env' | 'admin_override' | 'none';
   firebaseConfigured: boolean;
   megaEmbedConfigured: boolean;
+  playerSourceMode: PlayerSourceMode;
   paymentGatewayConfigured: boolean;
   demoMode: boolean;
   cacheEntries: number;
   lastSyncAt: string | null;
   catalogSyncedCount: number;
+}
+
+export interface SystemSettings {
+  catalogSource: CatalogSourceMode;
+  tmdbBaseUrl: string;
+  tmdbImageBaseUrl: string;
+  tmdbLanguage: TmdbLanguage;
+  tmdbImageQuality: TmdbImageQuality;
+  includeAdult: boolean;
+  cacheTtlMinutes: number;
+  aiMode: AiMode;
+  aiMaxRecommendations: number;
+  allowRegistration: boolean;
+  requireAuthForPlayer: boolean;
+  allowGuestFavorites: boolean;
+  maxProfilesPerAccount: number;
+  defaultUserPlan: PlanId;
+  maintenanceMessage: string;
+  updatedAt: string;
+}
+
+export interface PublicRuntimeSettings {
+  allowRegistration: boolean;
+  requireAuthForPlayer: boolean;
+  allowGuestFavorites: boolean;
+  maxProfilesPerAccount: number;
+  maintenanceMessage: string;
+  aiEnabled: boolean;
+  embedTimeoutSeconds: number;
+  updatedAt: string;
+}
+
+export interface AdminSecretsStatus {
+  hasCustomTmdbToken: boolean;
+  tmdbTokenMask: string;
+  hasEnvTmdbToken: boolean;
+  hasCustomGeminiKey: boolean;
+  geminiKeyMask: string;
+  hasEnvGeminiKey: boolean;
+}
+
+export interface AdminSystemSettingsResponse {
+  settings: SystemSettings;
+  secretsStatus: AdminSecretsStatus;
+}
+
+export interface DiagnosticResult {
+  target: 'tmdb' | 'player' | 'firestore';
+  ok: boolean;
+  latencyMs: number;
+  statusCode?: number;
+  message: string;
+  detail?: string;
+  testedAt: string;
 }
 
 export interface AdminDashboardStats {
@@ -317,9 +392,10 @@ export interface CustomMediaItem {
 export type AdminTab =
   | 'dashboard'
   | 'site'
+  | 'apis'
+  | 'players'
   | 'catalog'
   | 'channels'
-  | 'players'
   | 'users'
   | 'logs';
 

@@ -4,6 +4,7 @@ import type { GenreItem, MediaItem } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class CatalogServiceImpl {
@@ -11,6 +12,7 @@ class CatalogServiceImpl {
   private syncedGenres: { movie: GenreItem[]; tv: GenreItem[] } = { movie: [], tv: [] };
 
   async syncCatalog(): Promise<{ count: number; syncedAt: string; source: 'tmdb' | 'demo' }> {
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const pages = TMDBService.isConfigured() ? [1, 2, 3] : [1];
 
     const [
@@ -77,7 +79,7 @@ class CatalogServiceImpl {
   }
 
   async getHomeSections() {
-    await SiteConfigService.ensureHydrated();
+    await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
     const cached = CacheService.get<Record<string, unknown>>('catalog:home');
     if (cached) return cached;
 
@@ -146,7 +148,8 @@ class CatalogServiceImpl {
       demoMode: popularMovies.demoMode,
     };
 
-    CacheService.set('catalog:home', payload, 5 * 60 * 1000);
+    const ttlMs = Math.max(1, SystemSettingsService.getSettings().cacheTtlMinutes || 5) * 60 * 1000;
+    CacheService.set('catalog:home', payload, ttlMs);
     return payload;
   }
 

@@ -1,10 +1,17 @@
 import {
   DEFAULT_PLAYER_CONFIG,
+  sanitizeEmbedTemplate,
+  sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
 } from '../../shared/playerUrl.ts';
-import type { MegaEmbedDomain, MegaEmbedPlayer, PlayerConfig } from '../../shared/types.ts';
+import type {
+  MegaEmbedDomain,
+  MegaEmbedPlayer,
+  PlayerConfig,
+  PlayerSourceMode,
+} from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 
 class PlayerConfigStore {
@@ -13,11 +20,38 @@ class PlayerConfigStore {
     if (!stored) {
       return { ...DEFAULT_PLAYER_CONFIG };
     }
+    const sourceMode: PlayerSourceMode =
+      stored.sourceMode === 'custom_template' ? 'custom_template' : 'megaembed';
     return {
       ...DEFAULT_PLAYER_CONFIG,
-      defaultDomain: validateMegaEmbedDomain(stored.defaultDomain, DEFAULT_PLAYER_CONFIG.defaultDomain),
-      defaultPlayer: validateMegaEmbedPlayer(stored.defaultPlayer, DEFAULT_PLAYER_CONFIG.defaultPlayer),
-      defaultColorHex: sanitizeHexColor(stored.defaultColorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex),
+      sourceMode,
+      defaultDomain: validateMegaEmbedDomain(
+        stored.defaultDomain,
+        DEFAULT_PLAYER_CONFIG.defaultDomain
+      ),
+      fallbackDomain: validateMegaEmbedDomain(
+        stored.fallbackDomain,
+        DEFAULT_PLAYER_CONFIG.fallbackDomain
+      ),
+      autoFallback:
+        typeof stored.autoFallback === 'boolean'
+          ? stored.autoFallback
+          : DEFAULT_PLAYER_CONFIG.autoFallback,
+      defaultPlayer: validateMegaEmbedPlayer(
+        stored.defaultPlayer,
+        DEFAULT_PLAYER_CONFIG.defaultPlayer
+      ),
+      defaultColorHex: sanitizeHexColor(
+        stored.defaultColorHex,
+        DEFAULT_PLAYER_CONFIG.defaultColorHex
+      ),
+      customEmbedMovieTemplate: sanitizeEmbedTemplate(stored.customEmbedMovieTemplate),
+      customEmbedTvTemplate: sanitizeEmbedTemplate(stored.customEmbedTvTemplate),
+      embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
+        stored.embedTimeoutSeconds,
+        DEFAULT_PLAYER_CONFIG.embedTimeoutSeconds
+      ),
+      updatedAt: stored.updatedAt ?? DEFAULT_PLAYER_CONFIG.updatedAt,
     };
   }
 
@@ -25,12 +59,26 @@ class PlayerConfigStore {
     return this.getPersisted();
   }
 
-  updateConfig(partial: Partial<PlayerConfig>): PlayerConfig {
+  updateConfig(partial: Partial<PlayerConfig>, preserveUpdatedAt = false): PlayerConfig {
     const current = this.getPersisted();
+
+    const nextSourceMode: PlayerSourceMode =
+      partial.sourceMode === 'custom_template'
+        ? 'custom_template'
+        : partial.sourceMode === 'megaembed'
+          ? 'megaembed'
+          : current.sourceMode;
 
     const nextDomain: MegaEmbedDomain = partial.defaultDomain
       ? validateMegaEmbedDomain(partial.defaultDomain, current.defaultDomain)
       : current.defaultDomain;
+
+    const nextFallback: MegaEmbedDomain = partial.fallbackDomain
+      ? validateMegaEmbedDomain(partial.fallbackDomain, current.fallbackDomain)
+      : current.fallbackDomain;
+
+    const nextAutoFallback =
+      typeof partial.autoFallback === 'boolean' ? partial.autoFallback : current.autoFallback;
 
     const nextPlayer: MegaEmbedPlayer = partial.defaultPlayer
       ? validateMegaEmbedPlayer(partial.defaultPlayer, current.defaultPlayer)
@@ -40,10 +88,37 @@ class PlayerConfigStore {
       ? sanitizeHexColor(partial.defaultColorHex, current.defaultColorHex)
       : current.defaultColorHex;
 
+    const nextMovieTpl =
+      partial.customEmbedMovieTemplate !== undefined
+        ? sanitizeEmbedTemplate(partial.customEmbedMovieTemplate)
+        : current.customEmbedMovieTemplate;
+
+    const nextTvTpl =
+      partial.customEmbedTvTemplate !== undefined
+        ? sanitizeEmbedTemplate(partial.customEmbedTvTemplate)
+        : current.customEmbedTvTemplate;
+
+    const nextTimeout =
+      partial.embedTimeoutSeconds !== undefined
+        ? sanitizeEmbedTimeoutSeconds(partial.embedTimeoutSeconds, current.embedTimeoutSeconds)
+        : current.embedTimeoutSeconds;
+
+    const updatedAt =
+      preserveUpdatedAt && partial.updatedAt
+        ? partial.updatedAt
+        : new Date().toISOString();
+
     repositoryStore.savePlayerSettings({
+      sourceMode: nextSourceMode,
       defaultDomain: nextDomain,
+      fallbackDomain: nextFallback,
+      autoFallback: nextAutoFallback,
       defaultPlayer: nextPlayer,
       defaultColorHex: nextColor,
+      customEmbedMovieTemplate: nextMovieTpl,
+      customEmbedTvTemplate: nextTvTpl,
+      embedTimeoutSeconds: nextTimeout,
+      updatedAt,
     });
 
     return this.getPersisted();

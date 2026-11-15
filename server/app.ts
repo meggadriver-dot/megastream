@@ -20,6 +20,7 @@ import { ProfileService } from './services/ProfileService.ts';
 import { RecommendationService } from './services/RecommendationService.ts';
 import { SiteConfigService } from './services/SiteConfigService.ts';
 import { SubscriptionService } from './services/SubscriptionService.ts';
+import { SystemSettingsService } from './services/SystemSettingsService.ts';
 import { TMDBService } from './services/TMDBService.ts';
 import { UserService } from './services/UserService.ts';
 
@@ -31,7 +32,8 @@ export function createApiApp(): Express {
   app.use('/api', rateLimitMiddleware(240, 60_000));
 
   // --- Healthcheck ---
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', async (_req, res) => {
+    await SystemSettingsService.ensureHydrated().catch(() => null);
     res.json({
       ok: true,
       service: 'megastream-api',
@@ -45,6 +47,15 @@ export function createApiApp(): Express {
   app.get('/api/site-config', async (_req, res, next) => {
     try {
       res.json(await SiteConfigService.getConfigAsync());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- Public Runtime Policies (No Secrets, No Embed Domains) ---
+  app.get('/api/system-config', async (_req, res, next) => {
+    try {
+      res.json(await SystemSettingsService.getPublicRuntimeSettingsAsync());
     } catch (err) {
       next(err);
     }
@@ -245,8 +256,13 @@ export function createApiApp(): Express {
     }
   });
 
-  app.get('/api/player/movie/:tmdbId', async (req, res) => {
+  app.get('/api/player/movie/:tmdbId', optionalAuth, async (req: AuthenticatedRequest, res) => {
     try {
+      await SystemSettingsService.ensureHydrated();
+      const sys = SystemSettingsService.getSettings();
+      if (sys.requireAuthForPlayer && !req.identity) {
+        return res.status(401).json({ error: 'Faça login na plataforma para assistir a este título.' });
+      }
       const payload = await PlayerService.resolveStreamAsync({
         tmdbId: req.params.tmdbId,
         mediaType: 'movie',
@@ -261,8 +277,13 @@ export function createApiApp(): Express {
     }
   });
 
-  app.get('/api/player/tv/:tmdbId', async (req, res) => {
+  app.get('/api/player/tv/:tmdbId', optionalAuth, async (req: AuthenticatedRequest, res) => {
     try {
+      await SystemSettingsService.ensureHydrated();
+      const sys = SystemSettingsService.getSettings();
+      if (sys.requireAuthForPlayer && !req.identity) {
+        return res.status(401).json({ error: 'Faça login na plataforma para assistir a esta série.' });
+      }
       const seasonNumber =
         typeof req.query.season === 'string' && req.query.season.trim() !== ''
           ? Number(req.query.season)
@@ -526,6 +547,37 @@ export function createApiApp(): Express {
   app.put('/api/admin/site-config', requireAdmin, (req, res) => {
     const updated = SiteConfigService.updateConfig(req.body ?? {});
     res.json(updated);
+  });
+
+  app.get('/api/admin/system-settings', requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await SystemSettingsService.getAdminPayloadAsync());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/admin/system-settings', requireAdmin, (req, res) => {
+    const updated = SystemSettingsService.updateSettings(req.body ?? {});
+    res.json(updated);
+  });
+
+  app.post('/api/admin/system-settings/reset', requireAdmin, (_req, res) => {
+    const reset = SystemSettingsService.resetSettingsToDefaults();
+    res.json(reset);
+  });
+
+  app.post('/api/admin/diagnostics/test', requireAdmin, async (req, res, next) => {
+    try {
+      const target =
+        req.body?.target === 'player' || req.body?.target === 'firestore'
+          ? req.body.target
+          : 'tmdb';
+      const result = await AdminService.runDiagnostic(target);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.get('/api/admin/catalog/custom', requireAdmin, async (_req, res, next) => {

@@ -18,14 +18,21 @@ export const ALLOWED_MEGAEMBED_PLAYERS: readonly MegaEmbedPlayer[] = [
 ] as const;
 
 export const DEFAULT_PLAYER_CONFIG: PlayerConfig = {
+  sourceMode: 'megaembed',
   defaultDomain: 'mgeb.lat',
+  fallbackDomain: 'mgeb.space',
+  autoFallback: true,
   availableDomains: ['mgeb.lat', 'mgeb.space'],
   defaultPlayer: 'vidstack',
   availablePlayers: ['vidstack', 'megaplay', 'megatube', 'clappr'],
   defaultColorHex: '00a8ff',
+  customEmbedMovieTemplate: '',
+  customEmbedTvTemplate: '',
+  embedTimeoutSeconds: 12,
   seriesSeasonEpisodeDocumented: true,
   seriesLimitationNote:
     'Séries utilizam o endpoint oficial /embed/{TMDB_ID}/{TEMPORADA}/{EPISODIO} com ?player= e #color:.',
+  updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
 export function sanitizeHexColor(input?: string | null, fallback = '00a8ff'): string {
@@ -41,6 +48,20 @@ export function sanitizeHexColor(input?: string | null, fallback = '00a8ff'): st
       .join('');
   }
   return fallback;
+}
+
+export function sanitizeEmbedTemplate(input?: string | null): string {
+  if (!input || typeof input !== 'string') return '';
+  const trimmed = input.trim().slice(0, 500);
+  if (!trimmed) return '';
+  if (!/^https?:\/\//i.test(trimmed)) return '';
+  return trimmed;
+}
+
+export function sanitizeEmbedTimeoutSeconds(value: unknown, fallback = 12): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(5, Math.min(30, Math.round(n)));
 }
 
 export function validateMegaEmbedDomain(
@@ -124,6 +145,33 @@ export function buildMegaEmbedUrl(params: {
   }
 
   return `https://${domain}/embed/${validId}?player=${encodeURIComponent(player)}#color:${color}`;
+}
+
+export function buildCustomEmbedUrl(params: {
+  template: string;
+  tmdbId: number;
+  mediaType?: MediaType;
+  seasonNumber?: number | string | null;
+  episodeNumber?: number | string | null;
+  player?: string | null;
+  colorHex?: string | null;
+}): string | null {
+  const cleanTemplate = sanitizeEmbedTemplate(params.template);
+  const validId = normalizeTmdbId(params.tmdbId);
+  if (!cleanTemplate || !validId) return null;
+
+  const season = normalizeSeasonNumber(params.seasonNumber, 1);
+  const episode = normalizeEpisodeNumber(params.episodeNumber, 1);
+  const player = validateMegaEmbedPlayer(params.player, DEFAULT_PLAYER_CONFIG.defaultPlayer);
+  const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
+
+  return cleanTemplate
+    .replace(/\{tmdbId\}|\{TMDB_ID\}|\{id\}/g, String(validId))
+    .replace(/\{season\}|\{SEASON\}|\{temporada\}/g, String(season))
+    .replace(/\{episode\}|\{EPISODE\}|\{episodio\}/g, String(episode))
+    .replace(/\{player\}/g, encodeURIComponent(player))
+    .replace(/\{color\}/g, color)
+    .replace(/\{type\}/g, params.mediaType === 'tv' ? 'tv' : 'movie');
 }
 
 export function buildTmdbImageUrl(

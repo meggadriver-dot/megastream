@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { UserProfile } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
+import { SystemSettingsService } from './SystemSettingsService.ts';
 
 const ADMIN_EMAILS = new Set(['meggadriver@gmail.com']);
 
@@ -98,12 +99,14 @@ class AuthenticationServiceImpl {
       return existing;
     }
 
+    const defaultPlan = SystemSettingsService.getSettings().defaultUserPlan || 'free';
+
     const created: UserProfile = {
       uid: identity.uid,
       name: identity.name,
       email: identity.email,
       photoUrl: identity.picture,
-      plan: 'free',
+      plan: defaultPlan,
       role: isBootAdmin ? 'admin' : 'user',
       blocked: false,
       preferredTheme: 'cinematografico',

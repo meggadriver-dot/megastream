@@ -63,6 +63,7 @@ import {
   OperationType,
 } from '../lib/firebase';
 import { apiRequest } from '../services/apiClient';
+import { useSiteConfig } from './SiteConfigContext';
 import { useTheme } from './ThemeContext';
 
 const LOCAL_FAVS_KEY = 'megastream_guest_favorites';
@@ -206,6 +207,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     readLocalJson<HistoryItem[]>(getGuestHistoryKey(activeProfileId), [])
   );
   const { setTheme } = useTheme();
+  const { runtimeSettings } = useSiteConfig();
   const syncInFlightRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
 
   const profiles: StreamProfile[] = useMemo(
@@ -761,8 +763,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createProfile = async (input: ProfileFormInput): Promise<StreamProfile> => {
-    if (storedProfiles.length >= MAX_PROFILES_PER_ACCOUNT) {
-      throw new Error(`Limite máximo de ${MAX_PROFILES_PER_ACCOUNT} perfis atingido.`);
+    const maxProfiles = Math.max(
+      1,
+      Math.min(8, runtimeSettings.maxProfilesPerAccount || MAX_PROFILES_PER_ACCOUNT)
+    );
+    if (storedProfiles.length >= maxProfiles) {
+      throw new Error(`Limite máximo de ${maxProfiles} perfis atingido.`);
     }
     const cleanPin = (input.pin ?? '').trim();
     if (cleanPin.length > 0 && !validateProfilePin(cleanPin)) {
@@ -1125,6 +1131,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Guest local persistence scoped by active profile
+    if (!exists && !runtimeSettings.allowGuestFavorites) {
+      return;
+    }
     const favKey = getGuestFavoritesKey(activeProfileId);
     if (exists) {
       const next = favorites.filter(
