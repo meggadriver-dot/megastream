@@ -19,6 +19,7 @@ import { PlayerService } from './services/PlayerService.ts';
 import { ProfileService } from './services/ProfileService.ts';
 import { RecommendationService } from './services/RecommendationService.ts';
 import { SiteConfigService } from './services/SiteConfigService.ts';
+import { StreamResolverService } from './services/StreamResolverService.ts';
 import { SubscriptionService } from './services/SubscriptionService.ts';
 import { SystemSettingsService } from './services/SystemSettingsService.ts';
 import { TMDBService } from './services/TMDBService.ts';
@@ -256,6 +257,26 @@ export function createApiApp(): Express {
     }
   });
 
+  app.get('/api/player/hls/:token/playlist.m3u8', async (req, res) => {
+    await StreamResolverService.handleHlsManifestRequest(req.params.token, req, res);
+  });
+
+  app.get('/api/player/video/:token', async (req, res) => {
+    await StreamResolverService.handleHlsManifestRequest(req.params.token, req, res);
+  });
+
+  app.get('/api/player/hls/:token/seg', async (req, res) => {
+    const targetUrl = typeof req.query.u === 'string' ? req.query.u : '';
+    if (!targetUrl) {
+      return res.status(400).json({ error: 'Parâmetro de segmento ausente.' });
+    }
+    await StreamResolverService.handleHlsSegmentRequest(req.params.token, targetUrl, req, res);
+  });
+
+  app.get('/api/player/subtitle/:subId.vtt', async (req, res) => {
+    await StreamResolverService.handleSubtitleVttRequest(req.params.subId, res);
+  });
+
   app.get('/api/player/movie/:tmdbId', optionalAuth, async (req: AuthenticatedRequest, res) => {
     try {
       await SystemSettingsService.ensureHydrated();
@@ -274,6 +295,11 @@ export function createApiApp(): Express {
         streamKind: payload.streamKind ?? 'iframe',
         sandboxPolicy: payload.sandboxPolicy ?? 'strict_no_ads',
         referrerPolicy: payload.referrerPolicy,
+        branding: payload.branding,
+        audioOptions: payload.audioOptions,
+        subtitles: payload.subtitles,
+        posterUrl: payload.posterUrl,
+        streamUnavailableReason: payload.streamUnavailableReason ?? null,
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao carregar reprodução.' });
@@ -310,6 +336,11 @@ export function createApiApp(): Express {
         referrerPolicy: payload.referrerPolicy,
         seasonNumber: payload.seasonNumber,
         episodeNumber: payload.episodeNumber,
+        branding: payload.branding,
+        audioOptions: payload.audioOptions,
+        subtitles: payload.subtitles,
+        posterUrl: payload.posterUrl,
+        streamUnavailableReason: payload.streamUnavailableReason ?? null,
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao carregar reprodução.' });
@@ -597,6 +628,7 @@ export function createApiApp(): Express {
   app.post('/api/admin/catalog/custom', requireAdmin, (req, res) => {
     try {
       const saved = SiteConfigService.upsertCustomMedia(req.body ?? {});
+      StreamResolverService.clearCache();
       res.status(201).json(saved);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Erro ao salvar mídia.' });
@@ -606,6 +638,7 @@ export function createApiApp(): Express {
   app.delete('/api/admin/catalog/custom/:id', requireAdmin, (req, res) => {
     const removed = SiteConfigService.deleteCustomMedia(req.params.id);
     if (!removed) return res.status(404).json({ error: 'Mídia personalizada não encontrada.' });
+    StreamResolverService.clearCache();
     res.json({ removed: true });
   });
 
@@ -619,6 +652,7 @@ export function createApiApp(): Express {
   });
 
   app.post('/api/admin/cache/clear', requireAdmin, (_req, res) => {
+    StreamResolverService.clearCache();
     const cleared = AdminService.clearCache();
     res.json({ cleared });
   });

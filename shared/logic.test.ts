@@ -5,21 +5,34 @@ import {
   buildCustomEmbedUrl,
   buildMegaEmbedUrl,
   buildMyEmbedUrl,
+  buildOrderedSourceCascade,
   buildTmdbImageUrl,
   buildWatchaFlixEmbedUrl,
   detectStreamKind,
+  extractPlayerBranding,
   normalizeMyEmbedBaseUrl,
   normalizeTmdbId,
   normalizeWatchaFlixBaseUrl,
   resolveHydratedSourceMode,
   resolveSandboxPolicy,
+  sanitizeAutoNextCountdownSeconds,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
+  sanitizeImdbId,
+  sanitizeWatermarkLogoUrl,
+  sanitizeWatermarkOpacity,
+  sanitizeWatermarkText,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
+  validatePlayerAspectMode,
   validatePlayerSourceMode,
+  validateSubtitleBg,
+  validateSubtitleColor,
+  validateSubtitleSize,
   validateWatchaFlixLang,
+  validateWatermarkPosition,
+  validateWatermarkSize,
 } from './playerUrl.ts';
 import {
   DEFAULT_SYSTEM_SETTINGS,
@@ -65,10 +78,30 @@ import {
   mergeHistoryLists,
 } from './userLibraryUtils.ts';
 import {
+  SKIP_NEXT_FINAL_WINDOW_SECONDS,
   isPlayerRoute,
   isTrackableNonPlayerRoute,
+  parsePlayerPostMessageEvent,
+  resolveNextEpisode,
   resolvePlayerBackTarget,
+  shouldShowSkipNextInPlayer,
 } from './playerNavigation.ts';
+import {
+  buildHlsProxyPlaylist,
+  convertSrtToVtt,
+  decodeSubtitleBuffer,
+  detectMediaKindFromBytesOrHeaders,
+  extractEmbedPlayerHash,
+  extractNestedEmbedUrls,
+  extractPlayableStreamFromBody,
+  extractPlaylistHosts,
+  formatSubtitleLangLabel,
+  isAllowedSubtitleHost,
+  isCloudflareChallengeHtml,
+  isSafePublicHost,
+  parseVttCues,
+  resolveSegmentMimeType,
+} from './subtitleUtils.ts';
 import type { MediaItem } from './types.ts';
 
 test('buildFavoriteRecord and buildHistoryRecord clamp values and preserve order on merge', () => {
@@ -623,9 +656,10 @@ test('WatchaFlix URL normalization, embed building, and source mode validation w
   );
 });
 
-test('myembed fast source, streamKind detection, and anti-ad sandbox policy work cleanly', () => {
-  assert.equal(DEFAULT_PLAYER_CONFIG.sourceMode, 'myembed');
+test('megastream_watcha primary player, myembed fast source, streamKind detection, and anti-ad sandbox policy work cleanly', () => {
+  assert.equal(DEFAULT_PLAYER_CONFIG.sourceMode, 'megastream_watcha');
   assert.equal(DEFAULT_PLAYER_CONFIG.antiAdSandbox, true);
+  assert.equal(validatePlayerSourceMode('megastream_watcha'), 'megastream_watcha');
   assert.equal(validatePlayerSourceMode('myembed'), 'myembed');
   assert.equal(normalizeMyEmbedBaseUrl('https://embedmovies.org/'), 'https://myembed.biz');
   assert.equal(normalizeMyEmbedBaseUrl('https://myembed.biz/filme/693134'), 'https://myembed.biz');
@@ -678,4 +712,608 @@ test('myembed fast source, streamKind detection, and anti-ad sandbox policy work
     }),
     'custom_template'
   );
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'myembed',
+      remoteAntiAdSandbox: true,
+      remoteHasPrincipalFields: false,
+      fallback: 'megastream_watcha',
+    }),
+    'megastream_watcha'
+  );
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'myembed',
+      remoteAntiAdSandbox: true,
+      remoteHasPrincipalFields: true,
+      fallback: 'megastream_watcha',
+    }),
+    'myembed'
+  );
+  assert.equal(
+    resolveHydratedSourceMode({
+      remoteSourceMode: 'megastream_watcha',
+      remoteAntiAdSandbox: true,
+      remoteHasPrincipalFields: true,
+      fallback: 'megastream_watcha',
+    }),
+    'megastream_watcha'
+  );
 });
+
+test('resolveNextEpisode handles same-season next, TMDB fallback, cross-season rollover, and series finale', () => {
+  const seasons = [
+    { id: 1, seasonNumber: 0, name: 'Especiais', overview: '', episodeCount: 3, airDate: '', posterPath: null },
+    { id: 2, seasonNumber: 1, name: 'Temporada 1', overview: '', episodeCount: 2, airDate: '2020-01-01', posterPath: null },
+    { id: 3, seasonNumber: 2, name: 'Temporada 2', overview: '', episodeCount: 5, airDate: '2021-01-01', posterPath: null },
+  ];
+  const s1Episodes = [
+    {
+      id: 101,
+      episodeNumber: 1,
+      seasonNumber: 1,
+      name: 'Piloto',
+      overview: '',
+      stillPath: null,
+      airDate: '2020-01-01',
+      runtime: 45,
+      voteAverage: 8.1,
+    },
+    {
+      id: 102,
+      episodeNumber: 2,
+      seasonNumber: 1,
+      name: 'O Despertar',
+      overview: '',
+      stillPath: null,
+      airDate: '2020-01-08',
+      runtime: 48,
+      voteAverage: 8.5,
+    },
+  ];
+
+  // Next episode in same season
+  assert.deepEqual(
+    resolveNextEpisode({
+      currentSeason: 1,
+      currentEpisode: 1,
+      seasons,
+      episodes: s1Episodes,
+    }),
+    {
+      seasonNumber: 1,
+      episodeNumber: 2,
+      title: 'O Despertar',
+      isNewSeason: false,
+    }
+  );
+
+  // Cross-season rollover at end of season 1
+  assert.deepEqual(
+    resolveNextEpisode({
+      currentSeason: 1,
+      currentEpisode: 2,
+      seasons,
+      episodes: s1Episodes,
+    }),
+    {
+      seasonNumber: 2,
+      episodeNumber: 1,
+      title: 'Temporada 2 · Ep. 1',
+      isNewSeason: true,
+    }
+  );
+
+  // Skipping season 0 specials when moving forward from season 0
+  assert.deepEqual(
+    resolveNextEpisode({
+      currentSeason: 0,
+      currentEpisode: 3,
+      seasons,
+      episodes: [],
+    }),
+    {
+      seasonNumber: 1,
+      episodeNumber: 1,
+      title: 'Temporada 1 · Ep. 1',
+      isNewSeason: true,
+    }
+  );
+
+  // TMDB season metadata fallback when episodes list hasn't loaded yet
+  assert.deepEqual(
+    resolveNextEpisode({
+      currentSeason: 2,
+      currentEpisode: 2,
+      seasons,
+      episodes: [],
+    }),
+    {
+      seasonNumber: 2,
+      episodeNumber: 3,
+      title: 'Episódio 3',
+      isNewSeason: false,
+    }
+  );
+
+  // Series finale returns null
+  assert.equal(
+    resolveNextEpisode({
+      currentSeason: 2,
+      currentEpisode: 5,
+      seasons,
+      episodes: [],
+    }),
+    null
+  );
+});
+
+test('parsePlayerPostMessageEvent detects completion signals safely', () => {
+  assert.deepEqual(parsePlayerPostMessageEvent('ended'), { ended: true });
+  assert.deepEqual(parsePlayerPostMessageEvent('MEDIA_ENDED'), { ended: true });
+  assert.deepEqual(parsePlayerPostMessageEvent('{"event":"complete"}'), { ended: true });
+  assert.deepEqual(parsePlayerPostMessageEvent({ type: 'next_episode' }), {
+    ended: true,
+    nextRequested: true,
+  });
+  assert.deepEqual(parsePlayerPostMessageEvent({ currentTime: 2519, duration: 2520 }), {
+    ended: true,
+  });
+  assert.deepEqual(parsePlayerPostMessageEvent({ currentTime: 120, duration: 2520 }), {
+    ended: false,
+  });
+  assert.deepEqual(parsePlayerPostMessageEvent('invalid-message'), { ended: false });
+  assert.deepEqual(parsePlayerPostMessageEvent(null), { ended: false });
+});
+
+test('extractPlayerBranding, watermark sanitizers, and IMDb EmbedMovies building enforce bounds', () => {
+  assert.equal(sanitizeWatermarkOpacity(0.05), 0.15);
+  assert.equal(sanitizeWatermarkOpacity(2.5), 1);
+  assert.equal(sanitizeWatermarkOpacity('invalid', 0.85), 0.85);
+
+  assert.equal(sanitizeAutoNextCountdownSeconds(1), 3);
+  assert.equal(sanitizeAutoNextCountdownSeconds(99), 30);
+  assert.equal(sanitizeAutoNextCountdownSeconds('bad', 8), 8);
+
+  assert.equal(sanitizeWatermarkLogoUrl('javascript:alert(1)'), '');
+  assert.equal(sanitizeWatermarkLogoUrl('/src/assets/images/logo.png'), '/src/assets/images/logo.png');
+  assert.equal(sanitizeWatermarkLogoUrl('https://cdn.example.com/logo.svg'), 'https://cdn.example.com/logo.svg');
+  assert.equal(sanitizeWatermarkText('  <b>MegaStream</b>  HD  '), 'bMegaStream/b HD');
+
+  assert.equal(validateWatermarkPosition('bottom-right'), 'bottom-right');
+  assert.equal(validateWatermarkPosition('center', 'top-left'), 'top-left');
+  assert.equal(validateWatermarkSize('lg'), 'lg');
+  assert.equal(validateWatermarkSize('xl', 'md'), 'md');
+
+  assert.equal(sanitizeImdbId('TT15239678'), 'tt15239678');
+  assert.equal(sanitizeImdbId('not-imdb'), null);
+
+  assert.equal(validatePlayerAspectMode('cinema'), 'cinema');
+  assert.equal(validatePlayerAspectMode('invalid', 'contain'), 'contain');
+  assert.equal(validateSubtitleSize('lg'), 'lg');
+  assert.equal(validateSubtitleSize('bad', 'md'), 'md');
+  assert.equal(validateSubtitleColor('yellow'), 'yellow');
+  assert.equal(validateSubtitleColor('purple', 'white'), 'white');
+  assert.equal(validateSubtitleBg('shadow'), 'shadow');
+  assert.equal(validateSubtitleBg('unknown', 'box'), 'box');
+
+  const branding = extractPlayerBranding({
+    defaultColorHex: '#e50914',
+    watchaflixLang: 'en',
+    defaultAspectMode: 'cinema',
+    autoEnableSubtitles: true,
+    defaultSubtitleSize: 'lg',
+    defaultSubtitleColor: 'yellow',
+    defaultSubtitleBg: 'shadow',
+    allowTvCast: false,
+    allowPipMode: true,
+    allowTheaterMode: false,
+    watermarkEnabled: true,
+    watermarkText: 'MegaStream VIP',
+    watermarkLogoUrl: 'https://cdn.example.com/ms.png',
+    watermarkPosition: 'bottom-left',
+    watermarkOpacity: 0.7,
+    watermarkSize: 'lg',
+    autoNextEpisode: true,
+    autoNextCountdownSeconds: 5,
+  });
+
+  assert.deepEqual(branding, {
+    colorHex: 'e50914',
+    preferredLang: 'en',
+    defaultAspectMode: 'cinema',
+    autoEnableSubtitles: true,
+    defaultSubtitleSize: 'lg',
+    defaultSubtitleColor: 'yellow',
+    defaultSubtitleBg: 'shadow',
+    allowTvCast: false,
+    allowPipMode: true,
+    allowTheaterMode: false,
+    watermarkEnabled: true,
+    watermarkText: 'MegaStream VIP',
+    watermarkLogoUrl: 'https://cdn.example.com/ms.png',
+    watermarkPosition: 'bottom-left',
+    watermarkOpacity: 0.7,
+    watermarkSize: 'lg',
+    autoNextEpisode: true,
+    autoNextCountdownSeconds: 5,
+  });
+
+  assert.equal(
+    buildMyEmbedUrl({
+      tmdbId: 693134,
+      imdbId: 'tt15239678',
+      preferImdbForMovies: true,
+      mediaType: 'movie',
+    }),
+    'https://myembed.biz/filme/tt15239678'
+  );
+  assert.equal(
+    buildMyEmbedUrl({
+      tmdbId: 693134,
+      imdbId: 'invalid',
+      preferImdbForMovies: true,
+      mediaType: 'movie',
+    }),
+    'https://myembed.biz/filme/693134'
+  );
+  assert.equal(
+    buildMyEmbedUrl({
+      tmdbId: 693134,
+      imdbId: 'tt15239678',
+      preferImdbForMovies: false,
+      mediaType: 'movie',
+    }),
+    'https://myembed.biz/filme/693134'
+  );
+  assert.equal(
+    buildCustomEmbedUrl({
+      template: 'https://embed.example.com/filme/{imdbId}',
+      tmdbId: 693134,
+      imdbId: 'tt15239678',
+      mediaType: 'movie',
+    }),
+    'https://embed.example.com/filme/tt15239678'
+  );
+});
+
+test('subtitle utilities, HLS proxy rewriter, and clean watermark defaults work accurately', () => {
+  assert.equal(DEFAULT_PLAYER_CONFIG.watermarkEnabled, false);
+  assert.equal(formatSubtitleLangLabel('pob'), 'Português (BR)');
+  assert.equal(formatSubtitleLangLabel('eng'), 'Inglês');
+  assert.equal(formatSubtitleLangLabel('spa'), 'Espanhol');
+
+  assert.equal(isAllowedSubtitleHost('https://subs5.strem.io/en/download/sub.srt'), true);
+  assert.equal(isAllowedSubtitleHost('http://subs5.strem.io/en/download/sub.srt'), false);
+  assert.equal(isAllowedSubtitleHost('https://evil.example.com/sub.srt'), false);
+
+  const rawSrt =
+    '\uFEFF1\r\n00:00:01,500 --> 00:00:04,000\r\n{\\an8}<font color="#fff">Olá, mundo!</font>\r\nSegunda linha\r\n\r\n2\r\n00:00:05,000 --> 00:00:07,250\r\nTeste de legenda\r\n';
+  const vtt = convertSrtToVtt(rawSrt, 1.5);
+  assert.equal(vtt.startsWith('WEBVTT'), true);
+  assert.equal(vtt.includes('00:00:03.000 --> 00:00:05.500'), true);
+  assert.equal(vtt.includes('{\\an8}'), false);
+  assert.equal(vtt.includes('<font'), false);
+
+  const cues = parseVttCues(vtt);
+  assert.equal(cues.length, 2);
+  assert.equal(cues[0].start, 3);
+  assert.equal(cues[0].end, 5.5);
+  assert.equal(cues[0].text, 'Olá, mundo!\nSegunda linha');
+  assert.equal(cues[1].start, 6.5);
+  assert.equal(cues[1].text, 'Teste de legenda');
+
+  const rawPlaylist = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    '#EXT-X-MAP:URI="init.mp4"',
+    '#EXT-X-KEY:METHOD=AES-128,URI="https://cdn.example.com/key.bin"',
+    '#EXTINF:6.000,',
+    '0000.js',
+  ].join('\n');
+  const rewritten = buildHlsProxyPlaylist(
+    rawPlaylist,
+    'https://cdn.example.com/stream/playlist.m3u8?md5=abc',
+    '/api/player/hls/tok123/seg'
+  );
+  assert.equal(
+    rewritten.includes('#EXT-X-MAP:URI="/api/player/hls/tok123/seg?u=https%3A%2F%2Fcdn.example.com%2Fstream%2Finit.mp4"'),
+    true
+  );
+  assert.equal(
+    rewritten.includes('/api/player/hls/tok123/seg?u=https%3A%2F%2Fcdn.example.com%2Fstream%2F0000.js'),
+    true
+  );
+
+  // Valid UTF-8 accented Portuguese decodes cleanly without CP1252 mojibake
+  const utf8Bytes = new TextEncoder().encode('Aqui está a Água da Vida — Ação!');
+  assert.equal(decodeSubtitleBuffer(utf8Bytes), 'Aqui está a Água da Vida — Ação!');
+
+  // True CP1252 legacy bytes fall back cleanly to windows-1252
+  const cp1252Bytes = new Uint8Array([0x43, 0x6f, 0x72, 0x61, 0xe7, 0xe3, 0x6f]); // "Coração"
+  assert.equal(decodeSubtitleBuffer(cp1252Bytes), 'Coração');
+});
+
+test('multi-CDN HLS proxy helpers validate public hosts, extract playlist hosts, normalize disguised MIME, and parse embedplayer hash', () => {
+  assert.equal(isSafePublicHost('eloialu6.xyz'), true);
+  assert.equal(isSafePublicHost('cdn.hclod.qzz.io'), true);
+  assert.equal(isSafePublicHost('localhost'), false);
+  assert.equal(isSafePublicHost('127.0.0.1'), false);
+  assert.equal(isSafePublicHost('10.0.0.5'), false);
+  assert.equal(isSafePublicHost('192.168.1.10'), false);
+  assert.equal(isSafePublicHost('169.254.169.254'), false);
+  assert.equal(isSafePublicHost('172.20.0.1'), false);
+  assert.equal(isSafePublicHost('[::1]'), false);
+  assert.equal(isSafePublicHost('metadata.google.internal'), false);
+
+  const hosts = extractPlaylistHosts(
+    [
+      '#EXTM3U',
+      '#EXT-X-MAP:URI="https://init.cdn-a.example/map.mp4"',
+      '#EXTINF:4.0,',
+      'https://eloialu6.xyz/seg1.css',
+      '#EXTINF:4.0,',
+      'https://eloialu7.xyz/seg2.woff',
+      '#EXTINF:4.0,',
+      '/hls/relative-chunk.js',
+    ].join('\n'),
+    'https://embedplayer2.xyz/cdn/hls/abc/master.m3u8'
+  );
+  assert.deepEqual(hosts, [
+    'init.cdn-a.example',
+    'eloialu6.xyz',
+    'eloialu7.xyz',
+    'embedplayer2.xyz',
+  ]);
+
+  assert.equal(resolveSegmentMimeType('https://cdn.example/0000.css', 'text/css'), 'application/octet-stream');
+  assert.equal(resolveSegmentMimeType('https://cdn.example/0000.woff', 'font/woff'), 'application/octet-stream');
+  assert.equal(resolveSegmentMimeType('https://cdn.example/0000.js', 'application/javascript'), 'application/octet-stream');
+  assert.equal(resolveSegmentMimeType('https://cdn.example/init.mp4?t=1', 'video/mp4'), 'video/mp4');
+  assert.equal(resolveSegmentMimeType('https://cdn.example/seg.ts', 'video/mp2t'), 'video/mp2t');
+
+  assert.deepEqual(
+    extractEmbedPlayerHash('https://embedplayer2.xyz/video/26fd45817c0a0bb1e951d17fa7df947c'),
+    {
+      origin: 'https://embedplayer2.xyz',
+      hash: '26fd45817c0a0bb1e951d17fa7df947c',
+    }
+  );
+  assert.equal(extractEmbedPlayerHash('https://superflixapi.boats/serie/1408/1/1'), null);
+});
+
+test('shouldShowSkipNextInPlayer shows skip option only at the end of each episode', () => {
+  assert.equal(SKIP_NEXT_FINAL_WINDOW_SECONDS, 45);
+
+  // Never shown when there is no next episode (movies or finale)
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: false,
+      durationSeconds: 2400,
+      currentTimeSeconds: 2395,
+      isEnded: true,
+    }),
+    false
+  );
+
+  // Hidden at start & middle of episode
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 2400,
+      currentTimeSeconds: 0,
+    }),
+    false
+  );
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 2400,
+      currentTimeSeconds: 1800,
+    }),
+    false
+  );
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 2400,
+      currentTimeSeconds: 2354,
+    }),
+    false
+  );
+
+  // Visible within final 45 seconds or when ended
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 2400,
+      currentTimeSeconds: 2355,
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 2400,
+      currentTimeSeconds: 2399,
+      isEnded: true,
+    }),
+    true
+  );
+
+  // Short clips (<= 60s) show only in final 25%
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 40,
+      currentTimeSeconds: 10,
+    }),
+    false
+  );
+  assert.equal(
+    shouldShowSkipNextInPlayer({
+      hasNextEpisode: true,
+      durationSeconds: 40,
+      currentTimeSeconds: 32,
+    }),
+    true
+  );
+});
+
+test('buildOrderedSourceCascade prioritizes selected Admin mode first and auto-cascades across all clean sources without duplicates', () => {
+  const customCfg = {
+    ...DEFAULT_PLAYER_CONFIG,
+    sourceMode: 'custom_template' as const,
+    customEmbedMovieTemplate: 'https://new-api.example.com/movie/{tmdbId}.m3u8',
+    customEmbedTvTemplate: 'https://new-api.example.com/tv/{tmdbId}/{season}/{episode}.m3u8',
+    watchaflixBaseUrl: 'https://mirror.watcha.example',
+  };
+
+  const customOrder = buildOrderedSourceCascade(customCfg, {
+    tmdbId: 693134,
+    mediaType: 'movie',
+  });
+  assert.equal(customOrder[0]?.sourceId, 'custom_template');
+  assert.equal(customOrder[0]?.url, 'https://new-api.example.com/movie/693134.m3u8');
+  assert.equal(customOrder[1]?.sourceId, 'native_watcha');
+  assert.equal(customOrder.some((s) => s.sourceId === 'watchaflix' && s.isCustomConfigured), true);
+
+  const megaOrder = buildOrderedSourceCascade(
+    { ...customCfg, sourceMode: 'megaembed' },
+    { tmdbId: 1399, mediaType: 'tv', seasonNumber: 1, episodeNumber: 2 }
+  );
+  assert.equal(megaOrder[0]?.sourceId, 'megaembed');
+  assert.equal(megaOrder.some((s) => s.sourceId === 'native_watcha'), true);
+  assert.equal(megaOrder.some((s) => s.sourceId === 'custom_template'), true);
+
+  // Deduplication guarantee
+  const keys = megaOrder.map((s) => `${s.sourceId}:${s.url || 'native'}`);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test('isCloudflareChallengeHtml, extractPlayableStreamFromBody, and extractNestedEmbedUrls reject CF/ads/SSRF and extract streams cleanly', () => {
+  assert.equal(
+    isCloudflareChallengeHtml('<html><head><title>Just a moment...</title></head></html>', 403),
+    true
+  );
+  assert.equal(
+    isCloudflareChallengeHtml('<html><div class="cf-turnstile"></div></html>', 200),
+    true
+  );
+  // Passive CF bot beacon on a valid 200 embed player page must NOT false-positive
+  assert.equal(
+    isCloudflareChallengeHtml(
+      '<html><body><video src="https://cdn.example/video.mp4"></video><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>',
+      200
+    ),
+    false
+  );
+
+  const jsonHls = extractPlayableStreamFromBody(
+    JSON.stringify({
+      hls: true,
+      videoImage: 'https://img.example/poster.jpg',
+      securedLink: 'https://cdn.example.com/hls/master.m3u8?token=xyz',
+    }),
+    'https://api.example.com/getVideo'
+  );
+  assert.deepEqual(jsonHls, {
+    streamUrl: 'https://cdn.example.com/hls/master.m3u8?token=xyz',
+    streamKind: 'hls',
+    posterUrl: 'https://img.example/poster.jpg',
+  });
+
+  const htmlMp4 = extractPlayableStreamFromBody(
+    '<div data-poster="https://img.example/p.jpg"><script>var cfg = { url: "https:\\/\\/cdn.example.com\\/movie\\/stream.mp4?md5=1" };</script></div>',
+    'https://embed.example.com/movie/1'
+  );
+  assert.deepEqual(htmlMp4, {
+    streamUrl: 'https://cdn.example.com/movie/stream.mp4?md5=1',
+    streamKind: 'video',
+    posterUrl: 'https://img.example/p.jpg',
+  });
+
+  // Rejects ad/tracker domains and SSRF internal hosts
+  assert.equal(
+    extractPlayableStreamFromBody(
+      '<video src="http://127.0.0.1/internal.mp4"></video><script>url: "https://mypopads.com/ad.mp4"</script>',
+      'https://embed.example.com/'
+    ),
+    null
+  );
+
+  // Nested iframe extraction filters ad trackers & about:blank cleanly
+  assert.deepEqual(
+    extractNestedEmbedUrls(
+      '<iframe src="about:blank"></iframe><iframe src="https://sinonneurism.com/pop"></iframe><iframe src="https://clean-player.example.com/embed/123"></iframe>',
+      'https://wrapper.example.com/'
+    ),
+    ['https://clean-player.example.com/embed/123']
+  );
+});
+
+test('detectMediaKindFromBytesOrHeaders and resolveSegmentMimeType detect extensionless direct streams accurately', () => {
+  // MP4 ftyp header with extensionless octet-stream URL
+  const mp4Header = new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+  assert.equal(
+    detectMediaKindFromBytesOrHeaders({
+      url: 'https://cdn.example.com/play?id=999',
+      contentType: 'application/octet-stream',
+      sniffBytes: mp4Header,
+    }),
+    'video'
+  );
+
+  // WebM EBML header with extensionless octet-stream URL
+  const webmHeader = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]);
+  assert.equal(
+    detectMediaKindFromBytesOrHeaders({
+      url: 'https://cdn.example.com/stream',
+      contentType: 'application/octet-stream',
+      sniffBytes: webmHeader,
+    }),
+    'video'
+  );
+
+  // HLS manifest with UTF-8 BOM and text/plain header
+  const hlsBomBytes = new TextEncoder().encode('\uFEFF#EXTM3U\n#EXT-X-VERSION:3\n');
+  assert.equal(
+    detectMediaKindFromBytesOrHeaders({
+      url: 'https://cdn.example.com/manifest?token=1',
+      contentType: 'text/plain',
+      sniffBytes: hlsBomBytes,
+    }),
+    'hls'
+  );
+
+  // Content-Disposition filename detection
+  assert.equal(
+    detectMediaKindFromBytesOrHeaders({
+      url: 'https://cdn.example.com/download?file=1',
+      contentType: 'application/octet-stream',
+      contentDisposition: 'inline; filename="movie_hd.mp4"',
+    }),
+    'video'
+  );
+
+  // Reject HTML document disguised behind unknown endpoint
+  const htmlBytes = new TextEncoder().encode('<!DOCTYPE html><html><body>Just a moment</body></html>');
+  assert.equal(
+    detectMediaKindFromBytesOrHeaders({
+      url: 'https://cdn.example.com/embed/123',
+      contentType: 'application/octet-stream',
+      sniffBytes: htmlBytes,
+    }),
+    null
+  );
+
+  assert.equal(detectStreamKind('https://cdn.example.com/video.m4v?auth=1'), 'video');
+  assert.equal(detectStreamKind('https://cdn.example.com/stream?format=m3u8'), 'hls');
+  assert.equal(resolveSegmentMimeType('https://cdn.example.com/clip.webm'), 'video/webm');
+  assert.equal(resolveSegmentMimeType('https://cdn.example.com/clip.m4v'), 'video/mp4');
+});
+
+
+
+
+

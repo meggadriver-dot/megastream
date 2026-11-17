@@ -724,6 +724,40 @@ class TMDBServiceImpl {
       episodes,
     };
   }
+
+  private readonly externalImdbCache = new Map<string, string | null>();
+
+  async getExternalImdbId(tmdbId: number, mediaType: MediaType): Promise<string | null> {
+    const cacheKey = `${mediaType}:${tmdbId}`;
+    if (this.externalImdbCache.has(cacheKey)) {
+      return this.externalImdbCache.get(cacheKey) ?? null;
+    }
+    await SystemSettingsService.ensureHydrated();
+    if (!this.isConfigured()) {
+      return null;
+    }
+    try {
+      const path =
+        mediaType === 'tv' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`;
+      const data = await this.request<{ imdb_id?: string | null }>(path);
+      const valid =
+        typeof data.imdb_id === 'string' && /^tt\d{5,12}$/i.test(data.imdb_id.trim())
+          ? data.imdb_id.trim().toLowerCase()
+          : null;
+      if (this.externalImdbCache.size > 500) {
+        const firstKey = this.externalImdbCache.keys().next().value;
+        if (firstKey) this.externalImdbCache.delete(firstKey);
+      }
+      this.externalImdbCache.set(cacheKey, valid);
+      return valid;
+    } catch {
+      return null;
+    }
+  }
+
+  async getMovieExternalImdbId(tmdbId: number): Promise<string | null> {
+    return this.getExternalImdbId(tmdbId, 'movie');
+  }
 }
 
 export const TMDBService = new TMDBServiceImpl();

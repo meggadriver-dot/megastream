@@ -37,6 +37,7 @@ import {
 import { Link } from 'react-router-dom';
 import {
   DEFAULT_PLAYER_CONFIG,
+  extractPlayerBranding,
   resolveHydratedSourceMode,
 } from '../../shared/playerUrl';
 import {
@@ -101,7 +102,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     group: 'APIs & Fontes',
     items: [
       { id: 'apis', label: 'Fontes de API', icon: KeyRound },
-      { id: 'players', label: 'Players & Embed', icon: Play },
+      { id: 'players', label: 'Player Principal', icon: Play },
     ],
   },
   {
@@ -124,7 +125,7 @@ const TAB_TITLES: Record<AdminTab, string> = {
   dashboard: 'Dashboard Geral',
   site: 'Personalização do Site',
   apis: 'Fontes de API, Catálogo e IA',
-  players: 'Players, Fontes e Embed',
+  players: 'Player Principal MegaStream & Personalização',
   catalog: 'Catálogo & Mídias',
   channels: 'Canais Ao Vivo',
   users: 'Usuários, Planos & Políticas',
@@ -284,6 +285,7 @@ export function AdminPage() {
             sourceMode: resolveHydratedSourceMode({
               remoteSourceMode: fsData.sourceMode,
               remoteAntiAdSandbox: fsData.antiAdSandbox,
+              remoteHasPrincipalFields: typeof fsData.defaultAspectMode === 'string',
               fallback: effectivePlayer.sourceMode,
             }),
             defaultDomain: fsData.defaultDomain || effectivePlayer.defaultDomain,
@@ -302,6 +304,10 @@ export function AdminPage() {
               typeof fsData.antiAdSandbox === 'boolean'
                 ? fsData.antiAdSandbox
                 : effectivePlayer.antiAdSandbox,
+            preferImdbForMovies:
+              typeof fsData.preferImdbForMovies === 'boolean'
+                ? fsData.preferImdbForMovies
+                : effectivePlayer.preferImdbForMovies,
             watchaflixBaseUrl:
               typeof fsData.watchaflixBaseUrl === 'string' && fsData.watchaflixBaseUrl
                 ? fsData.watchaflixBaseUrl
@@ -322,6 +328,84 @@ export function AdminPage() {
               typeof fsData.embedTimeoutSeconds === 'number'
                 ? fsData.embedTimeoutSeconds
                 : effectivePlayer.embedTimeoutSeconds,
+            defaultAspectMode:
+              fsData.defaultAspectMode === 'contain' ||
+              fsData.defaultAspectMode === 'cover' ||
+              fsData.defaultAspectMode === 'fill' ||
+              fsData.defaultAspectMode === 'cinema'
+                ? fsData.defaultAspectMode
+                : effectivePlayer.defaultAspectMode,
+            autoEnableSubtitles:
+              typeof fsData.autoEnableSubtitles === 'boolean'
+                ? fsData.autoEnableSubtitles
+                : effectivePlayer.autoEnableSubtitles,
+            defaultSubtitleSize:
+              fsData.defaultSubtitleSize === 'sm' ||
+              fsData.defaultSubtitleSize === 'md' ||
+              fsData.defaultSubtitleSize === 'lg'
+                ? fsData.defaultSubtitleSize
+                : effectivePlayer.defaultSubtitleSize,
+            defaultSubtitleColor:
+              fsData.defaultSubtitleColor === 'white' ||
+              fsData.defaultSubtitleColor === 'yellow' ||
+              fsData.defaultSubtitleColor === 'cyan'
+                ? fsData.defaultSubtitleColor
+                : effectivePlayer.defaultSubtitleColor,
+            defaultSubtitleBg:
+              fsData.defaultSubtitleBg === 'box' ||
+              fsData.defaultSubtitleBg === 'shadow' ||
+              fsData.defaultSubtitleBg === 'none'
+                ? fsData.defaultSubtitleBg
+                : effectivePlayer.defaultSubtitleBg,
+            allowTvCast:
+              typeof fsData.allowTvCast === 'boolean'
+                ? fsData.allowTvCast
+                : effectivePlayer.allowTvCast,
+            allowPipMode:
+              typeof fsData.allowPipMode === 'boolean'
+                ? fsData.allowPipMode
+                : effectivePlayer.allowPipMode,
+            allowTheaterMode:
+              typeof fsData.allowTheaterMode === 'boolean'
+                ? fsData.allowTheaterMode
+                : effectivePlayer.allowTheaterMode,
+            watermarkEnabled:
+              typeof fsData.watermarkEnabled === 'boolean'
+                ? fsData.watermarkEnabled
+                : effectivePlayer.watermarkEnabled,
+            watermarkText:
+              typeof fsData.watermarkText === 'string'
+                ? fsData.watermarkText
+                : effectivePlayer.watermarkText,
+            watermarkLogoUrl:
+              typeof fsData.watermarkLogoUrl === 'string'
+                ? fsData.watermarkLogoUrl
+                : effectivePlayer.watermarkLogoUrl,
+            watermarkPosition:
+              fsData.watermarkPosition === 'top-left' ||
+              fsData.watermarkPosition === 'top-right' ||
+              fsData.watermarkPosition === 'bottom-left' ||
+              fsData.watermarkPosition === 'bottom-right'
+                ? fsData.watermarkPosition
+                : effectivePlayer.watermarkPosition,
+            watermarkOpacity:
+              typeof fsData.watermarkOpacity === 'number'
+                ? fsData.watermarkOpacity
+                : effectivePlayer.watermarkOpacity,
+            watermarkSize:
+              fsData.watermarkSize === 'sm' ||
+              fsData.watermarkSize === 'md' ||
+              fsData.watermarkSize === 'lg'
+                ? fsData.watermarkSize
+                : effectivePlayer.watermarkSize,
+            autoNextEpisode:
+              typeof fsData.autoNextEpisode === 'boolean'
+                ? fsData.autoNextEpisode
+                : effectivePlayer.autoNextEpisode,
+            autoNextCountdownSeconds:
+              typeof fsData.autoNextCountdownSeconds === 'number'
+                ? fsData.autoNextCountdownSeconds
+                : effectivePlayer.autoNextCountdownSeconds,
           };
         }
       }
@@ -367,7 +451,11 @@ export function AdminPage() {
       setSystemSettings(effectiveSystem);
       setSecretsStatus(effectiveSecrets);
       applyRuntimeSettings(
-        extractPublicRuntimeSettings(effectiveSystem, effectivePlayer.embedTimeoutSeconds)
+        extractPublicRuntimeSettings(
+          effectiveSystem,
+          effectivePlayer.embedTimeoutSeconds,
+          extractPlayerBranding(effectivePlayer)
+        )
       );
 
       // 3. Custom Catalog (merge API + Firestore by id)
@@ -511,7 +599,8 @@ export function AdminPage() {
       applyRuntimeSettings(
         extractPublicRuntimeSettings(
           sysUpdated.settings,
-          playerConfig?.embedTimeoutSeconds ?? 12
+          playerConfig?.embedTimeoutSeconds ?? 12,
+          playerConfig ? extractPlayerBranding(playerConfig) : undefined
         ),
         true
       );
@@ -827,20 +916,41 @@ export function AdminPage() {
         defaultColorHex: updated.defaultColorHex,
         myembedBaseUrl: updated.myembedBaseUrl,
         antiAdSandbox: updated.antiAdSandbox,
+        preferImdbForMovies: updated.preferImdbForMovies,
         watchaflixBaseUrl: updated.watchaflixBaseUrl,
         watchaflixLang: updated.watchaflixLang,
         customEmbedMovieTemplate: updated.customEmbedMovieTemplate,
         customEmbedTvTemplate: updated.customEmbedTvTemplate,
         embedTimeoutSeconds: updated.embedTimeoutSeconds,
+        defaultAspectMode: updated.defaultAspectMode,
+        autoEnableSubtitles: updated.autoEnableSubtitles,
+        defaultSubtitleSize: updated.defaultSubtitleSize,
+        defaultSubtitleColor: updated.defaultSubtitleColor,
+        defaultSubtitleBg: updated.defaultSubtitleBg,
+        allowTvCast: updated.allowTvCast,
+        allowPipMode: updated.allowPipMode,
+        allowTheaterMode: updated.allowTheaterMode,
+        watermarkEnabled: updated.watermarkEnabled,
+        watermarkText: updated.watermarkText,
+        watermarkLogoUrl: updated.watermarkLogoUrl,
+        watermarkPosition: updated.watermarkPosition,
+        watermarkOpacity: updated.watermarkOpacity,
+        watermarkSize: updated.watermarkSize,
+        autoNextEpisode: updated.autoNextEpisode,
+        autoNextCountdownSeconds: updated.autoNextCountdownSeconds,
         updatedAt: serverTimestamp(),
       });
 
       setPlayerConfig(updated);
       applyRuntimeSettings(
-        extractPublicRuntimeSettings(systemSettings, updated.embedTimeoutSeconds),
+        extractPublicRuntimeSettings(
+          systemSettings,
+          updated.embedTimeoutSeconds,
+          extractPlayerBranding(updated)
+        ),
         true
       );
-      showFeedback('Configuração global de players, templates e fallback salva na nuvem.');
+      showFeedback('Player Principal MegaStream e personalização salvos na nuvem.');
     } catch (err) {
       showError(err, 'Erro ao salvar configuração de players.');
     } finally {
@@ -914,7 +1024,11 @@ export function AdminPage() {
       setTmdbTokenInput('');
       setGeminiKeyInput('');
       applyRuntimeSettings(
-        extractPublicRuntimeSettings(res.settings, playerConfig?.embedTimeoutSeconds ?? 12),
+        extractPublicRuntimeSettings(
+          res.settings,
+          playerConfig?.embedTimeoutSeconds ?? 12,
+          playerConfig ? extractPlayerBranding(playerConfig) : undefined
+        ),
         true
       );
       const dash = await apiRequest<{
@@ -981,7 +1095,11 @@ export function AdminPage() {
       setSystemSettings(res.settings);
       setSecretsStatus(res.secretsStatus);
       applyRuntimeSettings(
-        extractPublicRuntimeSettings(res.settings, playerConfig?.embedTimeoutSeconds ?? 12),
+        extractPublicRuntimeSettings(
+          res.settings,
+          playerConfig?.embedTimeoutSeconds ?? 12,
+          playerConfig ? extractPlayerBranding(playerConfig) : undefined
+        ),
         true
       );
       showFeedback('Fontes de API e políticas restauradas ao padrão de fábrica.');

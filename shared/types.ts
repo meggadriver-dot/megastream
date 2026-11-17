@@ -113,9 +113,22 @@ export interface PaginatedCatalogResponse {
   demoMode: boolean;
 }
 
-export type PlayerSourceMode = 'myembed' | 'megaembed' | 'watchaflix' | 'custom_template';
+export type PlayerSourceMode =
+  | 'megastream_watcha'
+  | 'myembed'
+  | 'megaembed'
+  | 'watchaflix'
+  | 'custom_template';
 
 export type WatchaFlixLang = 'pt' | 'en';
+
+export type PlayerAspectMode = 'contain' | 'cover' | 'fill' | 'cinema';
+
+export type PlayerSubtitleSize = 'sm' | 'md' | 'lg';
+
+export type PlayerSubtitleColor = 'white' | 'yellow' | 'cyan';
+
+export type PlayerSubtitleBg = 'box' | 'shadow' | 'none';
 
 export type StreamKind = 'iframe' | 'video' | 'hls';
 
@@ -129,6 +142,31 @@ export type TmdbLanguage = 'pt-BR' | 'en-US' | 'es-ES';
 
 export type TmdbImageQuality = 'w342' | 'w500' | 'w780';
 
+export type WatermarkPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+export type WatermarkSize = 'sm' | 'md' | 'lg';
+
+export interface PlayerBrandingConfig {
+  colorHex: string;
+  preferredLang: WatchaFlixLang;
+  defaultAspectMode: PlayerAspectMode;
+  autoEnableSubtitles: boolean;
+  defaultSubtitleSize: PlayerSubtitleSize;
+  defaultSubtitleColor: PlayerSubtitleColor;
+  defaultSubtitleBg: PlayerSubtitleBg;
+  allowTvCast: boolean;
+  allowPipMode: boolean;
+  allowTheaterMode: boolean;
+  watermarkEnabled: boolean;
+  watermarkText: string;
+  watermarkLogoUrl: string;
+  watermarkPosition: WatermarkPosition;
+  watermarkOpacity: number;
+  watermarkSize: WatermarkSize;
+  autoNextEpisode: boolean;
+  autoNextCountdownSeconds: number;
+}
+
 export interface PlayerConfig {
   sourceMode: PlayerSourceMode;
   defaultDomain: MegaEmbedDomain;
@@ -140,14 +178,47 @@ export interface PlayerConfig {
   defaultColorHex: string;
   myembedBaseUrl: string;
   antiAdSandbox: boolean;
+  preferImdbForMovies: boolean;
   watchaflixBaseUrl: string;
   watchaflixLang: WatchaFlixLang;
   customEmbedMovieTemplate: string;
   customEmbedTvTemplate: string;
   embedTimeoutSeconds: number;
+  defaultAspectMode: PlayerAspectMode;
+  autoEnableSubtitles: boolean;
+  defaultSubtitleSize: PlayerSubtitleSize;
+  defaultSubtitleColor: PlayerSubtitleColor;
+  defaultSubtitleBg: PlayerSubtitleBg;
+  allowTvCast: boolean;
+  allowPipMode: boolean;
+  allowTheaterMode: boolean;
+  watermarkEnabled: boolean;
+  watermarkText: string;
+  watermarkLogoUrl: string;
+  watermarkPosition: WatermarkPosition;
+  watermarkOpacity: number;
+  watermarkSize: WatermarkSize;
+  autoNextEpisode: boolean;
+  autoNextCountdownSeconds: number;
   seriesSeasonEpisodeDocumented: boolean;
   seriesLimitationNote: string;
   updatedAt?: string;
+}
+
+export interface SubtitleTrack {
+  id: string;
+  label: string;
+  lang: string;
+  url: string;
+  isDefault?: boolean;
+}
+
+export interface PlayerAudioOption {
+  id: string;
+  label: string;
+  lang: string;
+  streamUrl: string;
+  streamKind: StreamKind;
 }
 
 export interface EmbedPlayResponse {
@@ -163,6 +234,11 @@ export interface EmbedPlayResponse {
   seasonNumber?: number;
   episodeNumber?: number;
   seriesSupportNote?: string;
+  branding?: PlayerBrandingConfig;
+  audioOptions?: PlayerAudioOption[];
+  subtitles?: SubtitleTrack[];
+  posterUrl?: string | null;
+  streamUnavailableReason?: string | null;
 }
 
 export interface UserProfile {
@@ -322,6 +398,7 @@ export interface PublicRuntimeSettings {
   maintenanceMessage: string;
   aiEnabled: boolean;
   embedTimeoutSeconds: number;
+  playerBranding?: PlayerBrandingConfig;
   updatedAt: string;
 }
 

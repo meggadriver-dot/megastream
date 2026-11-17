@@ -1,3 +1,4 @@
+import { extractPlayerBranding } from '../../shared/playerUrl.ts';
 import { toIsoTimestamp } from '../../shared/siteConfigUtils.ts';
 import {
   DEFAULT_SYSTEM_SETTINGS,
@@ -16,6 +17,7 @@ import { playerConfigStore } from '../config/playerConfig.ts';
 import { repositoryStore, type StoredAdminSecrets } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
 import { FirestoreRestService } from './FirestoreRestService.ts';
+import { PlayerService } from './PlayerService.ts';
 
 export interface UpdateSystemSettingsPayload extends Partial<SystemSettings> {
   tmdbAccessToken?: string;
@@ -63,10 +65,14 @@ class SystemSettingsServiceImpl {
   }
 
   async getPublicRuntimeSettingsAsync(): Promise<PublicRuntimeSettings> {
-    await this.ensureHydrated();
+    await Promise.all([this.ensureHydrated(), PlayerService.ensureHydrated()]);
     const sys = repositoryStore.getSystemSettings();
     const playerCfg = playerConfigStore.getConfig();
-    return extractPublicRuntimeSettings(sys, playerCfg.embedTimeoutSeconds);
+    return extractPublicRuntimeSettings(
+      sys,
+      playerCfg.embedTimeoutSeconds,
+      extractPlayerBranding(playerCfg)
+    );
   }
 
   getSecrets(): StoredAdminSecrets {

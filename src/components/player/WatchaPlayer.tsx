@@ -1,0 +1,1840 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Hls from 'hls.js';
+import QRCode from 'qrcode';
+import {
+  Captions,
+  Cast,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  FastForward,
+  Gauge,
+  Languages,
+  Lock,
+  Maximize2,
+  Minimize2,
+  Pause,
+  PictureInPicture2,
+  Play,
+  RectangleHorizontal,
+  RotateCcw,
+  RotateCw,
+  Settings,
+  SkipForward,
+  SlidersHorizontal,
+  Tv,
+  Unlock,
+  Upload,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react';
+import {
+  shouldShowSkipNextInPlayer,
+  type NextEpisodeTarget,
+} from '../../../shared/playerNavigation';
+import { convertSrtToVtt, parseVttCues, type VttCueItem } from '../../../shared/subtitleUtils';
+import type {
+  PlayerAspectMode,
+  PlayerAudioOption,
+  PlayerSubtitleBg,
+  PlayerSubtitleColor,
+  PlayerSubtitleSize,
+  SubtitleTrack,
+} from '../../../shared/types';
+
+type AspectMode = PlayerAspectMode;
+type SubtitleSize = PlayerSubtitleSize;
+type SubtitleColor = PlayerSubtitleColor;
+type SubtitleBg = PlayerSubtitleBg;
+type SettingsPanelView = 'root' | 'quality' | 'speed' | 'aspect';
+type ActivePopover = 'none' | 'audio' | 'subtitles' | 'settings' | 'cast';
+
+interface SubtitleAppearance {
+  size: SubtitleSize;
+  color: SubtitleColor;
+  bg: SubtitleBg;
+  offsetSeconds: number;
+}
+
+interface WatchaPlayerProps {
+  streamUrl: string;
+  streamKind: 'hls' | 'video';
+  title: string;
+  subtitleMeta?: string;
+  posterUrl?: string | null;
+  accentColor: string;
+  audioOptions?: PlayerAudioOption[];
+  subtitles?: SubtitleTrack[];
+  preferredLang?: 'pt' | 'en';
+  defaultAspectMode?: AspectMode;
+  autoEnableSubtitles?: boolean;
+  defaultSubtitleSize?: SubtitleSize;
+  defaultSubtitleColor?: SubtitleColor;
+  defaultSubtitleBg?: SubtitleBg;
+  allowTvCast?: boolean;
+  allowPipMode?: boolean;
+  allowTheaterMode?: boolean;
+  initialProgressPercent?: number;
+  autoNextEnabled?: boolean;
+  onToggleAutoNext?: () => void;
+  nextEpisode?: NextEpisodeTarget | null;
+  onNextEpisode?: () => void;
+  isCountdownActive?: boolean;
+  onEnded?: () => void;
+  onProgress?: (percent: number) => void;
+  theaterMode?: boolean;
+  onToggleTheater?: () => void;
+  onRequestFullscreenContainer?: () => void;
+  onStreamError?: (msg: string) => void;
+  onReady?: () => void;
+}
+
+const DEFAULT_SUB_STYLE: SubtitleAppearance = {
+  size: 'md',
+  color: 'white',
+  bg: 'box',
+  offsetSeconds: 0,
+};
+
+const SUB_STYLE_STORAGE_KEY = 'ms_watcha_sub_style_v1';
+const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const EMPTY_AUDIO_OPTIONS: PlayerAudioOption[] = [];
+const EMPTY_SUBTITLES: SubtitleTrack[] = [];
+
+function formatClock(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '00:00';
+  const total = Math.floor(totalSeconds);
+  const hrs = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export function WatchaPlayer({
+  streamUrl,
+  streamKind,
+  title,
+  subtitleMeta,
+  posterUrl,
+  accentColor,
+  audioOptions = EMPTY_AUDIO_OPTIONS,
+  subtitles = EMPTY_SUBTITLES,
+  preferredLang = 'pt',
+  defaultAspectMode = 'contain',
+  autoEnableSubtitles = false,
+  defaultSubtitleSize = 'md',
+  defaultSubtitleColor = 'white',
+  defaultSubtitleBg = 'box',
+  allowTvCast = true,
+  allowPipMode = true,
+  allowTheaterMode = true,
+  initialProgressPercent,
+  autoNextEnabled = true,
+  onToggleAutoNext,
+  nextEpisode,
+  onNextEpisode,
+  isCountdownActive = false,
+  onEnded,
+  onProgress,
+  theaterMode = false,
+  onToggleTheater,
+  onRequestFullscreenContainer,
+  onStreamError,
+  onReady,
+}: WatchaPlayerProps) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const seekBarRef = useRef<HTMLDivElement>(null);
+  const idleTimerRef = useRef<number | null>(null);
+  const resumeAppliedForUrlRef = useRef<string | null>(null);
+  const pendingRestoreTimeRef = useRef<number | null>(null);
+  const lastReportedPctRef = useRef<number>(0);
+  const initialProgressPercentRef = useRef<number | undefined>(initialProgressPercent);
+  const onStreamErrorRef = useRef(onStreamError);
+  const onReadyRef = useRef(onReady);
+  const hasUserChangedAspectRef = useRef(false);
+  const hasCustomLocalSubStyleRef = useRef(false);
+  const userToggledSubRef = useRef<string | null>(null);
+  const autoSubAppliedForUrlRef = useRef<string | null>(null);
+  const failedAudioIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    initialProgressPercentRef.current = initialProgressPercent;
+  }, [initialProgressPercent]);
+
+  useEffect(() => {
+    onStreamErrorRef.current = onStreamError;
+  }, [onStreamError]);
+
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
+
+  // Active stream source (switchable via Idioma/Audio or automatic runtime failover)
+  const [selectedAudioId, setSelectedAudioId] = useState<string>(
+    audioOptions[0]?.id || 'default'
+  );
+  const activeStream = useMemo(() => {
+    const found = audioOptions.find((o) => o.id === selectedAudioId);
+    return (
+      found || {
+        id: 'default',
+        label: preferredLang === 'en' ? 'Original' : 'Dublado (PT-BR)',
+        lang: preferredLang === 'en' ? 'en-us' : 'pt-br',
+        streamUrl,
+        streamKind,
+      }
+    );
+  }, [audioOptions, selectedAudioId, preferredLang, streamUrl, streamKind]);
+
+  // Playback state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [bufferedEnd, setBufferedEnd] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [aspectMode, setAspectMode] = useState<AspectMode>(defaultAspectMode);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [isEnded, setIsEnded] = useState(false);
+
+  // UI overlays & popovers
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [activePopover, setActivePopover] = useState<ActivePopover>('none');
+  const [settingsView, setSettingsView] = useState<SettingsPanelView>('root');
+  const [seekFeedback, setSeekFeedback] = useState<{ label: string; side: 'left' | 'right' } | null>(
+    null
+  );
+  const [hoverSeek, setHoverSeek] = useState<{ pct: number; time: number } | null>(null);
+
+  // HLS quality & internal audio tracks
+  const [qualityLevels, setQualityLevels] = useState<Array<{ index: number; label: string }>>([]);
+  const [currentQuality, setCurrentQuality] = useState<number>(-1);
+  const [hlsAudioTracks, setHlsAudioTracks] = useState<Array<{ index: number; label: string }>>([]);
+  const [currentHlsAudio, setCurrentHlsAudio] = useState<number>(0);
+
+  // Subtitles state
+  const [localSubtitles, setLocalSubtitles] = useState<SubtitleTrack[]>([]);
+  const allSubtitles = useMemo(
+    () => [...localSubtitles, ...subtitles],
+    [localSubtitles, subtitles]
+  );
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>('off');
+  const [subCues, setSubCues] = useState<VttCueItem[]>([]);
+  const [subLoading, setSubLoading] = useState(false);
+  const [subStyle, setSubStyle] = useState<SubtitleAppearance>(() => {
+    try {
+      const saved = localStorage.getItem(SUB_STYLE_STORAGE_KEY);
+      if (saved) {
+        hasCustomLocalSubStyleRef.current = true;
+        return { ...DEFAULT_SUB_STYLE, ...(JSON.parse(saved) as Partial<SubtitleAppearance>) };
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      size: defaultSubtitleSize,
+      color: defaultSubtitleColor,
+      bg: defaultSubtitleBg,
+      offsetSeconds: 0,
+    };
+  });
+
+  // TV Mirroring / Cast state
+  const [castQrDataUrl, setCastQrDataUrl] = useState<string>('');
+  const [castStatusMsg, setCastStatusMsg] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  const updateSubStyle = useCallback(
+    (updater: (prev: SubtitleAppearance) => SubtitleAppearance) => {
+      hasCustomLocalSubStyleRef.current = true;
+      setSubStyle((prev) => {
+        const next = updater(prev);
+        try {
+          localStorage.setItem(SUB_STYLE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  // Sync admin default aspect mode unless viewer switched aspect manually
+  useEffect(() => {
+    if (!hasUserChangedAspectRef.current) {
+      setAspectMode(defaultAspectMode);
+    }
+  }, [defaultAspectMode]);
+
+  // Sync admin default subtitle styling unless viewer customized subtitles locally
+  useEffect(() => {
+    if (!hasCustomLocalSubStyleRef.current) {
+      setSubStyle((prev) => ({
+        ...prev,
+        size: defaultSubtitleSize,
+        color: defaultSubtitleColor,
+        bg: defaultSubtitleBg,
+      }));
+    }
+  }, [defaultSubtitleSize, defaultSubtitleColor, defaultSubtitleBg]);
+
+  // Auto-enable subtitles in preferred language when configured by Admin
+  useEffect(() => {
+    if (
+      !autoEnableSubtitles ||
+      allSubtitles.length === 0 ||
+      autoSubAppliedForUrlRef.current === streamUrl ||
+      userToggledSubRef.current === streamUrl
+    ) {
+      return;
+    }
+    autoSubAppliedForUrlRef.current = streamUrl;
+    const preferredTrack =
+      preferredLang === 'en'
+        ? allSubtitles.find((s) => s.lang === 'eng') || allSubtitles[0]
+        : allSubtitles.find((s) => s.lang === 'pob') ||
+          allSubtitles.find((s) => s.lang === 'por') ||
+          allSubtitles[0];
+    if (preferredTrack) {
+      setSelectedSubtitleId(preferredTrack.id);
+    }
+  }, [autoEnableSubtitles, allSubtitles, preferredLang, streamUrl]);
+
+  useEffect(() => {
+    failedAudioIdsRef.current.clear();
+    setSelectedAudioId(audioOptions[0]?.id || 'default');
+    setIsEnded(false);
+  }, [streamUrl, audioOptions]);
+
+  const scheduleHideControls = useCallback(() => {
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    setControlsVisible(true);
+    if (activePopover !== 'none') return;
+    idleTimerRef.current = window.setTimeout(() => {
+      const v = videoRef.current;
+      if (v && !v.paused && !v.ended) {
+        setControlsVisible(false);
+      }
+    }, 3200);
+  }, [activePopover]);
+
+  useEffect(() => {
+    scheduleHideControls();
+    return () => {
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    };
+  }, [scheduleHideControls, isPlaying]);
+
+  // Track fullscreen status
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const triggerNextBackupOptionOrError = useCallback(
+    (fallbackMsg: string) => {
+      failedAudioIdsRef.current.add(activeStream.id);
+      const nextBackup = audioOptions.find(
+        (opt) => opt.id !== activeStream.id && !failedAudioIdsRef.current.has(opt.id)
+      );
+      if (nextBackup) {
+        if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+          pendingRestoreTimeRef.current = videoRef.current.currentTime;
+        }
+        setSelectedAudioId(nextBackup.id);
+        return;
+      }
+      setIsBuffering(false);
+      onReadyRef.current?.();
+      onStreamErrorRef.current?.(fallbackMsg);
+    },
+    [activeStream.id, audioOptions]
+  );
+
+  // Load HLS or direct video stream cleanly
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !activeStream.streamUrl) return;
+
+    setIsBuffering(true);
+    setQualityLevels([]);
+    setCurrentQuality(-1);
+    setHlsAudioTracks([]);
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    const restoreIfNeeded = () => {
+      if (pendingRestoreTimeRef.current !== null && Number.isFinite(pendingRestoreTimeRef.current)) {
+        video.currentTime = pendingRestoreTimeRef.current;
+        pendingRestoreTimeRef.current = null;
+        return;
+      }
+      const resumePct = initialProgressPercentRef.current;
+      if (
+        resumeAppliedForUrlRef.current !== streamUrl &&
+        resumePct &&
+        resumePct > 2 &&
+        resumePct < 95 &&
+        Number.isFinite(video.duration) &&
+        video.duration > 30
+      ) {
+        resumeAppliedForUrlRef.current = streamUrl;
+        video.currentTime = Math.floor((video.duration * resumePct) / 100);
+      }
+    };
+
+    const onLoadedMeta = () => {
+      setDuration(video.duration || 0);
+      restoreIfNeeded();
+      onReadyRef.current?.();
+    };
+    video.addEventListener('loadedmetadata', onLoadedMeta);
+
+    if (activeStream.streamKind === 'hls') {
+      if (Hls.isSupported()) {
+        let networkRetries = 0;
+        let mediaRetries = 0;
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          startFragPrefetch: true,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(activeStream.streamUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, (_evt, data) => {
+          networkRetries = 0;
+          setIsBuffering(false);
+          onReadyRef.current?.();
+          const levels = (data.levels || []).map((lvl, idx) => ({
+            index: idx,
+            label: lvl.height ? `${lvl.height}p` : `Qualidade ${idx + 1}`,
+          }));
+          setQualityLevels(levels);
+          setCurrentQuality(hls.currentLevel);
+
+          if (hls.audioTracks && hls.audioTracks.length > 0) {
+            setHlsAudioTracks(
+              hls.audioTracks.map((tr, idx) => ({
+                index: idx,
+                label: tr.name || tr.lang || `Faixa ${idx + 1}`,
+              }))
+            );
+            setCurrentHlsAudio(hls.audioTrack);
+          }
+
+          video.play().catch(() => {});
+        });
+
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_evt, data) => {
+          setHlsAudioTracks(
+            (data.audioTracks || []).map((tr, idx) => ({
+              index: idx,
+              label: tr.name || tr.lang || `Faixa ${idx + 1}`,
+            }))
+          );
+          setCurrentHlsAudio(hls.audioTrack);
+        });
+
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (!data?.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 2) {
+            networkRetries += 1;
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 2) {
+            mediaRetries += 1;
+            hls.recoverMediaError();
+          } else {
+            triggerNextBackupOptionOrError('Falha ao carregar o stream de vídeo.');
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = activeStream.streamUrl;
+        video.load();
+        video.play().catch(() => {});
+      }
+    } else {
+      video.src = activeStream.streamUrl;
+      video.load();
+      video.play().catch(() => {});
+    }
+
+    return () => {
+      video.removeEventListener('loadedmetadata', onLoadedMeta);
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      } else {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+    };
+  }, [activeStream.streamUrl, activeStream.streamKind, streamUrl, triggerNextBackupOptionOrError]);
+
+  // Fetch and parse active WebVTT cues cleanly whenever subtitle selection changes
+  useEffect(() => {
+    if (selectedSubtitleId === 'off') {
+      setSubCues([]);
+      return;
+    }
+    const track = allSubtitles.find((t) => t.id === selectedSubtitleId);
+    if (!track) {
+      setSubCues([]);
+      return;
+    }
+
+    let cancelled = false;
+    setSubLoading(true);
+    fetch(track.url)
+      .then((res) => (res.ok ? res.text() : ''))
+      .then((vttText) => {
+        if (cancelled) return;
+        setSubCues(parseVttCues(vttText));
+      })
+      .catch(() => {
+        if (!cancelled) setSubCues([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSubLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSubtitleId, allSubtitles]);
+
+  // Compute current active subtitle cue(s) with offset
+  const activeSubtitleText = useMemo(() => {
+    if (selectedSubtitleId === 'off' || subCues.length === 0) return '';
+    const adjustedTime = currentTime - subStyle.offsetSeconds;
+    const matches = subCues.filter((c) => adjustedTime >= c.start && adjustedTime <= c.end);
+    return matches.map((c) => c.text).join('\n');
+  }, [selectedSubtitleId, subCues, currentTime, subStyle.offsetSeconds]);
+
+  // Generate QR code when Cast modal is opened
+  useEffect(() => {
+    if (activePopover !== 'cast') return;
+    const cleanShareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    if (!cleanShareUrl) return;
+    QRCode.toDataURL(cleanShareUrl, {
+      width: 200,
+      margin: 1,
+      color: { dark: '#050814', light: '#ffffff' },
+    })
+      .then(setCastQrDataUrl)
+      .catch(() => setCastQrDataUrl(''));
+  }, [activePopover]);
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || isLocked) return;
+    if (video.paused || video.ended) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+    scheduleHideControls();
+  }, [isLocked, scheduleHideControls]);
+
+  const seekBy = useCallback(
+    (delta: number) => {
+      const video = videoRef.current;
+      if (!video || isLocked) return;
+      const target = Math.max(0, Math.min(video.duration || 0, video.currentTime + delta));
+      video.currentTime = target;
+      setCurrentTime(target);
+      setSeekFeedback({
+        label: delta > 0 ? `+${delta}s` : `${delta}s`,
+        side: delta > 0 ? 'right' : 'left',
+      });
+      window.setTimeout(() => setSeekFeedback(null), 650);
+      scheduleHideControls();
+    },
+    [isLocked, scheduleHideControls]
+  );
+
+  const handleToggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const nextMuted = !video.muted;
+    video.muted = nextMuted;
+    setIsMuted(nextMuted);
+    if (!nextMuted && video.volume === 0) {
+      video.volume = 0.7;
+      setVolume(0.7);
+    }
+  }, []);
+
+  const handleVolumeChange = useCallback((nextVal: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const clamped = Math.max(0, Math.min(1, nextVal));
+    video.volume = clamped;
+    video.muted = clamped === 0;
+    setVolume(clamped);
+    setIsMuted(clamped === 0);
+  }, []);
+
+  const handleChangeSpeed = useCallback((rate: number) => {
+    const video = videoRef.current;
+    if (video) {
+      video.playbackRate = rate;
+    }
+    setPlaybackRate(rate);
+  }, []);
+
+  const handleChangeQuality = useCallback((levelIndex: number) => {
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.currentLevel = levelIndex;
+    }
+    setCurrentQuality(levelIndex);
+  }, []);
+
+  const handleSwitchAudioOption = useCallback((optionId: string) => {
+    const video = videoRef.current;
+    if (video && Number.isFinite(video.currentTime)) {
+      pendingRestoreTimeRef.current = video.currentTime;
+    }
+    setSelectedAudioId(optionId);
+    setActivePopover('none');
+  }, []);
+
+  const handleSwitchHlsAudioTrack = useCallback((idx: number) => {
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.audioTrack = idx;
+    }
+    setCurrentHlsAudio(idx);
+  }, []);
+
+  const handleUploadLocalSubtitle = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = typeof reader.result === 'string' ? reader.result : '';
+        const vtt = convertSrtToVtt(text);
+        const blob = new Blob([vtt], { type: 'text/vtt' });
+        const blobUrl = URL.createObjectURL(blob);
+        const id = `local_${Date.now()}`;
+        setLocalSubtitles((prev) => [
+          { id, label: `Arquivo: ${file.name}`, lang: 'local', url: blobUrl },
+          ...prev,
+        ]);
+        setSelectedSubtitleId(id);
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    },
+    []
+  );
+
+  const handleTogglePip = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled && video.requestPictureInPicture) {
+        await video.requestPictureInPicture();
+      }
+    } catch {
+      // ignore unsupported PiP error
+    }
+  }, []);
+
+  const handleFullscreen = useCallback(async () => {
+    if (onRequestFullscreenContainer) {
+      onRequestFullscreenContainer();
+      return;
+    }
+    const target = wrapperRef.current;
+    if (!target) return;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await target.requestFullscreen();
+      }
+    } catch {
+      // ignore
+    }
+  }, [onRequestFullscreenContainer]);
+
+  const handlePromptChromecast = useCallback(async () => {
+    const video = videoRef.current as (HTMLVideoElement & {
+      remote?: { prompt?: () => Promise<void>; state?: string };
+    }) | null;
+    if (!video?.remote?.prompt) {
+      setCastStatusMsg(
+        'Seu navegador não expõe o menu direto do Chromecast aqui. Use o QR Code ou copie o link abaixo na Smart TV.'
+      );
+      return;
+    }
+    try {
+      await video.remote.prompt();
+      setCastStatusMsg('Seletor de dispositivos de TV aberto.');
+    } catch {
+      setCastStatusMsg(
+        'Nenhum Chromecast/dispositivo compatível encontrado nesta janela. Utilize o QR Code ou abra o link direto na Smart TV.'
+      );
+    }
+  }, []);
+
+  const handlePromptAirPlay = useCallback(() => {
+    const video = videoRef.current as (HTMLVideoElement & {
+      webkitShowPlaybackTargetPicker?: () => void;
+    }) | null;
+    if (!video?.webkitShowPlaybackTargetPicker) {
+      setCastStatusMsg(
+        'AirPlay está disponível apenas no navegador Safari (iPhone, iPad ou Mac).'
+      );
+      return;
+    }
+    video.webkitShowPlaybackTargetPicker();
+    setCastStatusMsg('Seletor AirPlay aberto.');
+  }, []);
+
+  const handleCopyCastLink = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setLinkCopied(true);
+      window.setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      setCastStatusMsg('Copie a URL da barra de endereços para abrir na Smart TV.');
+    }
+  }, []);
+
+  // Keyboard shortcuts while player is mounted
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
+        return;
+      }
+      if (e.key === ' ' || e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        seekBy(10);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        seekBy(-10);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handleVolumeChange((videoRef.current?.volume ?? 1) + 0.1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        handleVolumeChange((videoRef.current?.volume ?? 1) - 0.1);
+      } else if (e.key.toLowerCase() === 'm') {
+        handleToggleMute();
+      } else if (e.key.toLowerCase() === 'f') {
+        handleFullscreen();
+      } else if (e.key.toLowerCase() === 'c') {
+        if (allSubtitles.length > 0) {
+          userToggledSubRef.current = streamUrl;
+          setSelectedSubtitleId((prev) => (prev === 'off' ? allSubtitles[0].id : 'off'));
+        }
+      } else if (e.key === 'Escape') {
+        setActivePopover('none');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    togglePlay,
+    seekBy,
+    handleVolumeChange,
+    handleToggleMute,
+    handleFullscreen,
+    allSubtitles,
+    streamUrl,
+  ]);
+
+  const handleSeekBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const bar = seekBarRef.current;
+    const video = videoRef.current;
+    if (!bar || !video || !duration || isLocked) return;
+    const rect = bar.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const nextTime = pct * duration;
+    video.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  };
+
+  const handleSeekBarMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const bar = seekBarRef.current;
+    if (!bar || !duration) return;
+    const rect = bar.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    setHoverSeek({ pct: pct * 100, time: pct * duration });
+  };
+
+  const progressPct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const bufferedPct = duration > 0 ? Math.min(100, (bufferedEnd / duration) * 100) : 0;
+
+  const videoAspectClass =
+    aspectMode === 'cover'
+      ? 'object-cover'
+      : aspectMode === 'fill'
+        ? 'object-fill'
+        : aspectMode === 'cinema'
+          ? 'object-cover scale-y-[0.82]'
+          : 'object-contain';
+
+  const subFontSizeClass =
+    subStyle.size === 'sm'
+      ? 'text-xs sm:text-sm'
+      : subStyle.size === 'lg'
+        ? 'text-lg sm:text-2xl'
+        : 'text-sm sm:text-lg';
+
+  const subColorClass =
+    subStyle.color === 'yellow'
+      ? 'text-amber-300'
+      : subStyle.color === 'cyan'
+        ? 'text-sky-300'
+        : 'text-white';
+
+  const subBgClass =
+    subStyle.bg === 'box'
+      ? 'bg-black/80 px-3 py-1 rounded-lg'
+      : subStyle.bg === 'shadow'
+        ? 'drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)]'
+        : '';
+
+  const aspectLabels: Record<AspectMode, string> = {
+    contain: 'Padrão (Ajustar)',
+    cover: 'Preencher (Zoom)',
+    fill: 'Esticar Tela',
+    cinema: 'Cinema 21:9',
+  };
+
+  const currentQualityLabel =
+    currentQuality === -1
+      ? 'Auto'
+      : qualityLevels.find((l) => l.index === currentQuality)?.label || 'Auto';
+
+  return (
+    <div
+      ref={wrapperRef}
+      data-testid="watcha-player"
+      data-aspect={aspectMode}
+      data-subtitle={selectedSubtitleId}
+      className="relative w-full h-full bg-black select-none overflow-hidden group"
+      onMouseMove={scheduleHideControls}
+      onTouchStart={scheduleHideControls}
+    >
+      {/* Pure Native Video Element (Zero Watermarks, Zero Ads) */}
+      <video
+        ref={videoRef}
+        poster={posterUrl || undefined}
+        playsInline
+        className={`w-full h-full bg-black transition-transform duration-200 ${videoAspectClass}`}
+        onClick={() => {
+          if (activePopover !== 'none') {
+            setActivePopover('none');
+            return;
+          }
+          togglePlay();
+        }}
+        onDoubleClick={() => {
+          if (!isLocked) handleFullscreen();
+        }}
+        onPlay={() => {
+          setIsPlaying(true);
+          setIsBuffering(false);
+          setIsEnded(false);
+        }}
+        onPause={() => setIsPlaying(false)}
+        onWaiting={() => setIsBuffering(true)}
+        onCanPlay={() => {
+          setIsBuffering(false);
+          onReadyRef.current?.();
+        }}
+        onTimeUpdate={() => {
+          const v = videoRef.current;
+          if (!v) return;
+          setCurrentTime(v.currentTime);
+          if (v.duration > 0 && v.currentTime < v.duration - 2 && isEnded) {
+            setIsEnded(false);
+          }
+          if (v.buffered.length > 0) {
+            setBufferedEnd(v.buffered.end(v.buffered.length - 1));
+          }
+          if (v.duration > 0 && onProgress) {
+            const pct = Math.round((v.currentTime / v.duration) * 100);
+            if (Math.abs(pct - lastReportedPctRef.current) >= 5) {
+              lastReportedPctRef.current = pct;
+              onProgress(pct);
+            }
+          }
+        }}
+        onDurationChange={() => {
+          if (videoRef.current) setDuration(videoRef.current.duration || 0);
+        }}
+        onEnded={() => {
+          setIsPlaying(false);
+          setIsEnded(true);
+          onEnded?.();
+        }}
+        onError={() => {
+          if (!videoRef.current?.getAttribute('src')) return;
+          if (activeStream.streamKind === 'video' || !hlsRef.current) {
+            triggerNextBackupOptionOrError('Não foi possível reproduzir este arquivo de vídeo.');
+          }
+        }}
+      />
+
+      {/* Buffering Indicator */}
+      {isBuffering && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
+          <div
+            className="w-12 h-12 rounded-full border-[3px] border-white/20 animate-spin"
+            style={{ borderTopColor: accentColor }}
+          />
+        </div>
+      )}
+
+      {/* Seek -10s / +10s Visual Feedback */}
+      {seekFeedback && (
+        <div
+          className={`pointer-events-none absolute top-1/2 -translate-y-1/2 z-20 px-4 py-2 rounded-full bg-black/75 border border-white/15 text-white font-mono-tabular text-sm font-bold ${
+            seekFeedback.side === 'left' ? 'left-8 sm:left-16' : 'right-8 sm:right-16'
+          }`}
+        >
+          {seekFeedback.label}
+        </div>
+      )}
+
+      {/* Custom Styled Subtitles Overlay */}
+      {activeSubtitleText && (
+        <div
+          data-testid="watcha-subtitle-overlay"
+          className={`pointer-events-none absolute inset-x-4 z-[15] flex justify-center text-center transition-all duration-150 ${
+            controlsVisible ? 'bottom-20 sm:bottom-24' : 'bottom-6 sm:bottom-10'
+          }`}
+        >
+          <span
+            className={`max-w-[88%] whitespace-pre-line font-semibold leading-snug ${subFontSizeClass} ${subColorClass} ${subBgClass}`}
+          >
+            {activeSubtitleText}
+          </span>
+        </div>
+      )}
+
+      {/* Center Play Overlay When Paused (and not locked / popover closed) */}
+      {!isPlaying && !isBuffering && !isLocked && activePopover === 'none' && (
+        <button
+          type="button"
+          onClick={togglePlay}
+          aria-label="Reproduzir vídeo"
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[15] w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center text-white shadow-2xl border border-white/20 bg-black/65 hover:scale-105 transition-transform cursor-pointer"
+        >
+          <Play className="w-7 h-7 sm:w-9 sm:h-9 fill-current ml-1" style={{ color: accentColor }} />
+        </button>
+      )}
+
+      {/* Locked State Minimal Unlock Trigger */}
+      {isLocked && (
+        <div className="absolute top-4 right-4 z-30">
+          <button
+            type="button"
+            onClick={() => {
+              setIsLocked(false);
+              scheduleHideControls();
+            }}
+            className="h-11 px-4 rounded-xl bg-black/80 border border-white/20 text-xs font-semibold text-white flex items-center gap-2 cursor-pointer"
+          >
+            <Unlock className="w-4 h-4" style={{ color: accentColor }} />
+            Desbloquear Tela
+          </button>
+        </div>
+      )}
+
+      {/* Top Scrim Bar inside Player */}
+      {!isLocked && (
+        <div
+          className={`absolute inset-x-0 top-0 z-20 px-4 py-3 bg-gradient-to-b from-black/80 via-black/35 to-transparent flex items-center justify-between gap-3 transition-opacity duration-200 ${
+            controlsVisible || !isPlaying || activePopover !== 'none'
+              ? 'opacity-100'
+              : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <div className="min-w-0">
+            <p className="font-display text-sm sm:text-base font-bold text-white truncate">
+              {title}
+            </p>
+            {subtitleMeta && (
+              <p className="text-[11px] sm:text-xs text-slate-300 truncate">{subtitleMeta}</p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {allowTvCast && (
+              <button
+                type="button"
+                onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
+                className="h-10 px-3 rounded-xl bg-black/55 hover:bg-black/80 border border-white/15 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                title="Espelhar na TV"
+                aria-label="Espelhar na TV"
+              >
+                <Cast className="w-4 h-4" style={{ color: accentColor }} />
+                <span className="hidden sm:inline">Espelhar na TV</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setActivePopover('none');
+                setIsLocked(true);
+              }}
+              className="w-10 h-10 rounded-xl bg-black/55 hover:bg-black/80 border border-white/15 text-white flex items-center justify-center cursor-pointer"
+              title="Bloquear toques na tela"
+              aria-label="Bloquear tela"
+            >
+              <Lock className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Watcha-Style Control Bar */}
+      {!isLocked && (
+        <div
+          className={`absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-3 sm:px-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-200 ${
+            controlsVisible || !isPlaying || activePopover !== 'none'
+              ? 'opacity-100'
+              : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          {/* Scrubbable Seek Bar */}
+          <div
+            ref={seekBarRef}
+            role="slider"
+            aria-label="Linha do tempo do vídeo"
+            aria-valuemin={0}
+            aria-valuemax={Math.round(duration)}
+            aria-valuenow={Math.round(currentTime)}
+            tabIndex={0}
+            onClick={handleSeekBarClick}
+            onMouseMove={handleSeekBarMove}
+            onMouseLeave={() => setHoverSeek(null)}
+            className="relative h-5 flex items-center cursor-pointer group/seek mb-1"
+          >
+            {hoverSeek && (
+              <div
+                className="pointer-events-none absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/15 text-[11px] font-mono-tabular text-white"
+                style={{ left: `${hoverSeek.pct}%` }}
+              >
+                {formatClock(hoverSeek.time)}
+              </div>
+            )}
+
+            <div className="w-full h-1.5 group-hover/seek:h-2 transition-all rounded-full bg-white/20 overflow-hidden relative">
+              <div
+                className="absolute inset-y-0 left-0 bg-white/30"
+                style={{ width: `${bufferedPct}%` }}
+              />
+              <div
+                className="absolute inset-y-0 left-0"
+                style={{ width: `${progressPct}%`, backgroundColor: accentColor }}
+              />
+            </div>
+
+            <div
+              className="absolute w-3.5 h-3.5 rounded-full bg-white shadow-md -translate-x-1/2 opacity-0 group-hover/seek:opacity-100 transition-opacity"
+              style={{ left: `${progressPct}%`, border: `2px solid ${accentColor}` }}
+            />
+          </div>
+
+          {/* Action Buttons Row */}
+          <div className="flex items-center justify-between gap-2">
+            {/* Left Playback Group */}
+            <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
+              <button
+                type="button"
+                onClick={togglePlay}
+                aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
+                className="w-11 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+              >
+                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => seekBy(-10)}
+                aria-label="Voltar 10 segundos"
+                title="Voltar 10s (←)"
+                className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => seekBy(10)}
+                aria-label="Avançar 10 segundos"
+                title="Avançar 10s (→)"
+                className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <RotateCw className="w-4 h-4" />
+              </button>
+
+              {/* Volume */}
+              <div className="flex items-center gap-1 group/vol">
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  aria-label={isMuted ? 'Ativar som' : 'Silenciar'}
+                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+                >
+                  {isMuted || volume === 0 ? (
+                    <VolumeX className="w-4 h-4 text-slate-400" />
+                  ) : (
+                    <Volume2 className="w-4 h-4" />
+                  )}
+                </button>
+                <input
+                  type="range"
+                  aria-label="Controle de volume"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={isMuted ? 0 : volume}
+                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                  className="hidden md:block w-16 lg:w-20 h-1 cursor-pointer accent-white"
+                />
+              </div>
+
+              <span className="text-[11px] sm:text-xs font-mono-tabular text-slate-200 px-1.5 whitespace-nowrap">
+                {formatClock(currentTime)} <span className="text-slate-500">/</span>{' '}
+                {formatClock(duration)}
+              </span>
+            </div>
+
+            {/* Right Watcha Controls: Idioma, Legenda, Configurações, Cast, PiP, Teatro, Fullscreen */}
+            <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setActivePopover((p) => (p === 'audio' ? 'none' : 'audio'))}
+                aria-label="Idioma e Áudio"
+                title="Idioma / Áudio"
+                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                  activePopover === 'audio'
+                    ? 'bg-white/20 text-white'
+                    : 'hover:bg-white/10 text-slate-200'
+                }`}
+              >
+                <Languages className="w-4 h-4" />
+                <span className="hidden lg:inline">Idioma</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setActivePopover((p) => (p === 'subtitles' ? 'none' : 'subtitles'))
+                }
+                aria-label="Legendas"
+                title="Legendas (C)"
+                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                  activePopover === 'subtitles' || selectedSubtitleId !== 'off'
+                    ? 'bg-white/20 text-white'
+                    : 'hover:bg-white/10 text-slate-200'
+                }`}
+              >
+                <Captions
+                  className="w-4 h-4"
+                  style={selectedSubtitleId !== 'off' ? { color: accentColor } : undefined}
+                />
+                <span className="hidden lg:inline">Legenda</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsView('root');
+                  setActivePopover((p) => (p === 'settings' ? 'none' : 'settings'));
+                }}
+                aria-label="Configurações do Player"
+                title="Configurações (Qualidade, Velocidade, Proporção)"
+                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                  activePopover === 'settings'
+                    ? 'bg-white/20 text-white'
+                    : 'hover:bg-white/10 text-slate-200'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                <span className="hidden xl:inline">Configurações</span>
+              </button>
+
+              {allowPipMode && (
+                <button
+                  type="button"
+                  onClick={handleTogglePip}
+                  aria-label="Mini Player (Picture-in-Picture)"
+                  title="Mini Player (PiP)"
+                  className="hidden sm:flex w-10 h-10 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white items-center justify-center cursor-pointer"
+                >
+                  <PictureInPicture2 className="w-4 h-4" />
+                </button>
+              )}
+
+              {allowTheaterMode && onToggleTheater && (
+                <button
+                  type="button"
+                  onClick={onToggleTheater}
+                  aria-label="Modo Teatro"
+                  aria-pressed={theaterMode}
+                  title="Modo Teatro"
+                  className={`hidden md:flex w-10 h-10 rounded-xl items-center justify-center cursor-pointer ${
+                    theaterMode ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-slate-200'
+                  }`}
+                >
+                  <RectangleHorizontal className="w-4 h-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleFullscreen}
+                aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+                title="Tela Cheia (F)"
+                className="w-10 h-10 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer"
+              >
+                {isFullscreen ? (
+                  <Minimize2 className="w-4 h-4" />
+                ) : (
+                  <Maximize2 className="w-4 h-4" />
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-Player End-of-Episode Skip to Next Button (Shown ONLY in final 45s / end of episode) */}
+      {shouldShowSkipNextInPlayer({
+        hasNextEpisode: Boolean(nextEpisode && onNextEpisode),
+        durationSeconds: duration,
+        currentTimeSeconds: currentTime,
+        isEnded,
+      }) &&
+        !isCountdownActive &&
+        !isLocked &&
+        activePopover === 'none' &&
+        nextEpisode &&
+        onNextEpisode && (
+          <div className="absolute bottom-20 right-4 sm:bottom-24 sm:right-6 z-[25] rounded-2xl bg-[#070b18]/92 backdrop-blur-xl border border-white/15 p-3 shadow-2xl flex items-center gap-3 max-w-[min(90%,340px)]">
+            <div className="min-w-0">
+              <p className="text-[10px] font-mono-tabular uppercase tracking-wider text-slate-400">
+                {nextEpisode.isNewSeason ? 'Próxima Temporada' : 'Próximo Episódio'} · T
+                {nextEpisode.seasonNumber}·E{nextEpisode.episodeNumber}
+              </p>
+              <p className="text-xs font-bold text-white truncate">{nextEpisode.title}</p>
+            </div>
+            <button
+              type="button"
+              data-testid="watcha-skip-next"
+              onClick={onNextEpisode}
+              className="h-9 px-3.5 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              style={{ backgroundColor: accentColor }}
+            >
+              <SkipForward className="w-3.5 h-3.5" aria-hidden="true" />
+              Pular para Próximo
+            </button>
+          </div>
+        )}
+
+      {/* POPOVER 1: Idioma & Faixas de Áudio */}
+      {activePopover === 'audio' && (
+        <div
+          role="dialog"
+          aria-label="Selecionar idioma e áudio"
+          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[72%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-2"
+        >
+          <div className="flex items-center justify-between px-1 pb-1 border-b border-white/10">
+            <span className="text-xs font-bold text-white flex items-center gap-1.5">
+              <Languages className="w-3.5 h-3.5" style={{ color: accentColor }} />
+              Idioma / Áudio
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePopover('none')}
+              aria-label="Fechar menu de idioma"
+              className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            {(audioOptions.length > 0 ? audioOptions : [activeStream]).map((opt) => {
+              const selected = opt.id === activeStream.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => handleSwitchAudioOption(opt.id)}
+                  className={`w-full px-3 py-2.5 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    selected ? 'bg-white/15 text-white' : 'text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{opt.label}</span>
+                  {selected && <Check className="w-4 h-4" style={{ color: accentColor }} />}
+                </button>
+              );
+            })}
+
+            {hlsAudioTracks.length > 1 && (
+              <div className="pt-2 border-t border-white/10 space-y-1">
+                <p className="text-[11px] text-slate-400 px-1">Faixas internas do vídeo</p>
+                {hlsAudioTracks.map((tr) => (
+                  <button
+                    key={tr.index}
+                    type="button"
+                    onClick={() => handleSwitchHlsAudioTrack(tr.index)}
+                    className={`w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between cursor-pointer ${
+                      currentHlsAudio === tr.index
+                        ? 'bg-white/15 text-white font-semibold'
+                        : 'text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    <span>{tr.label}</span>
+                    {currentHlsAudio === tr.index && (
+                      <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* POPOVER 2: Legendas + Personalização */}
+      {activePopover === 'subtitles' && (
+        <div
+          role="dialog"
+          aria-label="Configurações de legenda"
+          className="absolute bottom-16 right-3 sm:right-4 z-30 w-80 max-h-[78%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3.5 shadow-2xl space-y-3"
+        >
+          <div className="flex items-center justify-between pb-1.5 border-b border-white/10">
+            <span className="text-xs font-bold text-white flex items-center gap-1.5">
+              <Captions className="w-3.5 h-3.5" style={{ color: accentColor }} />
+              Legendas {subLoading ? '(carregando...)' : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => setActivePopover('none')}
+              aria-label="Fechar legendas"
+              className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+            <button
+              type="button"
+              onClick={() => {
+                userToggledSubRef.current = streamUrl;
+                setSelectedSubtitleId('off');
+              }}
+              className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                selectedSubtitleId === 'off'
+                  ? 'bg-white/15 text-white'
+                  : 'text-slate-300 hover:bg-white/10'
+              }`}
+            >
+              <span>Desativada</span>
+              {selectedSubtitleId === 'off' && (
+                <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+              )}
+            </button>
+
+            {allSubtitles.map((sub) => (
+              <button
+                key={sub.id}
+                type="button"
+                onClick={() => {
+                  userToggledSubRef.current = streamUrl;
+                  setSelectedSubtitleId(sub.id);
+                }}
+                className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                  selectedSubtitleId === sub.id
+                    ? 'bg-white/15 text-white'
+                    : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <span className="truncate">{sub.label}</span>
+                {selectedSubtitleId === sub.id && (
+                  <Check className="w-3.5 h-3.5 shrink-0" style={{ color: accentColor }} />
+                )}
+              </button>
+            ))}
+
+            {allSubtitles.length === 0 && (
+              <p className="text-[11px] text-slate-400 px-2 py-1">
+                Nenhuma legenda automática encontrada para este título. Você pode carregar um arquivo .SRT ou .VTT abaixo.
+              </p>
+            )}
+          </div>
+
+          {/* Upload custom SRT/VTT */}
+          <label className="w-full h-9 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 cursor-pointer">
+            <Upload className="w-3.5 h-3.5" style={{ color: accentColor }} />
+            Carregar arquivo (.SRT / .VTT)
+            <input
+              type="file"
+              accept=".srt,.vtt,text/vtt,application/x-subrip"
+              onChange={handleUploadLocalSubtitle}
+              className="hidden"
+            />
+          </label>
+
+          {/* Subtitle Styling & Sync */}
+          <div className="pt-2 border-t border-white/10 space-y-2.5 text-[11px]">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300">Tamanho</span>
+              <div className="flex gap-1">
+                {(['sm', 'md', 'lg'] as SubtitleSize[]).map((sz) => (
+                  <button
+                    key={sz}
+                    type="button"
+                    onClick={() => updateSubStyle((s) => ({ ...s, size: sz }))}
+                    className={`px-2 py-1 rounded-lg font-semibold cursor-pointer ${
+                      subStyle.size === sz
+                        ? 'bg-white/20 text-white'
+                        : 'bg-white/5 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {sz === 'sm' ? 'P' : sz === 'md' ? 'M' : 'G'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300">Cor</span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    { id: 'white', label: 'Branco' },
+                    { id: 'yellow', label: 'Amarelo' },
+                    { id: 'cyan', label: 'Azul' },
+                  ] as const
+                ).map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => updateSubStyle((s) => ({ ...s, color: c.id }))}
+                    className={`px-2 py-1 rounded-lg font-semibold cursor-pointer ${
+                      subStyle.color === c.id
+                        ? 'bg-white/20 text-white'
+                        : 'bg-white/5 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300">Fundo</span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    { id: 'box', label: 'Caixa' },
+                    { id: 'shadow', label: 'Sombra' },
+                    { id: 'none', label: 'Limpo' },
+                  ] as const
+                ).map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => updateSubStyle((s) => ({ ...s, bg: b.id }))}
+                    className={`px-2 py-1 rounded-lg font-semibold cursor-pointer ${
+                      subStyle.bg === b.id
+                        ? 'bg-white/20 text-white'
+                        : 'bg-white/5 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300">Sincronização</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateSubStyle((s) => ({
+                      ...s,
+                      offsetSeconds: Math.max(-10, Number((s.offsetSeconds - 0.5).toFixed(1))),
+                    }))
+                  }
+                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-mono-tabular cursor-pointer"
+                >
+                  -0.5s
+                </button>
+                <span className="font-mono-tabular text-white w-11 text-center">
+                  {subStyle.offsetSeconds > 0
+                    ? `+${subStyle.offsetSeconds}s`
+                    : `${subStyle.offsetSeconds}s`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateSubStyle((s) => ({
+                      ...s,
+                      offsetSeconds: Math.min(10, Number((s.offsetSeconds + 0.5).toFixed(1))),
+                    }))
+                  }
+                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-mono-tabular cursor-pointer"
+                >
+                  +0.5s
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POPOVER 3: Watcha-Style Configurações (Qualidade, Velocidade, Proporção, Auto-próximo) */}
+      {activePopover === 'settings' && (
+        <div
+          role="dialog"
+          aria-label="Configurações avançadas do player"
+          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[75%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-1.5"
+        >
+          {settingsView === 'root' && (
+            <>
+              <div className="flex items-center justify-between px-1 pb-1.5 border-b border-white/10">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <SlidersHorizontal className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                  Configurações do Player
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActivePopover('none')}
+                  aria-label="Fechar configurações"
+                  className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSettingsView('quality')}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+              >
+                <span className="flex items-center gap-2 font-semibold">
+                  <Tv className="w-3.5 h-3.5 text-slate-300" />
+                  Qualidade
+                </span>
+                <span className="text-slate-300 flex items-center gap-1 font-mono-tabular">
+                  {currentQualityLabel}
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsView('speed')}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+              >
+                <span className="flex items-center gap-2 font-semibold">
+                  <Gauge className="w-3.5 h-3.5 text-slate-300" />
+                  Velocidade
+                </span>
+                <span className="text-slate-300 flex items-center gap-1 font-mono-tabular">
+                  {playbackRate === 1 ? 'Normal' : `${playbackRate}x`}
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsView('aspect')}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+              >
+                <span className="flex items-center gap-2 font-semibold">
+                  <RectangleHorizontal className="w-3.5 h-3.5 text-slate-300" />
+                  Proporção
+                </span>
+                <span className="text-slate-300 flex items-center gap-1">
+                  {aspectLabels[aspectMode]}
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </span>
+              </button>
+
+              {onToggleAutoNext && (
+                <button
+                  type="button"
+                  onClick={onToggleAutoNext}
+                  className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 font-semibold">
+                    <FastForward className="w-3.5 h-3.5 text-slate-300" />
+                    Auto-próximo episódio
+                  </span>
+                  <span
+                    className="font-semibold"
+                    style={{ color: autoNextEnabled ? accentColor : '#94a3b8' }}
+                  >
+                    {autoNextEnabled ? 'Ativo' : 'Desativado'}
+                  </span>
+                </button>
+              )}
+
+              {allowTvCast && (
+                <button
+                  type="button"
+                  onClick={() => setActivePopover('cast')}
+                  className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 font-semibold">
+                    <Cast className="w-3.5 h-3.5 text-slate-300" />
+                    Espelhar na TV
+                  </span>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+                </button>
+              )}
+            </>
+          )}
+
+          {settingsView === 'quality' && (
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setSettingsView('root')}
+                className="w-full px-2 py-1.5 text-xs font-bold text-white flex items-center gap-1.5 border-b border-white/10 cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                Qualidade de Vídeo
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleChangeQuality(-1);
+                  setSettingsView('root');
+                }}
+                className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                  currentQuality === -1 ? 'bg-white/15 text-white' : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <span>Automática (Recomendada)</span>
+                {currentQuality === -1 && (
+                  <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                )}
+              </button>
+              {qualityLevels.map((lvl) => (
+                <button
+                  key={lvl.index}
+                  type="button"
+                  onClick={() => {
+                    handleChangeQuality(lvl.index);
+                    setSettingsView('root');
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    currentQuality === lvl.index
+                      ? 'bg-white/15 text-white'
+                      : 'text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{lvl.label}</span>
+                  {currentQuality === lvl.index && (
+                    <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {settingsView === 'speed' && (
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setSettingsView('root')}
+                className="w-full px-2 py-1.5 text-xs font-bold text-white flex items-center gap-1.5 border-b border-white/10 cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                Velocidade de Reprodução
+              </button>
+              {PLAYBACK_SPEEDS.map((spd) => (
+                <button
+                  key={spd}
+                  type="button"
+                  onClick={() => {
+                    handleChangeSpeed(spd);
+                    setSettingsView('root');
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    playbackRate === spd
+                      ? 'bg-white/15 text-white'
+                      : 'text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{spd === 1 ? 'Normal (1x)' : `${spd}x`}</span>
+                  {playbackRate === spd && (
+                    <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {settingsView === 'aspect' && (
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setSettingsView('root')}
+                className="w-full px-2 py-1.5 text-xs font-bold text-white flex items-center gap-1.5 border-b border-white/10 cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                Proporção da Tela
+              </button>
+              {(Object.keys(aspectLabels) as AspectMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    hasUserChangedAspectRef.current = true;
+                    setAspectMode(mode);
+                    setSettingsView('root');
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    aspectMode === mode
+                      ? 'bg-white/15 text-white'
+                      : 'text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{aspectLabels[mode]}</span>
+                  {aspectMode === mode && (
+                    <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* POPOVER 4: Espelhar na TV (Chromecast, AirPlay, Smart TV QR Code + Link) */}
+      {activePopover === 'cast' && (
+        <div
+          role="dialog"
+          aria-label="Espelhar na TV"
+          className="absolute inset-0 z-30 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#090e1f] border border-white/15 p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Cast className="w-5 h-5" style={{ color: accentColor }} />
+                <h3 className="font-display text-base font-bold text-white">Espelhar na TV</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCastStatusMsg(null);
+                  setActivePopover('none');
+                }}
+                aria-label="Fechar espelhar na TV"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={handlePromptChromecast}
+                className="h-11 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Cast className="w-4 h-4" style={{ color: accentColor }} />
+                Chromecast / Google TV
+              </button>
+
+              <button
+                type="button"
+                onClick={handlePromptAirPlay}
+                className="h-11 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Tv className="w-4 h-4" style={{ color: accentColor }} />
+                Apple AirPlay
+              </button>
+            </div>
+
+            {castStatusMsg && (
+              <p className="text-[11px] text-amber-200 bg-amber-500/10 border border-amber-400/25 rounded-xl px-3 py-2">
+                {castStatusMsg}
+              </p>
+            )}
+
+            <div className="rounded-xl bg-black/40 border border-white/10 p-3.5 flex flex-col sm:flex-row items-center gap-4">
+              {castQrDataUrl && (
+                <img
+                  src={castQrDataUrl}
+                  alt="QR Code para abrir na Smart TV"
+                  className="w-28 h-28 rounded-xl bg-white p-1.5 shrink-0"
+                />
+              )}
+              <div className="space-y-2 min-w-0 text-center sm:text-left">
+                <p className="text-xs font-bold text-white">Abrir direto na Smart TV</p>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Escaneie o QR Code com o celular ou copie o link abaixo para abrir esta reprodução no navegador da sua Smart TV.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCopyCastLink}
+                  className="h-9 px-3.5 rounded-lg text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                  style={{ backgroundColor: accentColor }}
+                >
+                  {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  {linkCopied ? 'Link Copiado!' : 'Copiar Link da TV'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

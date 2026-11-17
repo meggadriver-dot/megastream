@@ -1,27 +1,41 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import Hls from 'hls.js';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   Calendar,
   Clock,
+  FastForward,
   Film,
   Maximize2,
+  Play,
   RefreshCw,
   RotateCcw,
+  SkipForward,
   Star,
   Tv,
+  X,
 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { formatRuntimeMinutes } from '../../shared/catalogUtils';
-import { PLAYER_LAST_ROUTE_KEY, resolvePlayerBackTarget } from '../../shared/playerNavigation';
+import {
+  PLAYER_LAST_ROUTE_KEY,
+  parsePlayerPostMessageEvent,
+  resolveNextEpisode,
+  resolvePlayerBackTarget,
+} from '../../shared/playerNavigation';
 import type {
   IframeSandboxPolicy,
   MediaDetail,
   MediaType,
+  PlayerAudioOption,
+  PlayerBrandingConfig,
   SeasonDetail,
   StreamKind,
+  SubtitleTrack,
+  WatermarkPosition,
+  WatermarkSize,
 } from '../../shared/types';
+import { WatchaPlayer } from '../components/player/WatchaPlayer';
 import { useAuth } from '../contexts/AuthContext';
 import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { apiRequest } from '../services/apiClient';
@@ -35,14 +49,32 @@ interface CleanStreamPayload {
   referrerPolicy?: 'no-referrer' | 'strict-origin';
   seasonNumber?: number;
   episodeNumber?: number;
+  branding?: PlayerBrandingConfig;
+  audioOptions?: PlayerAudioOption[];
+  subtitles?: SubtitleTrack[];
+  posterUrl?: string | null;
+  streamUnavailableReason?: string | null;
 }
+
+const WATERMARK_POSITION_MAP: Record<WatermarkPosition, string> = {
+  'top-left': 'top-2.5 left-3 sm:top-3 sm:left-3.5',
+  'top-right': 'top-1.5 right-2 sm:top-2 sm:right-2.5',
+  'bottom-left': 'bottom-14 left-3 sm:bottom-16 sm:left-4',
+  'bottom-right': 'bottom-14 right-3 sm:bottom-16 sm:right-4',
+};
+
+const WATERMARK_SIZE_MAP: Record<WatermarkSize, { box: string; icon: number; text: string }> = {
+  sm: { box: 'px-2.5 py-1 gap-1.5', icon: 16, text: 'text-[11px]' },
+  md: { box: 'px-3 py-1.5 gap-2', icon: 20, text: 'text-xs sm:text-sm' },
+  lg: { box: 'px-3.5 py-2 gap-2.5', icon: 24, text: 'text-sm sm:text-base' },
+};
 
 export function PlayerPage() {
   const { type, tmdbId } = useParams<{ type: string; tmdbId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { recordPlayback, history, loading: authLoading, firebaseUser } = useAuth();
-  const { runtimeSettings } = useSiteConfig();
+  const { recordPlayback, history, loading: authLoading, firebaseUser, activeProfile } = useAuth();
+  const { siteConfig, runtimeSettings, playerBranding } = useSiteConfig();
 
   const mediaType: MediaType = type === 'tv' ? 'tv' : 'movie';
   const rawSeason = searchParams.get('season');
@@ -62,9 +94,26 @@ export function PlayerPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
 
+  // Auto-next state
+  const effectiveBranding = embedData?.branding ?? playerBranding;
+  const [autoNextOverride, setAutoNextOverride] = useState<boolean | null>(null);
+  const autoNextEnabled =
+    autoNextOverride !== null
+      ? autoNextOverride
+      : activeProfile?.autoplayNext ?? effectiveBranding.autoNextEpisode;
+
+  const [nextCountdown, setNextCountdown] = useState<number | null>(null);
+  const [autoNextDismissed, setAutoNextDismissed] = useState(false);
+  const [theaterMode, setTheaterMode] = useState(false);
+
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const recordedKeyRef = useRef<string | null>(null);
+
+  // Reset countdown when episode changes
+  useEffect(() => {
+    setNextCountdown(null);
+    setAutoNextDismissed(false);
+  }, [tmdbId, mediaType, seasonParam, episodeParam, reloadNonce]);
 
   // Load media metadata & seasons
   useEffect(() => {
@@ -105,6 +154,10 @@ export function PlayerPage() {
         `/api/player/${mediaType}/${tmdbId}${queryStr ? `?${queryStr}` : ''}`
       );
       setEmbedData(res);
+      if (res.streamUnavailableReason) {
+        setErrorMsg(res.streamUnavailableReason);
+        setPlayerLoading(false);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Não foi possível iniciar a reprodução.');
       setPlayerLoading(false);
@@ -135,41 +188,22 @@ export function PlayerPage() {
     };
   }, [embedData?.embedUrl]);
 
-  // Attach HLS.js automatically when streamKind === 'hls'
-  useEffect(() => {
-    if (!embedData || embedData.streamKind !== 'hls' || !videoRef.current) return;
-    const videoEl = videoRef.current;
-    let hls: Hls | null = null;
-
-    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      videoEl.src = embedData.embedUrl;
-    } else if (Hls.isSupported()) {
-      hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
+  const handleWatchProgress = useCallback(
+    (pct: number) => {
+      if (!detail) return;
+      void recordPlayback({
+        tmdbId: detail.tmdbId,
+        mediaType: detail.mediaType,
+        title: detail.title,
+        posterPath: detail.posterPath,
+        backdropPath: detail.backdropPath,
+        progressPercent: Math.max(5, Math.min(99, pct)),
+        seasonNumber: mediaType === 'tv' ? seasonParam : undefined,
+        episodeNumber: mediaType === 'tv' ? episodeParam : undefined,
       });
-      hls.loadSource(embedData.embedUrl);
-      hls.attachMedia(videoEl);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setPlayerLoading(false);
-        setPlayerTimedOut(false);
-        void videoEl.play().catch(() => {});
-      });
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          setPlayerLoading(false);
-          setErrorMsg('Não foi possível reproduzir este fluxo de vídeo no momento.');
-        }
-      });
-    } else {
-      setPlayerLoading(false);
-      setErrorMsg('Seu navegador não suporta reprodução HLS direta.');
-    }
-
-    return () => {
-      hls?.destroy();
-    };
-  }, [embedData, reloadNonce]);
+    },
+    [detail, mediaType, seasonParam, episodeParam, recordPlayback]
+  );
 
   // Record playback history automatically after auth settles
   useEffect(() => {
@@ -214,6 +248,109 @@ export function PlayerPage() {
     return () => clearTimeout(timer);
   }, [playerLoading, authBlocked, authPending, reloadNonce, embedData?.embedUrl, runtimeSettings.embedTimeoutSeconds]);
 
+  const currentEpisode =
+    mediaType === 'tv'
+      ? seasonDetail?.episodes.find((ep) => ep.episodeNumber === episodeParam) ?? null
+      : null;
+
+  const nextEpisode = useMemo(() => {
+    if (mediaType !== 'tv') return null;
+    return resolveNextEpisode({
+      currentSeason: seasonParam,
+      currentEpisode: episodeParam,
+      seasons: detail?.seasons,
+      episodes: seasonDetail?.episodes,
+    });
+  }, [mediaType, seasonParam, episodeParam, detail?.seasons, seasonDetail?.episodes]);
+
+  const goToNextEpisode = useCallback(() => {
+    if (!nextEpisode) return;
+    setNextCountdown(null);
+    setAutoNextDismissed(false);
+    setSearchParams(
+      {
+        season: String(nextEpisode.seasonNumber),
+        episode: String(nextEpisode.episodeNumber),
+      },
+      { replace: true }
+    );
+  }, [nextEpisode, setSearchParams]);
+
+  const triggerNextCountdown = useCallback(() => {
+    if (!nextEpisode || !autoNextEnabled || autoNextDismissed) return;
+    setNextCountdown((curr) =>
+      curr === null ? effectiveBranding.autoNextCountdownSeconds || 8 : curr
+    );
+  }, [
+    nextEpisode,
+    autoNextEnabled,
+    autoNextDismissed,
+    effectiveBranding.autoNextCountdownSeconds,
+  ]);
+
+  // Listen to player postMessage completion events (iframe embeds)
+  useEffect(() => {
+    if (mediaType !== 'tv' || !nextEpisode) return;
+    const handleMessage = (event: MessageEvent) => {
+      const parsed = parsePlayerPostMessageEvent(event.data);
+      if (parsed.nextRequested && autoNextEnabled) {
+        goToNextEpisode();
+      } else if (parsed.ended) {
+        triggerNextCountdown();
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [mediaType, nextEpisode, autoNextEnabled, goToNextEpisode, triggerNextCountdown]);
+
+  // Fallback runtime timer for iframe embeds when episode runtime is known
+  useEffect(() => {
+    if (
+      mediaType !== 'tv' ||
+      !nextEpisode ||
+      !autoNextEnabled ||
+      autoNextDismissed ||
+      playerLoading ||
+      errorMsg ||
+      embedData?.streamKind !== 'iframe'
+    ) {
+      return;
+    }
+    const runtimeMinutes = currentEpisode?.runtime ?? detail?.runtime ?? null;
+    if (!runtimeMinutes || runtimeMinutes < 5) return;
+    const countdownSec = effectiveBranding.autoNextCountdownSeconds || 8;
+    const triggerDelayMs = Math.max(15_000, (runtimeMinutes * 60 - countdownSec) * 1000);
+    const timer = setTimeout(() => {
+      triggerNextCountdown();
+    }, triggerDelayMs);
+    return () => clearTimeout(timer);
+  }, [
+    mediaType,
+    nextEpisode,
+    autoNextEnabled,
+    autoNextDismissed,
+    playerLoading,
+    errorMsg,
+    embedData?.streamKind,
+    currentEpisode?.runtime,
+    detail?.runtime,
+    effectiveBranding.autoNextCountdownSeconds,
+    triggerNextCountdown,
+  ]);
+
+  // Drive active next-episode countdown tick
+  useEffect(() => {
+    if (nextCountdown === null) return;
+    if (nextCountdown <= 0) {
+      goToNextEpisode();
+      return;
+    }
+    const timer = setTimeout(() => {
+      setNextCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [nextCountdown, goToNextEpisode]);
+
   const handleFullscreenLandscape = async () => {
     try {
       if (containerRef.current?.requestFullscreen) {
@@ -233,11 +370,6 @@ export function PlayerPage() {
   const previousProgress = history.find(
     (h) => h.tmdbId === Number(tmdbId) && h.mediaType === mediaType
   );
-
-  const currentEpisode =
-    mediaType === 'tv'
-      ? seasonDetail?.episodes.find((ep) => ep.episodeNumber === episodeParam) ?? null
-      : null;
 
   const handleExitPlayer = () => {
     let lastNonPlayerRoute: string | null = null;
@@ -260,9 +392,20 @@ export function PlayerPage() {
       ? undefined
       : 'allow-scripts allow-same-origin allow-forms allow-presentation';
 
+  const playerAccentHex = `#${effectiveBranding.colorHex || siteConfig.accentColorHex || '00a8ff'}`;
+  const watermarkLabel =
+    effectiveBranding.watermarkText.trim() || siteConfig.siteName || 'MegaStream';
+  const watermarkLogo = effectiveBranding.watermarkLogoUrl.trim() || siteConfig.logoUrl || '';
+  const wmSizeCfg = WATERMARK_SIZE_MAP[effectiveBranding.watermarkSize || 'md'];
+  const wmPosClass = WATERMARK_POSITION_MAP[effectiveBranding.watermarkPosition || 'top-left'];
+  const totalCountdown = effectiveBranding.autoNextCountdownSeconds || 8;
+
   return (
-    <div className="min-h-screen bg-[#03050e] text-white flex flex-col">
-      {/* Clean Cinema Control Bar */}
+    <div
+      className="min-h-screen bg-[#03050e] text-white flex flex-col"
+      style={{ '--ms-player-accent': playerAccentHex } as React.CSSProperties}
+    >
+      {/* Clean Custom MegaStream Cinema Control Bar */}
       <header
         className="px-4 sm:px-6 py-3 ms-glass border-b flex flex-wrap items-center justify-between gap-3"
         style={{ borderColor: 'var(--ms-border)' }}
@@ -276,10 +419,26 @@ export function PlayerPage() {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
+
           <div className="min-w-0">
-            <h1 className="font-display text-base sm:text-lg font-bold truncate">
-              {detail?.title || 'Reproduzindo conteúdo'}
-            </h1>
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-display font-bold uppercase tracking-wider shrink-0"
+                style={{ color: playerAccentHex }}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: playerAccentHex }}
+                />
+                {watermarkLabel}
+              </span>
+              <span className="hidden sm:inline text-slate-600" aria-hidden="true">
+                ·
+              </span>
+              <h1 className="font-display text-base sm:text-lg font-bold truncate">
+                {detail?.title || 'Reproduzindo conteúdo'}
+              </h1>
+            </div>
             <p className="text-xs text-slate-400 font-mono-tabular truncate">
               {mediaType === 'tv'
                 ? `Série · Temporada ${seasonParam} · Episódio ${episodeParam}${
@@ -293,21 +452,48 @@ export function PlayerPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {mediaType === 'tv' && (
+            <button
+              type="button"
+              onClick={() => setAutoNextOverride((prev) => !(prev ?? autoNextEnabled))}
+              aria-pressed={autoNextEnabled}
+              className={`h-10 px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                autoNextEnabled
+                  ? 'bg-white/10 text-white border-white/25'
+                  : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
+              }`}
+              style={
+                autoNextEnabled
+                  ? { borderColor: `${playerAccentHex}88`, color: '#ffffff' }
+                  : undefined
+              }
+              title="Alternar avanço automático para o próximo episódio"
+            >
+              <FastForward
+                className="w-3.5 h-3.5"
+                style={autoNextEnabled ? { color: playerAccentHex } : undefined}
+                aria-hidden="true"
+              />
+              <span className="hidden sm:inline">Auto-próximo:</span>
+              <span>{autoNextEnabled ? 'Ativo' : 'Desativado'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setReloadNonce((n) => n + 1)}
             className="h-10 px-3.5 rounded-xl ms-glass text-xs font-semibold flex items-center gap-1.5 hover:bg-white/10 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            Recarregar
+            <span className="hidden sm:inline">Recarregar</span>
           </button>
 
           <button
             type="button"
             onClick={handleFullscreenLandscape}
             className="h-10 px-4 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-            style={{ backgroundColor: 'var(--ms-accent)' }}
+            style={{ backgroundColor: playerAccentHex }}
           >
             <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
             Tela Cheia
@@ -317,11 +503,17 @@ export function PlayerPage() {
 
       {/* Main Clean Video Area + Title / Episode Details */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">
-        <div className={mediaType === 'tv' ? 'lg:col-span-8 xl:col-span-9 space-y-5' : 'lg:col-span-12 space-y-5'}>
+        <div
+          className={
+            mediaType === 'tv' && !theaterMode
+              ? 'lg:col-span-8 xl:col-span-9 space-y-5'
+              : 'lg:col-span-12 space-y-5'
+          }
+        >
           <div
             ref={containerRef}
             className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border shadow-2xl"
-            style={{ borderColor: 'var(--ms-border)' }}
+            style={{ borderColor: `${playerAccentHex}55` }}
           >
             {authBlocked ? (
               <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-4 p-6 text-center">
@@ -336,7 +528,7 @@ export function PlayerPage() {
                   <Link
                     to="/login"
                     className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
-                    style={{ backgroundColor: 'var(--ms-accent)' }}
+                    style={{ backgroundColor: playerAccentHex }}
                   >
                     Entrar na Conta
                   </Link>
@@ -351,40 +543,50 @@ export function PlayerPage() {
               </div>
             ) : (
               <>
-                {embedData?.embedUrl && !errorMsg && streamKind === 'hls' && (
-                  <video
-                    ref={videoRef}
+                {embedData?.embedUrl && !errorMsg && (streamKind === 'hls' || streamKind === 'video') && (
+                  <WatchaPlayer
                     key={`${embedData.embedUrl}-${reloadNonce}`}
-                    controls
-                    autoPlay
-                    playsInline
-                    className="w-full h-full bg-black"
-                    onCanPlay={() => {
+                    streamUrl={embedData.embedUrl}
+                    streamKind={streamKind}
+                    title={detail?.title || 'Reproduzindo conteúdo'}
+                    subtitleMeta={
+                      mediaType === 'tv'
+                        ? `Temp. ${seasonParam} · Ep. ${episodeParam}${
+                            currentEpisode?.name ? ` — ${currentEpisode.name}` : ''
+                          }`
+                        : detail?.releaseYear || undefined
+                    }
+                    posterUrl={embedData.posterUrl || detail?.backdropPath}
+                    accentColor={playerAccentHex}
+                    audioOptions={embedData.audioOptions}
+                    subtitles={embedData.subtitles}
+                    preferredLang={effectiveBranding.preferredLang}
+                    defaultAspectMode={effectiveBranding.defaultAspectMode}
+                    autoEnableSubtitles={effectiveBranding.autoEnableSubtitles}
+                    defaultSubtitleSize={effectiveBranding.defaultSubtitleSize}
+                    defaultSubtitleColor={effectiveBranding.defaultSubtitleColor}
+                    defaultSubtitleBg={effectiveBranding.defaultSubtitleBg}
+                    allowTvCast={effectiveBranding.allowTvCast}
+                    allowPipMode={effectiveBranding.allowPipMode}
+                    allowTheaterMode={effectiveBranding.allowTheaterMode}
+                    initialProgressPercent={previousProgress?.progressPercent}
+                    autoNextEnabled={autoNextEnabled}
+                    onToggleAutoNext={() => setAutoNextOverride((prev) => !(prev ?? autoNextEnabled))}
+                    nextEpisode={nextEpisode}
+                    onNextEpisode={goToNextEpisode}
+                    isCountdownActive={nextCountdown !== null}
+                    onEnded={triggerNextCountdown}
+                    onProgress={handleWatchProgress}
+                    theaterMode={theaterMode}
+                    onToggleTheater={() => setTheaterMode((prev) => !prev)}
+                    onRequestFullscreenContainer={handleFullscreenLandscape}
+                    onReady={() => {
                       setPlayerLoading(false);
                       setPlayerTimedOut(false);
                     }}
-                    onError={() => {
+                    onStreamError={(msg) => {
                       setPlayerLoading(false);
-                      setErrorMsg('Não foi possível reproduzir este título no momento.');
-                    }}
-                  />
-                )}
-
-                {embedData?.embedUrl && !errorMsg && streamKind === 'video' && (
-                  <video
-                    key={`${embedData.embedUrl}-${reloadNonce}`}
-                    src={embedData.embedUrl}
-                    controls
-                    autoPlay
-                    playsInline
-                    className="w-full h-full bg-black"
-                    onCanPlay={() => {
-                      setPlayerLoading(false);
-                      setPlayerTimedOut(false);
-                    }}
-                    onError={() => {
-                      setPlayerLoading(false);
-                      setErrorMsg('Não foi possível reproduzir este arquivo de vídeo no momento.');
+                      setErrorMsg(msg);
                     }}
                   />
                 )}
@@ -409,18 +611,143 @@ export function PlayerPage() {
                   />
                 )}
 
-                {!errorMsg && (
+                {/* Watermark Overlay only for external fallback iframes when explicitly enabled */}
+                {!errorMsg && streamKind === 'iframe' && effectiveBranding.watermarkEnabled && (
+                  <div
+                    data-testid="player-watermark"
+                    className={`absolute ${wmPosClass} z-10 pointer-events-none select-none flex items-center rounded-xl bg-[#050814]/92 backdrop-blur-md border border-white/15 shadow-lg ${wmSizeCfg.box}`}
+                    style={{ opacity: effectiveBranding.watermarkOpacity }}
+                  >
+                    {watermarkLogo ? (
+                      <img
+                        src={watermarkLogo}
+                        alt={watermarkLabel}
+                        referrerPolicy="no-referrer"
+                        style={{ width: wmSizeCfg.icon, height: wmSizeCfg.icon }}
+                        className="rounded-md object-cover shrink-0"
+                      />
+                    ) : (
+                      <svg
+                        width={wmSizeCfg.icon}
+                        height={wmSizeCfg.icon}
+                        viewBox="0 0 40 40"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="shrink-0"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M9 7.2C9 4.8 11.6 3.3 13.7 4.5L34.2 16.3C36.3 17.5 36.3 20.5 34.2 21.7L13.7 33.5C11.6 34.7 9 33.2 9 30.8V7.2Z"
+                          stroke={playerAccentHex}
+                          strokeWidth="3.2"
+                          fill={`${playerAccentHex}33`}
+                        />
+                        <path
+                          d="M15.5 13.4C15.5 12.1 16.9 11.3 18 12L27.8 17.6C28.9 18.2 28.9 19.8 27.8 20.4L18 26C16.9 26.7 15.5 25.9 15.5 24.6V13.4Z"
+                          fill="#ffffff"
+                        />
+                      </svg>
+                    )}
+                    <span
+                      className={`font-display font-extrabold tracking-tight text-white drop-shadow ${wmSizeCfg.text}`}
+                    >
+                      {watermarkLabel}
+                    </span>
+                  </div>
+                )}
+
+                {/* Auto-Next Episode Countdown Card */}
+                {nextCountdown !== null && nextEpisode && !errorMsg && (
+                  <div
+                    role="dialog"
+                    aria-label="Próximo episódio automático"
+                    className="absolute bottom-4 right-4 sm:bottom-6 sm:right-6 z-20 w-[min(92%,340px)] rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-4 shadow-2xl space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p
+                          className="text-[11px] font-mono-tabular font-bold uppercase tracking-wider"
+                          style={{ color: playerAccentHex }}
+                        >
+                          Próximo episódio em {nextCountdown}s
+                        </p>
+                        <p className="font-display text-sm font-bold text-white truncate mt-0.5">
+                          T{nextEpisode.seasonNumber} · E{nextEpisode.episodeNumber} — {nextEpisode.title}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNextCountdown(null);
+                          setAutoNextDismissed(true);
+                        }}
+                        aria-label="Cancelar próximo episódio automático"
+                        className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer shrink-0"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className="h-full transition-all duration-700"
+                        style={{
+                          width: `${Math.max(0, Math.min(100, (nextCountdown / totalCountdown) * 100))}%`,
+                          backgroundColor: playerAccentHex,
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={goToNextEpisode}
+                        className="flex-1 h-9 px-3 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5 cursor-pointer"
+                        style={{ backgroundColor: playerAccentHex }}
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+                        Assistir Agora
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNextCountdown(null);
+                          setAutoNextDismissed(true);
+                        }}
+                        className="h-9 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-slate-200 cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!errorMsg && (!embedData || streamKind === 'iframe') && (
                   <div
                     className={`absolute inset-0 bg-[#050814]/85 flex flex-col items-center justify-center gap-3 p-6 text-center transition-opacity duration-300 pointer-events-none ${
                       playerLoading ? 'opacity-100' : 'opacity-0'
                     }`}
                   >
-                    <div className="w-10 h-10 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
+                    <div
+                      className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin"
+                      style={{ borderColor: `${playerAccentHex} transparent ${playerAccentHex} ${playerAccentHex}` }}
+                    />
                     <p className="text-sm font-medium text-white">Carregando reprodução...</p>
                     {playerTimedOut && playerLoading && (
-                      <p className="text-xs text-slate-300 max-w-md pointer-events-auto">
-                        O vídeo está demorando para iniciar. Clique em Recarregar no topo para tentar novamente.
-                      </p>
+                      <div className="space-y-2.5 max-w-md pointer-events-auto">
+                        <p className="text-xs text-slate-300">
+                          Este player está demorando para responder ou não possui stream disponível no momento.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setReloadNonce((n) => n + 1)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white cursor-pointer"
+                          style={{ backgroundColor: playerAccentHex }}
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                          Tentar Novamente
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -428,16 +755,26 @@ export function PlayerPage() {
                 {errorMsg && (
                   <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-3 p-6 text-center">
                     <AlertTriangle className="w-10 h-10 text-amber-400" />
-                    <p className="text-base font-semibold text-white">{errorMsg}</p>
-                    <button
-                      type="button"
-                      onClick={() => setReloadNonce((n) => n + 1)}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
-                      style={{ backgroundColor: 'var(--ms-accent)' }}
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      Tentar Novamente
-                    </button>
+                    <p className="text-base font-semibold text-white max-w-md">{errorMsg}</p>
+                    <div className="flex flex-wrap items-center justify-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setReloadNonce((n) => n + 1)}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                        style={{ backgroundColor: playerAccentHex }}
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        Tentar Novamente
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExitPlayer}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white cursor-pointer"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        Voltar
+                      </button>
+                    </div>
                   </div>
                 )}
               </>
@@ -453,7 +790,10 @@ export function PlayerPage() {
               {currentEpisode && (
                 <div className="pb-4 border-b space-y-2" style={{ borderColor: 'var(--ms-border)' }}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-sky-300 font-mono-tabular">
+                    <span
+                      className="text-xs font-semibold font-mono-tabular"
+                      style={{ color: playerAccentHex }}
+                    >
                       Temporada {currentEpisode.seasonNumber} · Episódio {currentEpisode.episodeNumber}
                     </span>
                     <div className="flex items-center gap-3 text-xs text-slate-400 font-mono-tabular">
@@ -504,7 +844,7 @@ export function PlayerPage() {
                     {detail.genres && detail.genres.length > 0 && (
                       <>
                         <span aria-hidden="true">·</span>
-                        <span className="text-sky-300">
+                        <span style={{ color: playerAccentHex }}>
                           {detail.genres.map((g) => g.name).join(' / ')}
                         </span>
                       </>
@@ -513,9 +853,9 @@ export function PlayerPage() {
 
                   <h3 className="font-display text-lg font-bold text-white flex items-center gap-2">
                     {mediaType === 'tv' ? (
-                      <Tv className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                      <Tv className="w-4 h-4 shrink-0" style={{ color: playerAccentHex }} aria-hidden="true" />
                     ) : (
-                      <Film className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                      <Film className="w-4 h-4 shrink-0" style={{ color: playerAccentHex }} aria-hidden="true" />
                     )}
                     {detail.title}
                   </h3>
@@ -544,14 +884,24 @@ export function PlayerPage() {
 
         {/* Clean Episode Selector Sidebar for Series */}
         {mediaType === 'tv' && (
-          <aside className="lg:col-span-4 xl:col-span-3 ms-glass rounded-2xl p-4 flex flex-col max-h-[680px]">
+          <aside
+            className={
+              theaterMode
+                ? 'lg:col-span-12 ms-glass rounded-2xl p-4 flex flex-col max-h-[520px]'
+                : 'lg:col-span-4 xl:col-span-3 ms-glass rounded-2xl p-4 flex flex-col max-h-[680px]'
+            }
+          >
             <div className="space-y-2.5 pb-3 border-b" style={{ borderColor: 'var(--ms-border)' }}>
               <div className="flex items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-bold text-white flex items-center gap-2">
-                  <Tv className="w-4 h-4 text-sky-400" />
+                  <Tv className="w-4 h-4" style={{ color: playerAccentHex }} />
                   Episódios · Temp. {seasonParam}
                 </h2>
-                <Link to={`/series/${tmdbId}`} className="text-xs text-sky-300 hover:underline">
+                <Link
+                  to={`/series/${tmdbId}`}
+                  className="text-xs hover:underline"
+                  style={{ color: playerAccentHex }}
+                >
                   Ver série
                 </Link>
               </div>
@@ -599,7 +949,7 @@ export function PlayerPage() {
                     className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-center gap-2.5 ${
                       isCurrent ? 'text-white' : 'bg-white/5 text-slate-300 hover:bg-white/10'
                     }`}
-                    style={isCurrent ? { backgroundColor: 'var(--ms-accent)' } : undefined}
+                    style={isCurrent ? { backgroundColor: playerAccentHex } : undefined}
                   >
                     {ep.stillPath && (
                       <img

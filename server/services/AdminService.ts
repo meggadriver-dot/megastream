@@ -13,6 +13,7 @@ import { FirestoreRestService } from './FirestoreRestService.ts';
 import { PlayerService } from './PlayerService.ts';
 import { RecommendationService } from './RecommendationService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
+import { StreamResolverService } from './StreamResolverService.ts';
 import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
 
@@ -87,90 +88,45 @@ class AdminServiceImpl {
 
     if (target === 'player') {
       await PlayerService.ensureHydrated();
-      const movieSample = PlayerService.resolveStream({ tmdbId: 693134, mediaType: 'movie' });
-      const tvSample = PlayerService.resolveStream({
-        tmdbId: 1399,
-        mediaType: 'tv',
-        seasonNumber: 1,
-        episodeNumber: 2,
-      });
       const cfg = playerConfigStore.getConfig();
+      try {
+        const [movieRes, tvRes] = await Promise.all([
+          PlayerService.resolveStreamAsync({ tmdbId: 693134, mediaType: 'movie' }),
+          PlayerService.resolveStreamAsync({
+            tmdbId: 1399,
+            mediaType: 'tv',
+            seasonNumber: 1,
+            episodeNumber: 1,
+          }),
+        ]);
+        const movieClean =
+          (movieRes.streamKind === 'hls' || movieRes.streamKind === 'video') &&
+          !movieRes.streamUnavailableReason;
+        const tvClean =
+          (tvRes.streamKind === 'hls' || tvRes.streamKind === 'video') &&
+          !tvRes.streamUnavailableReason;
+        const ok = movieClean && tvClean;
 
-      if (cfg.sourceMode === 'myembed') {
-        try {
-          const res = await fetch(movieSample.embedUrl, {
-            signal: AbortSignal.timeout(6000),
-            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
-          });
-          const body = await res.text().catch(() => '');
-          const hasCloudflare = /challenges\.cloudflare|cf-turnstile|Attention Required|Just a moment/i.test(
-            body
-          );
-          const ok = res.ok && !hasCloudflare && Boolean(movieSample.embedUrl && tvSample.embedUrl);
-          return {
-            target: 'player',
-            ok,
-            statusCode: res.status,
-            latencyMs: Date.now() - started,
-            message: ok
-              ? `EmbedMovies online (${cfg.myembedBaseUrl} · HTTP ${res.status}, sem verificação Cloudflare${cfg.antiAdSandbox ? ', Sandbox Anti-Anúncios ativo' : ''}).`
-              : hasCloudflare
-                ? `Bloqueio Cloudflare detectado em ${cfg.myembedBaseUrl} (HTTP ${res.status}).`
-                : `EmbedMovies retornou HTTP ${res.status} ao verificar disponibilidade.`,
-            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
-            testedAt: new Date().toISOString(),
-          };
-        } catch (err) {
-          return {
-            target: 'player',
-            ok: false,
-            latencyMs: Date.now() - started,
-            message: `Falha ao conectar em ${cfg.myembedBaseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
-            testedAt: new Date().toISOString(),
-          };
-        }
+        return {
+          target: 'player',
+          ok,
+          statusCode: ok ? 200 : 502,
+          latencyMs: Date.now() - started,
+          message: ok
+            ? `WatchaPlayer MegaStream operacional (${cfg.sourceMode}) — filmes (${movieRes.audioOptions?.length ?? 1} faixas) e séries (${tvRes.audioOptions?.length ?? 1} faixas) carregando vídeo direto sem anúncios, sem Cloudflare e com failover automático entre fontes.`
+            : `Failover parcial ativo (${cfg.sourceMode}): filmes ${movieClean ? 'OK' : 'indisponível'}, séries ${tvClean ? 'OK' : 'indisponível'}.`,
+          detail: `Modo configurado: ${cfg.sourceMode} · Cor: #${cfg.defaultColorHex} · Idioma: ${cfg.watchaflixLang} · Proporção: ${cfg.defaultAspectMode}`,
+          testedAt: new Date().toISOString(),
+        };
+      } catch (err) {
+        return {
+          target: 'player',
+          ok: false,
+          latencyMs: Date.now() - started,
+          message: `Falha ao testar resolução do WatchaPlayer (${cfg.sourceMode}): ${err instanceof Error ? err.message : String(err)}`,
+          testedAt: new Date().toISOString(),
+        };
       }
-
-      if (cfg.sourceMode === 'watchaflix') {
-        try {
-          const healthUrl = `${cfg.watchaflixBaseUrl.replace(/\/+$/, '')}/health`;
-          const res = await fetch(healthUrl, {
-            signal: AbortSignal.timeout(6000),
-            headers: { Accept: 'application/json' },
-          });
-          const ok = res.ok && Boolean(movieSample.embedUrl && tvSample.embedUrl);
-          return {
-            target: 'player',
-            ok,
-            statusCode: res.status,
-            latencyMs: Date.now() - started,
-            message: ok
-              ? `WatchaFlix API online (${cfg.watchaflixBaseUrl} · HTTP ${res.status}) e URLs geradas com sucesso.`
-              : `WatchaFlix retornou HTTP ${res.status} ao verificar /health.`,
-            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
-            testedAt: new Date().toISOString(),
-          };
-        } catch (err) {
-          return {
-            target: 'player',
-            ok: false,
-            latencyMs: Date.now() - started,
-            message: `Falha ao conectar em ${cfg.watchaflixBaseUrl}/health: ${err instanceof Error ? err.message : String(err)}`,
-            detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
-            testedAt: new Date().toISOString(),
-          };
-        }
-      }
-
-      return {
-        target: 'player',
-        ok: Boolean(movieSample.embedUrl && tvSample.embedUrl),
-        latencyMs: Date.now() - started,
-        message: `Resolução de player validada (${cfg.sourceMode === 'custom_template' ? 'Template Customizado' : `MegaEmbed · ${cfg.defaultDomain}`}).`,
-        detail: `Filme exemplo: ${movieSample.embedUrl} | Série exemplo: ${tvSample.embedUrl}`,
-        testedAt: new Date().toISOString(),
-      };
     }
 
     // Firestore REST check

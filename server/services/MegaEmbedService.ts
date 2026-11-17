@@ -4,6 +4,7 @@ import {
   buildMyEmbedUrl,
   buildWatchaFlixEmbedUrl,
   detectStreamKind,
+  extractPlayerBranding,
   normalizeEpisodeNumber,
   normalizeSeasonNumber,
   normalizeTmdbId,
@@ -18,6 +19,7 @@ import { playerConfigStore } from '../config/playerConfig.ts';
 class MegaEmbedServiceImpl {
   getEmbedPayload(params: {
     tmdbId: string | number;
+    imdbId?: string | null;
     mediaType: MediaType;
     domain?: string | null;
     player?: string | null;
@@ -45,6 +47,8 @@ class MegaEmbedServiceImpl {
     if (cfg.sourceMode === 'myembed') {
       embedUrl = buildMyEmbedUrl({
         tmdbId: validId,
+        imdbId: params.imdbId,
+        preferImdbForMovies: cfg.preferImdbForMovies,
         mediaType: params.mediaType,
         seasonNumber,
         episodeNumber,
@@ -69,6 +73,7 @@ class MegaEmbedServiceImpl {
         embedUrl = buildCustomEmbedUrl({
           template: tpl,
           tmdbId: validId,
+          imdbId: params.imdbId,
           mediaType: params.mediaType,
           seasonNumber,
           episodeNumber,
@@ -94,6 +99,8 @@ class MegaEmbedServiceImpl {
       } else {
         embedUrl = buildMyEmbedUrl({
           tmdbId: validId,
+          imdbId: params.imdbId,
+          preferImdbForMovies: cfg.preferImdbForMovies,
           mediaType: params.mediaType,
           seasonNumber,
           episodeNumber,
@@ -121,6 +128,7 @@ class MegaEmbedServiceImpl {
       referrerPolicy,
       seasonNumber,
       episodeNumber,
+      branding: extractPlayerBranding(cfg),
       ...(params.mediaType === 'tv' && !cfg.seriesSeasonEpisodeDocumented
         ? {
             seriesSupportNote: cfg.seriesLimitationNote,

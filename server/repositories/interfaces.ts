@@ -9,7 +9,11 @@ import type {
   LiveChannel,
   MegaEmbedDomain,
   MegaEmbedPlayer,
+  PlayerAspectMode,
   PlayerSourceMode,
+  PlayerSubtitleBg,
+  PlayerSubtitleColor,
+  PlayerSubtitleSize,
   SiteConfig,
   StoredStreamProfile,
   SubscriptionRecord,
@@ -17,6 +21,8 @@ import type {
   SystemSettings,
   UserProfile,
   WatchaFlixLang,
+  WatermarkPosition,
+  WatermarkSize,
 } from '../../shared/types.ts';
 
 export interface StoredPlayerSettings {
@@ -28,11 +34,28 @@ export interface StoredPlayerSettings {
   defaultColorHex: string;
   myembedBaseUrl?: string;
   antiAdSandbox?: boolean;
+  preferImdbForMovies?: boolean;
   watchaflixBaseUrl?: string;
   watchaflixLang?: WatchaFlixLang;
   customEmbedMovieTemplate?: string;
   customEmbedTvTemplate?: string;
   embedTimeoutSeconds?: number;
+  defaultAspectMode?: PlayerAspectMode;
+  autoEnableSubtitles?: boolean;
+  defaultSubtitleSize?: PlayerSubtitleSize;
+  defaultSubtitleColor?: PlayerSubtitleColor;
+  defaultSubtitleBg?: PlayerSubtitleBg;
+  allowTvCast?: boolean;
+  allowPipMode?: boolean;
+  allowTheaterMode?: boolean;
+  watermarkEnabled?: boolean;
+  watermarkText?: string;
+  watermarkLogoUrl?: string;
+  watermarkPosition?: WatermarkPosition;
+  watermarkOpacity?: number;
+  watermarkSize?: WatermarkSize;
+  autoNextEpisode?: boolean;
+  autoNextCountdownSeconds?: number;
   updatedAt?: string;
 }
 

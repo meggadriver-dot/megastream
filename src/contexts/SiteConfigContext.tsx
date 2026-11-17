@@ -1,21 +1,33 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { DEFAULT_PLAYER_CONFIG, extractPlayerBranding } from '../../shared/playerUrl';
 import { DEFAULT_SITE_CONFIG, sanitizeSiteConfig } from '../../shared/siteConfigUtils';
 import {
   DEFAULT_SYSTEM_SETTINGS,
   extractPublicRuntimeSettings,
   sanitizeSystemSettings,
 } from '../../shared/systemSettingsUtils';
-import type { PublicRuntimeSettings, SiteConfig, SystemSettings } from '../../shared/types';
+import type {
+  PlayerBrandingConfig,
+  PlayerConfig,
+  PublicRuntimeSettings,
+  SiteConfig,
+  SystemSettings,
+} from '../../shared/types';
 import { db } from '../lib/firebase';
 import { apiRequest } from '../services/apiClient';
 import { useTheme } from './ThemeContext';
 
-const DEFAULT_PUBLIC_RUNTIME = extractPublicRuntimeSettings(DEFAULT_SYSTEM_SETTINGS, 12);
+const DEFAULT_PUBLIC_RUNTIME = extractPublicRuntimeSettings(
+  DEFAULT_SYSTEM_SETTINGS,
+  12,
+  extractPlayerBranding(DEFAULT_PLAYER_CONFIG)
+);
 
 interface SiteConfigContextValue {
   siteConfig: SiteConfig;
   runtimeSettings: PublicRuntimeSettings;
+  playerBranding: PlayerBrandingConfig;
   loadingConfig: boolean;
   refreshSiteConfig: () => Promise<void>;
   applySiteConfig: (next: SiteConfig, fromAdminSave?: boolean) => void;
@@ -37,6 +49,9 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(DEFAULT_SITE_CONFIG);
   const [runtimeSettings, setRuntimeSettings] =
     useState<PublicRuntimeSettings>(DEFAULT_PUBLIC_RUNTIME);
+  const [playerBranding, setPlayerBranding] = useState<PlayerBrandingConfig>(
+    extractPlayerBranding(DEFAULT_PLAYER_CONFIG)
+  );
   const [loadingConfig, setLoadingConfig] = useState(true);
   const latestUpdatedAtRef = useRef<number>(Date.parse(DEFAULT_SITE_CONFIG.updatedAt) || 0);
   const latestRuntimeUpdatedAtRef = useRef<number>(
@@ -88,18 +103,23 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
         latestRuntimeUpdatedAtRef.current = ts;
       }
       setRuntimeSettings(next);
+      if (next.playerBranding) {
+        setPlayerBranding(next.playerBranding);
+      }
     },
     []
   );
 
   const refreshSiteConfig = useCallback(async () => {
     try {
-      const [fsResult, apiResult, fsSysResult, apiSysResult] = await Promise.allSettled([
-        getDoc(doc(db, 'siteConfig', 'global')),
-        apiRequest<SiteConfig>('/api/site-config'),
-        getDoc(doc(db, 'systemSettings', 'global')),
-        apiRequest<PublicRuntimeSettings>('/api/system-config'),
-      ]);
+      const [fsResult, apiResult, fsSysResult, apiSysResult, fsPlayerResult] =
+        await Promise.allSettled([
+          getDoc(doc(db, 'siteConfig', 'global')),
+          apiRequest<SiteConfig>('/api/site-config'),
+          getDoc(doc(db, 'systemSettings', 'global')),
+          apiRequest<PublicRuntimeSettings>('/api/system-config'),
+          getDoc(doc(db, 'playerSettings', 'global')),
+        ]);
 
       let chosen: SiteConfig | null = null;
       let chosenTs = 0;
@@ -127,6 +147,13 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
         applySiteConfig(chosen);
       }
 
+      let safeBranding: PlayerBrandingConfig | undefined;
+      if (fsPlayerResult.status === 'fulfilled' && fsPlayerResult.value.exists()) {
+        safeBranding = extractPlayerBranding(
+          fsPlayerResult.value.data() as Partial<PlayerConfig>
+        );
+      }
+
       let chosenRuntime: PublicRuntimeSettings | null = null;
       let chosenRuntimeTs = 0;
 
@@ -136,7 +163,7 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
           DEFAULT_SYSTEM_SETTINGS,
           true
         );
-        chosenRuntime = extractPublicRuntimeSettings(sanitizedSys);
+        chosenRuntime = extractPublicRuntimeSettings(sanitizedSys, 12, safeBranding);
         chosenRuntimeTs = Date.parse(chosenRuntime.updatedAt) || 0;
       }
 
@@ -147,12 +174,17 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
           !chosenRuntime ||
           (ts >= chosenRuntimeTs && apiRt.updatedAt !== DEFAULT_SYSTEM_SETTINGS.updatedAt)
         ) {
-          chosenRuntime = apiRt;
+          chosenRuntime = {
+            ...apiRt,
+            playerBranding: safeBranding ?? apiRt.playerBranding,
+          };
         }
       }
 
       if (chosenRuntime) {
         applyRuntimeSettings(chosenRuntime);
+      } else if (safeBranding) {
+        setPlayerBranding(safeBranding);
       }
     } finally {
       setLoadingConfig(false);
@@ -190,7 +222,11 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
             true
           );
           setRuntimeSettings((prev) => {
-            const next = extractPublicRuntimeSettings(sanitizedSys, prev.embedTimeoutSeconds);
+            const next = extractPublicRuntimeSettings(
+              sanitizedSys,
+              prev.embedTimeoutSeconds,
+              prev.playerBranding
+            );
             const ts = Date.parse(next.updatedAt || '') || 0;
             if (ts > latestRuntimeUpdatedAtRef.current) {
               latestRuntimeUpdatedAtRef.current = ts;
@@ -204,9 +240,27 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
       }
     );
 
+    const unsubPlayerBranding = onSnapshot(
+      doc(db, 'playerSettings', 'global'),
+      (snap) => {
+        if (snap.exists()) {
+          const nextBranding = extractPlayerBranding(snap.data() as Partial<PlayerConfig>);
+          setPlayerBranding(nextBranding);
+          setRuntimeSettings((prev) => ({
+            ...prev,
+            playerBranding: nextBranding,
+          }));
+        }
+      },
+      () => {
+        // Ignore read error
+      }
+    );
+
     return () => {
       unsubSite();
       unsubSystem();
+      unsubPlayerBranding();
     };
   }, [applySiteConfig, refreshSiteConfig]);
 
@@ -215,6 +269,7 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
       value={{
         siteConfig,
         runtimeSettings,
+        playerBranding,
         loadingConfig,
         refreshSiteConfig,
         applySiteConfig,

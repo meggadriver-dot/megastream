@@ -2,9 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { Play, Radio, ShieldAlert, Tv } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { detectStreamKind } from '../../shared/playerUrl';
 import { toIsoTimestamp } from '../../shared/siteConfigUtils';
 import type { ChannelCategory, LiveChannel } from '../../shared/types';
+import { WatchaPlayer } from '../components/player/WatchaPlayer';
 import { useAuth } from '../contexts/AuthContext';
+import { useSiteConfig } from '../contexts/SiteConfigContext';
 import { db } from '../lib/firebase';
 import { apiRequest } from '../services/apiClient';
 
@@ -20,9 +23,11 @@ const CATEGORIES: Array<'Todos' | ChannelCategory> = [
 
 export function ChannelsPage() {
   const { profile } = useAuth();
+  const { siteConfig, playerBranding } = useSiteConfig();
   const [selectedCategory, setSelectedCategory] = useState<'Todos' | ChannelCategory>('Todos');
   const [channels, setChannels] = useState<LiveChannel[]>([]);
   const [activeChannel, setActiveChannel] = useState<LiveChannel | null>(null);
+  const [channelStreamError, setChannelStreamError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -127,46 +132,72 @@ export function ChannelsPage() {
       </div>
 
       {/* Active Authorized Channel Player */}
-      {activeChannel && (
-        <section className="ms-glass rounded-3xl overflow-hidden">
-          <div className="px-5 py-3.5 flex items-center justify-between border-b" style={{ borderColor: 'var(--ms-border)' }}>
-            <div>
-              <h2 className="font-display text-base font-bold text-white">
-                {activeChannel.name}
-              </h2>
-              <p className="text-xs text-slate-400">{activeChannel.category}</p>
+      {activeChannel && (() => {
+        const channelKind = detectStreamKind(activeChannel.streamUrl);
+        const channelAccent = `#${playerBranding.colorHex || siteConfig.accentColorHex || '00a8ff'}`;
+        return (
+          <section className="ms-glass rounded-3xl overflow-hidden">
+            <div className="px-5 py-3.5 flex items-center justify-between border-b" style={{ borderColor: 'var(--ms-border)' }}>
+              <div>
+                <h2 className="font-display text-base font-bold text-white">
+                  {activeChannel.name}
+                </h2>
+                <p className="text-xs text-slate-400">{activeChannel.category}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveChannel(null);
+                  setChannelStreamError(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white/10 text-xs font-medium text-white hover:bg-white/20 cursor-pointer"
+              >
+                Fechar player
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setActiveChannel(null)}
-              className="px-3 py-1.5 rounded-lg bg-white/10 text-xs font-medium text-white hover:bg-white/20 cursor-pointer"
-            >
-              Fechar player
-            </button>
-          </div>
-          <div className="aspect-video w-full bg-black">
-            {activeChannel.streamUrl.endsWith('.mp4') ||
-            activeChannel.streamUrl.endsWith('.webm') ? (
-              <video
-                src={activeChannel.streamUrl}
-                controls
-                autoPlay
-                playsInline
-                className="w-full h-full"
-              />
-            ) : (
-              <iframe
-                src={activeChannel.streamUrl}
-                title={activeChannel.name}
-                className="w-full h-full border-0"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
-                allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                referrerPolicy="no-referrer"
-              />
-            )}
-          </div>
-        </section>
-      )}
+            <div className="aspect-video w-full bg-black relative">
+              {channelStreamError ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center bg-[#050814]">
+                  <p className="text-sm font-semibold text-white">{channelStreamError}</p>
+                  <button
+                    type="button"
+                    onClick={() => setChannelStreamError(null)}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold text-white cursor-pointer"
+                    style={{ backgroundColor: channelAccent }}
+                  >
+                    Tentar Novamente
+                  </button>
+                </div>
+              ) : channelKind === 'hls' || channelKind === 'video' ? (
+                <WatchaPlayer
+                  key={activeChannel.id + ':' + activeChannel.streamUrl}
+                  streamUrl={activeChannel.streamUrl}
+                  streamKind={channelKind}
+                  title={activeChannel.name}
+                  subtitleMeta={activeChannel.category}
+                  posterUrl={activeChannel.logoUrl}
+                  accentColor={channelAccent}
+                  preferredLang={playerBranding.preferredLang}
+                  defaultAspectMode={playerBranding.defaultAspectMode}
+                  allowTvCast={playerBranding.allowTvCast}
+                  allowPipMode={playerBranding.allowPipMode}
+                  allowTheaterMode={false}
+                  onStreamError={(msg) => setChannelStreamError(msg)}
+                />
+              ) : (
+                <iframe
+                  src={activeChannel.streamUrl}
+                  title={activeChannel.name}
+                  className="w-full h-full border-0"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                  referrerPolicy="no-referrer"
+                />
+              )}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* Channel List / Authorized Empty State */}
       {loading ? (
@@ -229,7 +260,10 @@ export function ChannelsPage() {
 
               <button
                 type="button"
-                onClick={() => setActiveChannel(ch)}
+                onClick={() => {
+                  setChannelStreamError(null);
+                  setActiveChannel(ch);
+                }}
                 aria-label={`Assistir ${ch.name}`}
                 className="min-h-[44px] px-4 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 shrink-0 cursor-pointer"
                 style={{ backgroundColor: 'var(--ms-accent)' }}

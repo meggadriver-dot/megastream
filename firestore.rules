@@ -195,10 +195,16 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'sourceMode', 'defaultDomain', 'fallbackDomain', 'autoFallback',
           'defaultPlayer', 'defaultColorHex', 'myembedBaseUrl', 'antiAdSandbox',
-          'watchaflixBaseUrl', 'watchaflixLang',
-          'customEmbedMovieTemplate', 'customEmbedTvTemplate', 'embedTimeoutSeconds', 'updatedAt'
+          'preferImdbForMovies', 'watchaflixBaseUrl', 'watchaflixLang',
+          'customEmbedMovieTemplate', 'customEmbedTvTemplate', 'embedTimeoutSeconds',
+          'defaultAspectMode', 'autoEnableSubtitles', 'defaultSubtitleSize',
+          'defaultSubtitleColor', 'defaultSubtitleBg', 'allowTvCast',
+          'allowPipMode', 'allowTheaterMode',
+          'watermarkEnabled', 'watermarkText', 'watermarkLogoUrl', 'watermarkPosition',
+          'watermarkOpacity', 'watermarkSize', 'autoNextEpisode', 'autoNextCountdownSeconds',
+          'updatedAt'
         ])
-        && (!('sourceMode' in data) || data.sourceMode in ['myembed', 'megaembed', 'watchaflix', 'custom_template'])
+        && (!('sourceMode' in data) || data.sourceMode in ['megastream_watcha', 'myembed', 'megaembed', 'watchaflix', 'custom_template'])
         && data.defaultDomain in ['mgeb.lat', 'mgeb.space']
         && (!('fallbackDomain' in data) || data.fallbackDomain in ['mgeb.lat', 'mgeb.space'])
         && (!('autoFallback' in data) || data.autoFallback is bool)
@@ -206,11 +212,28 @@ service cloud.firestore {
         && data.defaultColorHex is string && data.defaultColorHex.size() >= 3 && data.defaultColorHex.size() <= 12
         && (!('myembedBaseUrl' in data) || (data.myembedBaseUrl is string && data.myembedBaseUrl.size() >= 8 && data.myembedBaseUrl.size() <= 300))
         && (!('antiAdSandbox' in data) || data.antiAdSandbox is bool)
+        && (!('preferImdbForMovies' in data) || data.preferImdbForMovies is bool)
         && (!('watchaflixBaseUrl' in data) || (data.watchaflixBaseUrl is string && data.watchaflixBaseUrl.size() >= 8 && data.watchaflixBaseUrl.size() <= 300))
         && (!('watchaflixLang' in data) || data.watchaflixLang in ['pt', 'en'])
         && (!('customEmbedMovieTemplate' in data) || (data.customEmbedMovieTemplate is string && data.customEmbedMovieTemplate.size() <= 500))
         && (!('customEmbedTvTemplate' in data) || (data.customEmbedTvTemplate is string && data.customEmbedTvTemplate.size() <= 500))
         && (!('embedTimeoutSeconds' in data) || (data.embedTimeoutSeconds is number && data.embedTimeoutSeconds >= 5 && data.embedTimeoutSeconds <= 30))
+        && (!('defaultAspectMode' in data) || data.defaultAspectMode in ['contain', 'cover', 'fill', 'cinema'])
+        && (!('autoEnableSubtitles' in data) || data.autoEnableSubtitles is bool)
+        && (!('defaultSubtitleSize' in data) || data.defaultSubtitleSize in ['sm', 'md', 'lg'])
+        && (!('defaultSubtitleColor' in data) || data.defaultSubtitleColor in ['white', 'yellow', 'cyan'])
+        && (!('defaultSubtitleBg' in data) || data.defaultSubtitleBg in ['box', 'shadow', 'none'])
+        && (!('allowTvCast' in data) || data.allowTvCast is bool)
+        && (!('allowPipMode' in data) || data.allowPipMode is bool)
+        && (!('allowTheaterMode' in data) || data.allowTheaterMode is bool)
+        && (!('watermarkEnabled' in data) || data.watermarkEnabled is bool)
+        && (!('watermarkText' in data) || (data.watermarkText is string && data.watermarkText.size() <= 40))
+        && (!('watermarkLogoUrl' in data) || (data.watermarkLogoUrl is string && data.watermarkLogoUrl.size() <= 500))
+        && (!('watermarkPosition' in data) || data.watermarkPosition in ['top-left', 'top-right', 'bottom-left', 'bottom-right'])
+        && (!('watermarkOpacity' in data) || (data.watermarkOpacity is number && data.watermarkOpacity >= 0.15 && data.watermarkOpacity <= 1))
+        && (!('watermarkSize' in data) || data.watermarkSize in ['sm', 'md', 'lg'])
+        && (!('autoNextEpisode' in data) || data.autoNextEpisode is bool)
+        && (!('autoNextCountdownSeconds' in data) || (data.autoNextCountdownSeconds is number && data.autoNextCountdownSeconds >= 3 && data.autoNextCountdownSeconds <= 30))
         && data.updatedAt is timestamp;
     }
 

@@ -3,6 +3,7 @@ import type {
   AiMode,
   CatalogSourceMode,
   PlanId,
+  PlayerBrandingConfig,
   PublicRuntimeSettings,
   SystemSettings,
   TmdbImageQuality,
@@ -171,7 +172,8 @@ export function sanitizeSystemSettings(
 
 export function extractPublicRuntimeSettings(
   settings: SystemSettings,
-  embedTimeoutSeconds = 12
+  embedTimeoutSeconds = 12,
+  playerBranding?: PlayerBrandingConfig
 ): PublicRuntimeSettings {
   return {
     allowRegistration: settings.allowRegistration,
@@ -181,6 +183,7 @@ export function extractPublicRuntimeSettings(
     maintenanceMessage: settings.maintenanceMessage,
     aiEnabled: settings.aiMode !== 'disabled',
     embedTimeoutSeconds: clampInt(embedTimeoutSeconds, 5, 30, 12),
+    ...(playerBranding ? { playerBranding } : {}),
     updatedAt: settings.updatedAt,
   };
 }

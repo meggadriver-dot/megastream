@@ -2,20 +2,36 @@ import {
   DEFAULT_PLAYER_CONFIG,
   normalizeMyEmbedBaseUrl,
   normalizeWatchaFlixBaseUrl,
+  sanitizeAutoNextCountdownSeconds,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
+  sanitizeWatermarkLogoUrl,
+  sanitizeWatermarkOpacity,
+  sanitizeWatermarkText,
   validateMegaEmbedDomain,
   validateMegaEmbedPlayer,
+  validatePlayerAspectMode,
   validatePlayerSourceMode,
+  validateSubtitleBg,
+  validateSubtitleColor,
+  validateSubtitleSize,
   validateWatchaFlixLang,
+  validateWatermarkPosition,
+  validateWatermarkSize,
 } from '../../shared/playerUrl.ts';
 import type {
   MegaEmbedDomain,
   MegaEmbedPlayer,
+  PlayerAspectMode,
   PlayerConfig,
   PlayerSourceMode,
+  PlayerSubtitleBg,
+  PlayerSubtitleColor,
+  PlayerSubtitleSize,
   WatchaFlixLang,
+  WatermarkPosition,
+  WatermarkSize,
 } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 
@@ -57,6 +73,10 @@ class PlayerConfigStore {
         typeof stored.antiAdSandbox === 'boolean'
           ? stored.antiAdSandbox
           : DEFAULT_PLAYER_CONFIG.antiAdSandbox,
+      preferImdbForMovies:
+        typeof stored.preferImdbForMovies === 'boolean'
+          ? stored.preferImdbForMovies
+          : DEFAULT_PLAYER_CONFIG.preferImdbForMovies,
       watchaflixBaseUrl: normalizeWatchaFlixBaseUrl(stored.watchaflixBaseUrl),
       watchaflixLang: validateWatchaFlixLang(
         stored.watchaflixLang,
@@ -67,6 +87,70 @@ class PlayerConfigStore {
       embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
         stored.embedTimeoutSeconds,
         DEFAULT_PLAYER_CONFIG.embedTimeoutSeconds
+      ),
+      defaultAspectMode: validatePlayerAspectMode(
+        stored.defaultAspectMode,
+        DEFAULT_PLAYER_CONFIG.defaultAspectMode
+      ),
+      autoEnableSubtitles:
+        typeof stored.autoEnableSubtitles === 'boolean'
+          ? stored.autoEnableSubtitles
+          : DEFAULT_PLAYER_CONFIG.autoEnableSubtitles,
+      defaultSubtitleSize: validateSubtitleSize(
+        stored.defaultSubtitleSize,
+        DEFAULT_PLAYER_CONFIG.defaultSubtitleSize
+      ),
+      defaultSubtitleColor: validateSubtitleColor(
+        stored.defaultSubtitleColor,
+        DEFAULT_PLAYER_CONFIG.defaultSubtitleColor
+      ),
+      defaultSubtitleBg: validateSubtitleBg(
+        stored.defaultSubtitleBg,
+        DEFAULT_PLAYER_CONFIG.defaultSubtitleBg
+      ),
+      allowTvCast:
+        typeof stored.allowTvCast === 'boolean'
+          ? stored.allowTvCast
+          : DEFAULT_PLAYER_CONFIG.allowTvCast,
+      allowPipMode:
+        typeof stored.allowPipMode === 'boolean'
+          ? stored.allowPipMode
+          : DEFAULT_PLAYER_CONFIG.allowPipMode,
+      allowTheaterMode:
+        typeof stored.allowTheaterMode === 'boolean'
+          ? stored.allowTheaterMode
+          : DEFAULT_PLAYER_CONFIG.allowTheaterMode,
+      watermarkEnabled:
+        typeof stored.watermarkEnabled === 'boolean'
+          ? stored.watermarkEnabled
+          : DEFAULT_PLAYER_CONFIG.watermarkEnabled,
+      watermarkText:
+        stored.watermarkText !== undefined
+          ? sanitizeWatermarkText(stored.watermarkText)
+          : DEFAULT_PLAYER_CONFIG.watermarkText,
+      watermarkLogoUrl:
+        stored.watermarkLogoUrl !== undefined
+          ? sanitizeWatermarkLogoUrl(stored.watermarkLogoUrl)
+          : DEFAULT_PLAYER_CONFIG.watermarkLogoUrl,
+      watermarkPosition: validateWatermarkPosition(
+        stored.watermarkPosition,
+        DEFAULT_PLAYER_CONFIG.watermarkPosition
+      ),
+      watermarkOpacity: sanitizeWatermarkOpacity(
+        stored.watermarkOpacity,
+        DEFAULT_PLAYER_CONFIG.watermarkOpacity
+      ),
+      watermarkSize: validateWatermarkSize(
+        stored.watermarkSize,
+        DEFAULT_PLAYER_CONFIG.watermarkSize
+      ),
+      autoNextEpisode:
+        typeof stored.autoNextEpisode === 'boolean'
+          ? stored.autoNextEpisode
+          : DEFAULT_PLAYER_CONFIG.autoNextEpisode,
+      autoNextCountdownSeconds: sanitizeAutoNextCountdownSeconds(
+        stored.autoNextCountdownSeconds,
+        DEFAULT_PLAYER_CONFIG.autoNextCountdownSeconds
       ),
       updatedAt: stored.updatedAt ?? DEFAULT_PLAYER_CONFIG.updatedAt,
     };
@@ -113,6 +197,11 @@ class PlayerConfigStore {
         ? partial.antiAdSandbox
         : current.antiAdSandbox;
 
+    const nextPreferImdb =
+      typeof partial.preferImdbForMovies === 'boolean'
+        ? partial.preferImdbForMovies
+        : current.preferImdbForMovies;
+
     const nextWatchaflixBaseUrl =
       partial.watchaflixBaseUrl !== undefined
         ? normalizeWatchaFlixBaseUrl(partial.watchaflixBaseUrl)
@@ -138,6 +227,85 @@ class PlayerConfigStore {
         ? sanitizeEmbedTimeoutSeconds(partial.embedTimeoutSeconds, current.embedTimeoutSeconds)
         : current.embedTimeoutSeconds;
 
+    const nextAspectMode: PlayerAspectMode =
+      partial.defaultAspectMode !== undefined
+        ? validatePlayerAspectMode(partial.defaultAspectMode, current.defaultAspectMode)
+        : current.defaultAspectMode;
+
+    const nextAutoEnableSubtitles =
+      typeof partial.autoEnableSubtitles === 'boolean'
+        ? partial.autoEnableSubtitles
+        : current.autoEnableSubtitles;
+
+    const nextSubtitleSize: PlayerSubtitleSize =
+      partial.defaultSubtitleSize !== undefined
+        ? validateSubtitleSize(partial.defaultSubtitleSize, current.defaultSubtitleSize)
+        : current.defaultSubtitleSize;
+
+    const nextSubtitleColor: PlayerSubtitleColor =
+      partial.defaultSubtitleColor !== undefined
+        ? validateSubtitleColor(partial.defaultSubtitleColor, current.defaultSubtitleColor)
+        : current.defaultSubtitleColor;
+
+    const nextSubtitleBg: PlayerSubtitleBg =
+      partial.defaultSubtitleBg !== undefined
+        ? validateSubtitleBg(partial.defaultSubtitleBg, current.defaultSubtitleBg)
+        : current.defaultSubtitleBg;
+
+    const nextAllowTvCast =
+      typeof partial.allowTvCast === 'boolean' ? partial.allowTvCast : current.allowTvCast;
+
+    const nextAllowPipMode =
+      typeof partial.allowPipMode === 'boolean' ? partial.allowPipMode : current.allowPipMode;
+
+    const nextAllowTheaterMode =
+      typeof partial.allowTheaterMode === 'boolean'
+        ? partial.allowTheaterMode
+        : current.allowTheaterMode;
+
+    const nextWatermarkEnabled =
+      typeof partial.watermarkEnabled === 'boolean'
+        ? partial.watermarkEnabled
+        : current.watermarkEnabled;
+
+    const nextWatermarkText =
+      partial.watermarkText !== undefined
+        ? sanitizeWatermarkText(partial.watermarkText)
+        : current.watermarkText;
+
+    const nextWatermarkLogoUrl =
+      partial.watermarkLogoUrl !== undefined
+        ? sanitizeWatermarkLogoUrl(partial.watermarkLogoUrl)
+        : current.watermarkLogoUrl;
+
+    const nextWatermarkPosition: WatermarkPosition =
+      partial.watermarkPosition !== undefined
+        ? validateWatermarkPosition(partial.watermarkPosition, current.watermarkPosition)
+        : current.watermarkPosition;
+
+    const nextWatermarkOpacity =
+      partial.watermarkOpacity !== undefined
+        ? sanitizeWatermarkOpacity(partial.watermarkOpacity, current.watermarkOpacity)
+        : current.watermarkOpacity;
+
+    const nextWatermarkSize: WatermarkSize =
+      partial.watermarkSize !== undefined
+        ? validateWatermarkSize(partial.watermarkSize, current.watermarkSize)
+        : current.watermarkSize;
+
+    const nextAutoNextEpisode =
+      typeof partial.autoNextEpisode === 'boolean'
+        ? partial.autoNextEpisode
+        : current.autoNextEpisode;
+
+    const nextAutoNextCountdown =
+      partial.autoNextCountdownSeconds !== undefined
+        ? sanitizeAutoNextCountdownSeconds(
+            partial.autoNextCountdownSeconds,
+            current.autoNextCountdownSeconds
+          )
+        : current.autoNextCountdownSeconds;
+
     const updatedAt =
       preserveUpdatedAt && partial.updatedAt
         ? partial.updatedAt
@@ -152,11 +320,28 @@ class PlayerConfigStore {
       defaultColorHex: nextColor,
       myembedBaseUrl: nextMyEmbedBaseUrl,
       antiAdSandbox: nextAntiAdSandbox,
+      preferImdbForMovies: nextPreferImdb,
       watchaflixBaseUrl: nextWatchaflixBaseUrl,
       watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,
       customEmbedTvTemplate: nextTvTpl,
       embedTimeoutSeconds: nextTimeout,
+      defaultAspectMode: nextAspectMode,
+      autoEnableSubtitles: nextAutoEnableSubtitles,
+      defaultSubtitleSize: nextSubtitleSize,
+      defaultSubtitleColor: nextSubtitleColor,
+      defaultSubtitleBg: nextSubtitleBg,
+      allowTvCast: nextAllowTvCast,
+      allowPipMode: nextAllowPipMode,
+      allowTheaterMode: nextAllowTheaterMode,
+      watermarkEnabled: nextWatermarkEnabled,
+      watermarkText: nextWatermarkText,
+      watermarkLogoUrl: nextWatermarkLogoUrl,
+      watermarkPosition: nextWatermarkPosition,
+      watermarkOpacity: nextWatermarkOpacity,
+      watermarkSize: nextWatermarkSize,
+      autoNextEpisode: nextAutoNextEpisode,
+      autoNextCountdownSeconds: nextAutoNextCountdown,
       updatedAt,
     });
 
