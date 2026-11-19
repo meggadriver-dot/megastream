@@ -17,107 +17,126 @@ import { TMDBService } from './TMDBService.ts';
 
 class PlayerServiceImpl {
   private lastHydratedAt = 0;
-  private readonly hydrationTtlMs = 20_000;
+  private readonly hydrationTtlMs = 2_500;
+  private hydrationPromise: Promise<void> | null = null;
 
   async ensureHydrated(force = false): Promise<void> {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-
-    const remote = await FirestoreRestService.getDocument<{
-      sourceMode?: string;
-      defaultDomain?: string;
-      fallbackDomain?: string;
-      autoFallback?: boolean;
-      defaultPlayer?: string;
-      defaultColorHex?: string;
-      myembedBaseUrl?: string;
-      antiAdSandbox?: boolean;
-      preferImdbForMovies?: boolean;
-      watchaflixBaseUrl?: string;
-      watchaflixLang?: string;
-      customEmbedMovieTemplate?: string;
-      customEmbedTvTemplate?: string;
-      embedTimeoutSeconds?: number;
-      defaultAspectMode?: string;
-      autoEnableSubtitles?: boolean;
-      defaultSubtitleSize?: string;
-      defaultSubtitleColor?: string;
-      defaultSubtitleBg?: string;
-      allowTvCast?: boolean;
-      allowPipMode?: boolean;
-      allowTheaterMode?: boolean;
-      watermarkEnabled?: boolean;
-      watermarkText?: string;
-      watermarkLogoUrl?: string;
-      watermarkPosition?: string;
-      watermarkOpacity?: number;
-      watermarkSize?: string;
-      autoNextEpisode?: boolean;
-      autoNextCountdownSeconds?: number;
-      updatedAt?: unknown;
-    }>('playerSettings/global');
-
-    if (remote) {
-      const local = playerConfigStore.getConfig();
-      const localTs = Date.parse(local.updatedAt || '') || 0;
-      const remoteIso = toIsoTimestamp(remote.updatedAt, '');
-      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      if (localTs === 0 || remoteTs >= localTs || local.updatedAt === '2026-01-01T00:00:00.000Z') {
-        const resolvedMode = resolveHydratedSourceMode({
-          remoteSourceMode: remote.sourceMode,
-          remoteAntiAdSandbox: remote.antiAdSandbox,
-          remoteHasPrincipalFields: typeof remote.defaultAspectMode === 'string',
-          fallback: local.sourceMode,
-        });
-        playerConfigStore.updateConfig(
-          {
-            sourceMode: resolvedMode,
-            defaultDomain: remote.defaultDomain as PlayerConfig['defaultDomain'],
-            fallbackDomain: remote.fallbackDomain as PlayerConfig['fallbackDomain'],
-            autoFallback: remote.autoFallback,
-            defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
-            defaultColorHex: remote.defaultColorHex,
-            myembedBaseUrl: remote.myembedBaseUrl,
-            antiAdSandbox: remote.antiAdSandbox,
-            preferImdbForMovies: remote.preferImdbForMovies,
-            watchaflixBaseUrl: remote.watchaflixBaseUrl,
-            watchaflixLang: remote.watchaflixLang as PlayerConfig['watchaflixLang'],
-            customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
-            customEmbedTvTemplate: remote.customEmbedTvTemplate,
-            embedTimeoutSeconds: remote.embedTimeoutSeconds,
-            defaultAspectMode: remote.defaultAspectMode as PlayerConfig['defaultAspectMode'],
-            autoEnableSubtitles: remote.autoEnableSubtitles,
-            defaultSubtitleSize: remote.defaultSubtitleSize as PlayerConfig['defaultSubtitleSize'],
-            defaultSubtitleColor: remote.defaultSubtitleColor as PlayerConfig['defaultSubtitleColor'],
-            defaultSubtitleBg: remote.defaultSubtitleBg as PlayerConfig['defaultSubtitleBg'],
-            allowTvCast: remote.allowTvCast,
-            allowPipMode: remote.allowPipMode,
-            allowTheaterMode: remote.allowTheaterMode,
-            watermarkEnabled: remote.watermarkEnabled,
-            watermarkText: remote.watermarkText,
-            watermarkLogoUrl: remote.watermarkLogoUrl,
-            watermarkPosition: remote.watermarkPosition as PlayerConfig['watermarkPosition'],
-            watermarkOpacity: remote.watermarkOpacity,
-            watermarkSize: remote.watermarkSize as PlayerConfig['watermarkSize'],
-            autoNextEpisode: remote.autoNextEpisode,
-            autoNextCountdownSeconds: remote.autoNextCountdownSeconds,
-            updatedAt: remoteIso || undefined,
-          },
-          true
-        );
-      }
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
 
-    this.lastHydratedAt = Date.now();
+    const run = (async () => {
+      const remote = await FirestoreRestService.getDocument<{
+        sourceMode?: string;
+        defaultDomain?: string;
+        fallbackDomain?: string;
+        autoFallback?: boolean;
+        defaultPlayer?: string;
+        defaultColorHex?: string;
+        myembedBaseUrl?: string;
+        antiAdSandbox?: boolean;
+        preferImdbForMovies?: boolean;
+        watchaflixBaseUrl?: string;
+        watchaflixLang?: string;
+        customEmbedMovieTemplate?: string;
+        customEmbedTvTemplate?: string;
+        customSources?: PlayerConfig['customSources'];
+        embedTimeoutSeconds?: number;
+        defaultAspectMode?: string;
+        autoEnableSubtitles?: boolean;
+        defaultSubtitleSize?: string;
+        defaultSubtitleColor?: string;
+        defaultSubtitleBg?: string;
+        allowTvCast?: boolean;
+        allowPipMode?: boolean;
+        allowTheaterMode?: boolean;
+        watermarkEnabled?: boolean;
+        watermarkText?: string;
+        watermarkLogoUrl?: string;
+        watermarkPosition?: string;
+        watermarkOpacity?: number;
+        watermarkSize?: string;
+        autoNextEpisode?: boolean;
+        autoNextCountdownSeconds?: number;
+        updatedAt?: unknown;
+      }>('playerSettings/global');
+
+      if (remote) {
+        const local = playerConfigStore.getConfig();
+        const localTs = Date.parse(local.updatedAt || '') || 0;
+        const remoteIso = toIsoTimestamp(remote.updatedAt, '');
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === '2026-01-01T00:00:00.000Z';
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+
+        if (isLocalDefault || localTs === 0 || (changedRemote && remoteTs >= localTs)) {
+          const resolvedMode = resolveHydratedSourceMode({
+            remoteSourceMode: remote.sourceMode,
+            remoteAntiAdSandbox: remote.antiAdSandbox,
+            remoteHasPrincipalFields: typeof remote.defaultAspectMode === 'string',
+            fallback: local.sourceMode,
+          });
+          playerConfigStore.updateConfig(
+            {
+              sourceMode: resolvedMode,
+              defaultDomain: remote.defaultDomain as PlayerConfig['defaultDomain'],
+              fallbackDomain: remote.fallbackDomain as PlayerConfig['fallbackDomain'],
+              autoFallback: remote.autoFallback,
+              defaultPlayer: remote.defaultPlayer as PlayerConfig['defaultPlayer'],
+              defaultColorHex: remote.defaultColorHex,
+              myembedBaseUrl: remote.myembedBaseUrl,
+              antiAdSandbox: remote.antiAdSandbox,
+              preferImdbForMovies: remote.preferImdbForMovies,
+              watchaflixBaseUrl: remote.watchaflixBaseUrl,
+              watchaflixLang: remote.watchaflixLang as PlayerConfig['watchaflixLang'],
+              customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
+              customEmbedTvTemplate: remote.customEmbedTvTemplate,
+              customSources: remote.customSources,
+              embedTimeoutSeconds: remote.embedTimeoutSeconds,
+              defaultAspectMode: remote.defaultAspectMode as PlayerConfig['defaultAspectMode'],
+              autoEnableSubtitles: remote.autoEnableSubtitles,
+              defaultSubtitleSize: remote.defaultSubtitleSize as PlayerConfig['defaultSubtitleSize'],
+              defaultSubtitleColor: remote.defaultSubtitleColor as PlayerConfig['defaultSubtitleColor'],
+              defaultSubtitleBg: remote.defaultSubtitleBg as PlayerConfig['defaultSubtitleBg'],
+              allowTvCast: remote.allowTvCast,
+              allowPipMode: remote.allowPipMode,
+              allowTheaterMode: remote.allowTheaterMode,
+              watermarkEnabled: remote.watermarkEnabled,
+              watermarkText: remote.watermarkText,
+              watermarkLogoUrl: remote.watermarkLogoUrl,
+              watermarkPosition: remote.watermarkPosition as PlayerConfig['watermarkPosition'],
+              watermarkOpacity: remote.watermarkOpacity,
+              watermarkSize: remote.watermarkSize as PlayerConfig['watermarkSize'],
+              autoNextEpisode: remote.autoNextEpisode,
+              autoNextCountdownSeconds: remote.autoNextCountdownSeconds,
+              updatedAt: remoteIso || undefined,
+            },
+            true
+          );
+          StreamResolverService.clearCache();
+        }
+      }
+
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+
+    this.hydrationPromise = run;
+    return run;
   }
 
   getConfig(): PlayerConfig {
     return playerConfigStore.getConfig();
   }
 
-  async getConfigAsync(): Promise<PlayerConfig> {
-    await this.ensureHydrated();
+  async getConfigAsync(force = false): Promise<PlayerConfig> {
+    await this.ensureHydrated(force);
     return playerConfigStore.getConfig();
   }
 
@@ -189,7 +208,10 @@ class PlayerServiceImpl {
         ...basePayload,
         embedUrl: primary.streamUrl,
         streamKind: primary.streamKind,
-        sandboxPolicy: 'none',
+        sandboxPolicy: resolveSandboxPolicy({
+          streamKind: primary.streamKind,
+          antiAdSandbox: cfg.antiAdSandbox,
+        }),
         audioOptions: playableStreams.audioOptions,
         subtitles,
         posterUrl: playableStreams.posterUrl,

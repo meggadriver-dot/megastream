@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Download,
+  ExternalLink,
   FastForward,
   Gauge,
   Languages,
@@ -23,6 +25,7 @@ import {
   Settings,
   SkipForward,
   SlidersHorizontal,
+  Smartphone,
   Tv,
   Unlock,
   Upload,
@@ -31,16 +34,26 @@ import {
   X,
 } from 'lucide-react';
 import {
+  buildAndroidIntentUrl,
+  buildM3uPlaylistContent,
+  buildVlcStreamUrl,
+  sanitizeM3uFileName,
+  toAbsoluteStreamUrl,
+} from '../../../shared/castUtils';
+import {
   shouldShowSkipNextInPlayer,
   type NextEpisodeTarget,
 } from '../../../shared/playerNavigation';
+import { getCustomSourceLangMeta } from '../../../shared/playerUrl';
 import { convertSrtToVtt, parseVttCues, type VttCueItem } from '../../../shared/subtitleUtils';
 import type {
+  IframeSandboxPolicy,
   PlayerAspectMode,
   PlayerAudioOption,
   PlayerSubtitleBg,
   PlayerSubtitleColor,
   PlayerSubtitleSize,
+  StreamKind,
   SubtitleTrack,
 } from '../../../shared/types';
 
@@ -60,7 +73,9 @@ interface SubtitleAppearance {
 
 interface WatchaPlayerProps {
   streamUrl: string;
-  streamKind: 'hls' | 'video';
+  streamKind: StreamKind;
+  sandboxPolicy?: IframeSandboxPolicy;
+  referrerPolicy?: 'no-referrer' | 'strict-origin';
   title: string;
   subtitleMeta?: string;
   posterUrl?: string | null;
@@ -118,6 +133,8 @@ function formatClock(totalSeconds: number): string {
 export function WatchaPlayer({
   streamUrl,
   streamKind,
+  sandboxPolicy = 'strict_no_ads',
+  referrerPolicy = 'strict-origin',
   title,
   subtitleMeta,
   posterUrl,
@@ -163,6 +180,7 @@ export function WatchaPlayer({
   const userToggledSubRef = useRef<string | null>(null);
   const autoSubAppliedForUrlRef = useRef<string | null>(null);
   const failedAudioIdsRef = useRef<Set<string>>(new Set());
+  const failedStreamUrlsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     initialProgressPercentRef.current = initialProgressPercent;
@@ -176,22 +194,35 @@ export function WatchaPlayer({
     onReadyRef.current = onReady;
   }, [onReady]);
 
-  // Active stream source (switchable via Idioma/Audio or automatic runtime failover)
+  // Active stream source (switchable via Idioma or automatic runtime failover)
   const [selectedAudioId, setSelectedAudioId] = useState<string>(
     audioOptions[0]?.id || 'default'
   );
+  const [activeBackupStream, setActiveBackupStream] = useState<{
+    streamUrl: string;
+    streamKind: StreamKind;
+  } | null>(null);
+
   const activeStream = useMemo(() => {
     const found = audioOptions.find((o) => o.id === selectedAudioId);
-    return (
+    const base =
       found || {
         id: 'default',
-        label: preferredLang === 'en' ? 'Original' : 'Dublado (PT-BR)',
+        label: preferredLang === 'en' ? 'Inglês / Original' : 'Dublado (PT-BR)',
+        languageLabel: preferredLang === 'en' ? 'Inglês / Original' : 'Dublado (PT-BR)',
         lang: preferredLang === 'en' ? 'en-us' : 'pt-br',
         streamUrl,
         streamKind,
-      }
-    );
-  }, [audioOptions, selectedAudioId, preferredLang, streamUrl, streamKind]);
+      };
+    if (activeBackupStream) {
+      return {
+        ...base,
+        streamUrl: activeBackupStream.streamUrl,
+        streamKind: activeBackupStream.streamKind,
+      };
+    }
+    return base;
+  }, [audioOptions, selectedAudioId, activeBackupStream, preferredLang, streamUrl, streamKind]);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -214,6 +245,7 @@ export function WatchaPlayer({
   const [seekFeedback, setSeekFeedback] = useState<{ label: string; side: 'left' | 'right' } | null>(
     null
   );
+  const [sourceSwitchToast, setSourceSwitchToast] = useState<string | null>(null);
   const [hoverSeek, setHoverSeek] = useState<{ pct: number; time: number } | null>(null);
 
   // HLS quality & internal audio tracks
@@ -253,6 +285,20 @@ export function WatchaPlayer({
   const [castQrDataUrl, setCastQrDataUrl] = useState<string>('');
   const [castStatusMsg, setCastStatusMsg] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [directCopied, setDirectCopied] = useState(false);
+
+  const directStreamUrl = useMemo(
+    () => toAbsoluteStreamUrl(activeStream.streamUrl),
+    [activeStream.streamUrl]
+  );
+  const androidIntentUrl = useMemo(
+    () => buildAndroidIntentUrl(activeStream.streamUrl, title),
+    [activeStream.streamUrl, title]
+  );
+  const vlcStreamUrl = useMemo(
+    () => buildVlcStreamUrl(activeStream.streamUrl),
+    [activeStream.streamUrl]
+  );
 
   const updateSubStyle = useCallback(
     (updater: (prev: SubtitleAppearance) => SubtitleAppearance) => {
@@ -313,6 +359,8 @@ export function WatchaPlayer({
 
   useEffect(() => {
     failedAudioIdsRef.current.clear();
+    failedStreamUrlsRef.current.clear();
+    setActiveBackupStream(null);
     setSelectedAudioId(audioOptions[0]?.id || 'default');
     setIsEnded(false);
   }, [streamUrl, audioOptions]);
@@ -347,6 +395,22 @@ export function WatchaPlayer({
 
   const triggerNextBackupOptionOrError = useCallback(
     (fallbackMsg: string) => {
+      if (activeStream.streamUrl) {
+        failedStreamUrlsRef.current.add(activeStream.streamUrl);
+      }
+
+      const sameLangBackups = activeStream.backupStreams || [];
+      const nextSameLang = sameLangBackups.find(
+        (b) => b.streamUrl && !failedStreamUrlsRef.current.has(b.streamUrl)
+      );
+      if (nextSameLang) {
+        if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+          pendingRestoreTimeRef.current = videoRef.current.currentTime;
+        }
+        setActiveBackupStream(nextSameLang);
+        return;
+      }
+
       failedAudioIdsRef.current.add(activeStream.id);
       const nextBackup = audioOptions.find(
         (opt) => opt.id !== activeStream.id && !failedAudioIdsRef.current.has(opt.id)
@@ -355,6 +419,7 @@ export function WatchaPlayer({
         if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
           pendingRestoreTimeRef.current = videoRef.current.currentTime;
         }
+        setActiveBackupStream(null);
         setSelectedAudioId(nextBackup.id);
         return;
       }
@@ -362,15 +427,11 @@ export function WatchaPlayer({
       onReadyRef.current?.();
       onStreamErrorRef.current?.(fallbackMsg);
     },
-    [activeStream.id, audioOptions]
+    [activeStream.id, activeStream.streamUrl, activeStream.backupStreams, audioOptions]
   );
 
-  // Load HLS or direct video stream cleanly
+  // Load HLS, direct video, or fallback embed iframe cleanly
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !activeStream.streamUrl) return;
-
-    setIsBuffering(true);
     setQualityLevels([]);
     setCurrentQuality(-1);
     setHlsAudioTracks([]);
@@ -379,6 +440,22 @@ export function WatchaPlayer({
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+
+    if (activeStream.streamKind === 'iframe') {
+      setIsBuffering(true);
+      setIsPlaying(false);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
+      return;
+    }
+
+    const video = videoRef.current;
+    if (!video || !activeStream.streamUrl) return;
+
+    setIsBuffering(true);
 
     const restoreIfNeeded = () => {
       if (pendingRestoreTimeRef.current !== null && Number.isFinite(pendingRestoreTimeRef.current)) {
@@ -417,6 +494,9 @@ export function WatchaPlayer({
           startFragPrefetch: true,
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
+          backBufferLength: 30,
+          manifestLoadingTimeOut: 8000,
+          fragLoadingTimeOut: 12000,
         });
         hlsRef.current = hls;
         hls.loadSource(activeStream.streamUrl);
@@ -612,14 +692,28 @@ export function WatchaPlayer({
     setCurrentQuality(levelIndex);
   }, []);
 
-  const handleSwitchAudioOption = useCallback((optionId: string) => {
-    const video = videoRef.current;
-    if (video && Number.isFinite(video.currentTime)) {
-      pendingRestoreTimeRef.current = video.currentTime;
-    }
-    setSelectedAudioId(optionId);
-    setActivePopover('none');
-  }, []);
+  const handleSwitchAudioOption = useCallback(
+    (optionId: string) => {
+      const targetOption = audioOptions.find((o) => o.id === optionId);
+      const video = videoRef.current;
+      if (video && Number.isFinite(video.currentTime)) {
+        pendingRestoreTimeRef.current = video.currentTime;
+      }
+      setActiveBackupStream(null);
+      setSelectedAudioId(optionId);
+      setActivePopover('none');
+      if (targetOption) {
+        setSourceSwitchToast(targetOption.languageLabel || targetOption.label);
+      }
+    },
+    [audioOptions]
+  );
+
+  useEffect(() => {
+    if (!sourceSwitchToast) return;
+    const t = window.setTimeout(() => setSourceSwitchToast(null), 2400);
+    return () => window.clearTimeout(t);
+  }, [sourceSwitchToast]);
 
   const handleSwitchHlsAudioTrack = useCallback((idx: number) => {
     const hls = hlsRef.current;
@@ -727,6 +821,43 @@ export function WatchaPlayer({
       setCastStatusMsg('Copie a URL da barra de endereços para abrir na Smart TV.');
     }
   }, []);
+
+  const handleCopyDirectStreamUrl = useCallback(async () => {
+    if (!directStreamUrl) return;
+    try {
+      await navigator.clipboard.writeText(directStreamUrl);
+      setDirectCopied(true);
+      setCastStatusMsg(
+        'URL direta do vídeo copiada! Cole no TV Smarters, IPTV Smarters, VLC ou player da Smart TV.'
+      );
+      window.setTimeout(() => setDirectCopied(false), 2200);
+    } catch {
+      setCastStatusMsg('Não foi possível copiar automaticamente. Use o botão de baixar .M3U.');
+    }
+  }, [directStreamUrl]);
+
+  const handleDownloadM3u = useCallback(() => {
+    if (!activeStream.streamUrl) return;
+    const displayTitle = subtitleMeta ? `${title} - ${subtitleMeta}` : title;
+    const content = buildM3uPlaylistContent({
+      title: displayTitle,
+      streamUrl: activeStream.streamUrl,
+      posterUrl,
+      groupTitle: 'MegaStream',
+    });
+    const blob = new Blob([content], { type: 'audio/x-mpegurl;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = sanitizeM3uFileName(displayTitle);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setCastStatusMsg(
+      'Arquivo .M3U baixado! Abra no TV Smarters Pro, IPTV Smarters, TiviMate ou Android.'
+    );
+  }, [activeStream.streamUrl, subtitleMeta, title, posterUrl]);
 
   // Keyboard shortcuts while player is mounted
   useEffect(() => {
@@ -844,79 +975,118 @@ export function WatchaPlayer({
       ? 'Auto'
       : qualityLevels.find((l) => l.index === currentQuality)?.label || 'Auto';
 
+  const activeLangTag = getCustomSourceLangMeta(activeStream.lang).shortTag;
+  const isIframeMode = activeStream.streamKind === 'iframe';
+
   return (
     <div
       ref={wrapperRef}
       data-testid="watcha-player"
       data-aspect={aspectMode}
       data-subtitle={selectedSubtitleId}
-      className="relative w-full h-full bg-black select-none overflow-hidden group"
+      data-active-source={activeStream.id}
+      className={`relative w-full h-full bg-black select-none overflow-hidden group ${
+        isIframeMode ? 'flex flex-col' : ''
+      }`}
       onMouseMove={scheduleHideControls}
       onTouchStart={scheduleHideControls}
     >
-      {/* Pure Native Video Element (Zero Watermarks, Zero Ads) */}
-      <video
-        ref={videoRef}
-        poster={posterUrl || undefined}
-        playsInline
-        className={`w-full h-full bg-black transition-transform duration-200 ${videoAspectClass}`}
-        onClick={() => {
-          if (activePopover !== 'none') {
-            setActivePopover('none');
-            return;
+      {isIframeMode ? (
+        <iframe
+          key={activeStream.streamUrl}
+          src={activeStream.streamUrl}
+          title={title}
+          className="w-full flex-1 min-h-0 border-0 bg-black"
+          sandbox={
+            sandboxPolicy === 'none'
+              ? undefined
+              : 'allow-scripts allow-same-origin allow-forms allow-presentation'
           }
-          togglePlay();
-        }}
-        onDoubleClick={() => {
-          if (!isLocked) handleFullscreen();
-        }}
-        onPlay={() => {
-          setIsPlaying(true);
-          setIsBuffering(false);
-          setIsEnded(false);
-        }}
-        onPause={() => setIsPlaying(false)}
-        onWaiting={() => setIsBuffering(true)}
-        onCanPlay={() => {
-          setIsBuffering(false);
-          onReadyRef.current?.();
-        }}
-        onTimeUpdate={() => {
-          const v = videoRef.current;
-          if (!v) return;
-          setCurrentTime(v.currentTime);
-          if (v.duration > 0 && v.currentTime < v.duration - 2 && isEnded) {
-            setIsEnded(false);
-          }
-          if (v.buffered.length > 0) {
-            setBufferedEnd(v.buffered.end(v.buffered.length - 1));
-          }
-          if (v.duration > 0 && onProgress) {
-            const pct = Math.round((v.currentTime / v.duration) * 100);
-            if (Math.abs(pct - lastReportedPctRef.current) >= 5) {
-              lastReportedPctRef.current = pct;
-              onProgress(pct);
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+          referrerPolicy={referrerPolicy}
+          onLoad={() => {
+            setIsBuffering(false);
+            onReadyRef.current?.();
+          }}
+          onError={() => {
+            triggerNextBackupOptionOrError('Não foi possível carregar este servidor de vídeo.');
+          }}
+        />
+      ) : (
+        /* Pure Native Video Element (Zero Watermarks, Zero Ads) */
+        <video
+          ref={videoRef}
+          poster={posterUrl || undefined}
+          playsInline
+          className={`w-full h-full bg-black transition-transform duration-200 ${videoAspectClass}`}
+          onClick={() => {
+            if (activePopover !== 'none') {
+              setActivePopover('none');
+              return;
             }
-          }
-        }}
-        onDurationChange={() => {
-          if (videoRef.current) setDuration(videoRef.current.duration || 0);
-        }}
-        onEnded={() => {
-          setIsPlaying(false);
-          setIsEnded(true);
-          onEnded?.();
-        }}
-        onError={() => {
-          if (!videoRef.current?.getAttribute('src')) return;
-          if (activeStream.streamKind === 'video' || !hlsRef.current) {
-            triggerNextBackupOptionOrError('Não foi possível reproduzir este arquivo de vídeo.');
-          }
-        }}
-      />
+            togglePlay();
+          }}
+          onDoubleClick={() => {
+            if (!isLocked) handleFullscreen();
+          }}
+          onPlay={() => {
+            setIsPlaying(true);
+            setIsBuffering(false);
+            setIsEnded(false);
+          }}
+          onPause={() => setIsPlaying(false)}
+          onWaiting={() => setIsBuffering(true)}
+          onCanPlay={() => {
+            setIsBuffering(false);
+            onReadyRef.current?.();
+          }}
+          onTimeUpdate={() => {
+            const v = videoRef.current;
+            if (!v) return;
+            setCurrentTime(v.currentTime);
+            if (v.duration > 0 && v.currentTime < v.duration - 2 && isEnded) {
+              setIsEnded(false);
+            }
+            if (v.buffered.length > 0) {
+              setBufferedEnd(v.buffered.end(v.buffered.length - 1));
+            }
+            if (v.duration > 0 && onProgress) {
+              const pct = Math.round((v.currentTime / v.duration) * 100);
+              if (Math.abs(pct - lastReportedPctRef.current) >= 5) {
+                lastReportedPctRef.current = pct;
+                onProgress(pct);
+              }
+            }
+          }}
+          onDurationChange={() => {
+            if (videoRef.current) setDuration(videoRef.current.duration || 0);
+          }}
+          onEnded={() => {
+            setIsPlaying(false);
+            setIsEnded(true);
+            onEnded?.();
+          }}
+          onError={() => {
+            if (!videoRef.current?.getAttribute('src')) return;
+            if (activeStream.streamKind === 'video' || !hlsRef.current) {
+              triggerNextBackupOptionOrError('Não foi possível reproduzir este arquivo de vídeo.');
+            }
+          }}
+        />
+      )}
+
+      {/* Language Switch Toast Feedback */}
+      {sourceSwitchToast && (
+        <div
+          role="status"
+          className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-xl bg-[#070b18]/92 border border-white/15 text-xs font-semibold text-white shadow-xl whitespace-nowrap"
+        >
+          Idioma alterado: <span style={{ color: accentColor }}>{sourceSwitchToast}</span>
+        </div>
+      )}
 
       {/* Buffering Indicator */}
-      {isBuffering && (
+      {isBuffering && !isIframeMode && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
           <div
             className="w-12 h-12 rounded-full border-[3px] border-white/20 animate-spin"
@@ -953,7 +1123,7 @@ export function WatchaPlayer({
       )}
 
       {/* Center Play Overlay When Paused (and not locked / popover closed) */}
-      {!isPlaying && !isBuffering && !isLocked && activePopover === 'none' && (
+      {!isIframeMode && !isPlaying && !isBuffering && !isLocked && activePopover === 'none' && (
         <button
           type="button"
           onClick={togglePlay}
@@ -982,7 +1152,7 @@ export function WatchaPlayer({
       )}
 
       {/* Top Scrim Bar inside Player */}
-      {!isLocked && (
+      {!isLocked && !isIframeMode && (
         <div
           className={`absolute inset-x-0 top-0 z-20 px-4 py-3 bg-gradient-to-b from-black/80 via-black/35 to-transparent flex items-center justify-between gap-3 transition-opacity duration-200 ${
             controlsVisible || !isPlaying || activePopover !== 'none'
@@ -1032,116 +1202,130 @@ export function WatchaPlayer({
       {/* Bottom Watcha-Style Control Bar */}
       {!isLocked && (
         <div
-          className={`absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-3 sm:px-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-200 ${
-            controlsVisible || !isPlaying || activePopover !== 'none'
-              ? 'opacity-100'
-              : 'opacity-0 pointer-events-none'
-          }`}
+          className={
+            isIframeMode
+              ? 'relative z-20 px-3 sm:px-4 py-2 bg-[#070b18] border-t border-white/10 shrink-0'
+              : `absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-3 sm:px-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-200 ${
+                  controlsVisible || !isPlaying || activePopover !== 'none'
+                    ? 'opacity-100'
+                    : 'opacity-0 pointer-events-none'
+                }`
+          }
         >
-          {/* Scrubbable Seek Bar */}
-          <div
-            ref={seekBarRef}
-            role="slider"
-            aria-label="Linha do tempo do vídeo"
-            aria-valuemin={0}
-            aria-valuemax={Math.round(duration)}
-            aria-valuenow={Math.round(currentTime)}
-            tabIndex={0}
-            onClick={handleSeekBarClick}
-            onMouseMove={handleSeekBarMove}
-            onMouseLeave={() => setHoverSeek(null)}
-            className="relative h-5 flex items-center cursor-pointer group/seek mb-1"
-          >
-            {hoverSeek && (
-              <div
-                className="pointer-events-none absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/15 text-[11px] font-mono-tabular text-white"
-                style={{ left: `${hoverSeek.pct}%` }}
-              >
-                {formatClock(hoverSeek.time)}
-              </div>
-            )}
+          {/* Scrubbable Seek Bar (Video/HLS Mode) */}
+          {!isIframeMode && (
+            <div
+              ref={seekBarRef}
+              role="slider"
+              aria-label="Linha do tempo do vídeo"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(duration)}
+              aria-valuenow={Math.round(currentTime)}
+              tabIndex={0}
+              onClick={handleSeekBarClick}
+              onMouseMove={handleSeekBarMove}
+              onMouseLeave={() => setHoverSeek(null)}
+              className="relative h-5 flex items-center cursor-pointer group/seek mb-1"
+            >
+              {hoverSeek && (
+                <div
+                  className="pointer-events-none absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/15 text-[11px] font-mono-tabular text-white"
+                  style={{ left: `${hoverSeek.pct}%` }}
+                >
+                  {formatClock(hoverSeek.time)}
+                </div>
+              )}
 
-            <div className="w-full h-1.5 group-hover/seek:h-2 transition-all rounded-full bg-white/20 overflow-hidden relative">
+              <div className="w-full h-1.5 group-hover/seek:h-2 transition-all rounded-full bg-white/20 overflow-hidden relative">
+                <div
+                  className="absolute inset-y-0 left-0 bg-white/30"
+                  style={{ width: `${bufferedPct}%` }}
+                />
+                <div
+                  className="absolute inset-y-0 left-0"
+                  style={{ width: `${progressPct}%`, backgroundColor: accentColor }}
+                />
+              </div>
+
               <div
-                className="absolute inset-y-0 left-0 bg-white/30"
-                style={{ width: `${bufferedPct}%` }}
-              />
-              <div
-                className="absolute inset-y-0 left-0"
-                style={{ width: `${progressPct}%`, backgroundColor: accentColor }}
+                className="absolute w-3.5 h-3.5 rounded-full bg-white shadow-md -translate-x-1/2 opacity-0 group-hover/seek:opacity-100 transition-opacity"
+                style={{ left: `${progressPct}%`, border: `2px solid ${accentColor}` }}
               />
             </div>
-
-            <div
-              className="absolute w-3.5 h-3.5 rounded-full bg-white shadow-md -translate-x-1/2 opacity-0 group-hover/seek:opacity-100 transition-opacity"
-              style={{ left: `${progressPct}%`, border: `2px solid ${accentColor}` }}
-            />
-          </div>
+          )}
 
           {/* Action Buttons Row */}
           <div className="flex items-center justify-between gap-2">
             {/* Left Playback Group */}
-            <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
-              <button
-                type="button"
-                onClick={togglePlay}
-                aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
-                className="w-11 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
-              >
-                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => seekBy(-10)}
-                aria-label="Voltar 10 segundos"
-                title="Voltar 10s (←)"
-                className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => seekBy(10)}
-                aria-label="Avançar 10 segundos"
-                title="Avançar 10s (→)"
-                className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
-              >
-                <RotateCw className="w-4 h-4" />
-              </button>
-
-              {/* Volume */}
-              <div className="flex items-center gap-1 group/vol">
+            {isIframeMode ? (
+              <div className="min-w-0 flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-300 truncate">
+                  Idioma ativo: {activeStream.languageLabel || activeStream.label}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
                 <button
                   type="button"
-                  onClick={handleToggleMute}
-                  aria-label={isMuted ? 'Ativar som' : 'Silenciar'}
-                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+                  onClick={togglePlay}
+                  aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
+                  className="w-11 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
                 >
-                  {isMuted || volume === 0 ? (
-                    <VolumeX className="w-4 h-4 text-slate-400" />
-                  ) : (
-                    <Volume2 className="w-4 h-4" />
-                  )}
+                  {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
                 </button>
-                <input
-                  type="range"
-                  aria-label="Controle de volume"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={isMuted ? 0 : volume}
-                  onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                  className="hidden md:block w-16 lg:w-20 h-1 cursor-pointer accent-white"
-                />
-              </div>
 
-              <span className="text-[11px] sm:text-xs font-mono-tabular text-slate-200 px-1.5 whitespace-nowrap">
-                {formatClock(currentTime)} <span className="text-slate-500">/</span>{' '}
-                {formatClock(duration)}
-              </span>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => seekBy(-10)}
+                  aria-label="Voltar 10 segundos"
+                  title="Voltar 10s (←)"
+                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => seekBy(10)}
+                  aria-label="Avançar 10 segundos"
+                  title="Avançar 10s (→)"
+                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+                >
+                  <RotateCw className="w-4 h-4" />
+                </button>
+
+                {/* Volume */}
+                <div className="flex items-center gap-1 group/vol">
+                  <button
+                    type="button"
+                    onClick={handleToggleMute}
+                    aria-label={isMuted ? 'Ativar som' : 'Silenciar'}
+                    className="w-10 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+                  >
+                    {isMuted || volume === 0 ? (
+                      <VolumeX className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <Volume2 className="w-4 h-4" />
+                    )}
+                  </button>
+                  <input
+                    type="range"
+                    aria-label="Controle de volume"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                    className="hidden md:block w-16 lg:w-20 h-1 cursor-pointer accent-white"
+                  />
+                </div>
+
+                <span className="text-[11px] sm:text-xs font-mono-tabular text-slate-200 px-1.5 whitespace-nowrap">
+                  {formatClock(currentTime)} <span className="text-slate-500">/</span>{' '}
+                  {formatClock(duration)}
+                </span>
+              </div>
+            )}
 
             {/* Right Watcha Controls: Idioma, Legenda, Configurações, Cast, PiP, Teatro, Fullscreen */}
             <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
@@ -1149,65 +1333,91 @@ export function WatchaPlayer({
                 type="button"
                 onClick={() => setActivePopover((p) => (p === 'audio' ? 'none' : 'audio'))}
                 aria-label="Idioma e Áudio"
-                title="Idioma / Áudio"
+                title="Idioma Disponível"
                 className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
                   activePopover === 'audio'
                     ? 'bg-white/20 text-white'
                     : 'hover:bg-white/10 text-slate-200'
                 }`}
               >
-                <Languages className="w-4 h-4" />
+                <Languages className="w-4 h-4" style={audioOptions.length > 1 ? { color: accentColor } : undefined} />
                 <span className="hidden lg:inline">Idioma</span>
+                {audioOptions.length >= 1 && (
+                  <span className="text-[10px] font-mono-tabular text-slate-300">
+                    ({activeLangTag})
+                  </span>
+                )}
               </button>
 
-              <button
-                type="button"
-                onClick={() =>
-                  setActivePopover((p) => (p === 'subtitles' ? 'none' : 'subtitles'))
-                }
-                aria-label="Legendas"
-                title="Legendas (C)"
-                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
-                  activePopover === 'subtitles' || selectedSubtitleId !== 'off'
-                    ? 'bg-white/20 text-white'
-                    : 'hover:bg-white/10 text-slate-200'
-                }`}
-              >
-                <Captions
-                  className="w-4 h-4"
-                  style={selectedSubtitleId !== 'off' ? { color: accentColor } : undefined}
-                />
-                <span className="hidden lg:inline">Legenda</span>
-              </button>
+              {!isIframeMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setActivePopover((p) => (p === 'subtitles' ? 'none' : 'subtitles'))
+                    }
+                    aria-label="Legendas"
+                    title="Legendas (C)"
+                    className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                      activePopover === 'subtitles' || selectedSubtitleId !== 'off'
+                        ? 'bg-white/20 text-white'
+                        : 'hover:bg-white/10 text-slate-200'
+                    }`}
+                  >
+                    <Captions
+                      className="w-4 h-4"
+                      style={selectedSubtitleId !== 'off' ? { color: accentColor } : undefined}
+                    />
+                    <span className="hidden lg:inline">Legenda</span>
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setSettingsView('root');
-                  setActivePopover((p) => (p === 'settings' ? 'none' : 'settings'));
-                }}
-                aria-label="Configurações do Player"
-                title="Configurações (Qualidade, Velocidade, Proporção)"
-                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
-                  activePopover === 'settings'
-                    ? 'bg-white/20 text-white'
-                    : 'hover:bg-white/10 text-slate-200'
-                }`}
-              >
-                <Settings className="w-4 h-4" />
-                <span className="hidden xl:inline">Configurações</span>
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsView('root');
+                      setActivePopover((p) => (p === 'settings' ? 'none' : 'settings'));
+                    }}
+                    aria-label="Configurações do Player"
+                    title="Configurações (Qualidade, Velocidade, Proporção)"
+                    className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                      activePopover === 'settings'
+                        ? 'bg-white/20 text-white'
+                        : 'hover:bg-white/10 text-slate-200'
+                    }`}
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span className="hidden xl:inline">Configurações</span>
+                  </button>
 
-              {allowPipMode && (
-                <button
-                  type="button"
-                  onClick={handleTogglePip}
-                  aria-label="Mini Player (Picture-in-Picture)"
-                  title="Mini Player (PiP)"
-                  className="hidden sm:flex w-10 h-10 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white items-center justify-center cursor-pointer"
-                >
-                  <PictureInPicture2 className="w-4 h-4" />
-                </button>
+                  {allowTvCast && (
+                    <button
+                      type="button"
+                      onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
+                      aria-label="Transmitir para TV Smarters e Android"
+                      title="Transmitir (TV Smarters, Android, Smart TV)"
+                      className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                        activePopover === 'cast'
+                          ? 'bg-white/20 text-white'
+                          : 'hover:bg-white/10 text-slate-200'
+                      }`}
+                    >
+                      <Cast className="w-4 h-4" />
+                      <span className="hidden lg:inline">Transmitir</span>
+                    </button>
+                  )}
+
+                  {allowPipMode && (
+                    <button
+                      type="button"
+                      onClick={handleTogglePip}
+                      aria-label="Mini Player (Picture-in-Picture)"
+                      title="Mini Player (PiP)"
+                      className="hidden sm:flex w-10 h-10 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white items-center justify-center cursor-pointer"
+                    >
+                      <PictureInPicture2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </>
               )}
 
               {allowTheaterMode && onToggleTheater && (
@@ -1276,18 +1486,23 @@ export function WatchaPlayer({
           </div>
         )}
 
-      {/* POPOVER 1: Idioma & Faixas de Áudio */}
+      {/* POPOVER 1: Idioma Disponível */}
       {activePopover === 'audio' && (
         <div
           role="dialog"
           aria-label="Selecionar idioma e áudio"
-          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[72%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-2"
+          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[75%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-2"
         >
-          <div className="flex items-center justify-between px-1 pb-1 border-b border-white/10">
-            <span className="text-xs font-bold text-white flex items-center gap-1.5">
-              <Languages className="w-3.5 h-3.5" style={{ color: accentColor }} />
-              Idioma / Áudio
-            </span>
+          <div className="flex items-center justify-between px-1 pb-1.5 border-b border-white/10">
+            <div>
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Languages className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                Idioma Disponível
+              </span>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Escolha o idioma de reprodução
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => setActivePopover('none')}
@@ -1301,17 +1516,22 @@ export function WatchaPlayer({
           <div className="space-y-1">
             {(audioOptions.length > 0 ? audioOptions : [activeStream]).map((opt) => {
               const selected = opt.id === activeStream.id;
+              const langTitle = opt.languageLabel || opt.label;
               return (
                 <button
                   key={opt.id}
                   type="button"
                   onClick={() => handleSwitchAudioOption(opt.id)}
-                  className={`w-full px-3 py-2.5 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
-                    selected ? 'bg-white/15 text-white' : 'text-slate-300 hover:bg-white/10'
+                  className={`w-full px-3 py-2.5 rounded-xl text-left flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                    selected
+                      ? 'bg-white/15 text-white border border-white/15'
+                      : 'text-slate-300 hover:bg-white/10 border border-transparent'
                   }`}
                 >
-                  <span>{opt.label}</span>
-                  {selected && <Check className="w-4 h-4" style={{ color: accentColor }} />}
+                  <p className="text-xs font-semibold text-white truncate min-w-0">
+                    {langTitle}
+                  </p>
+                  {selected && <Check className="w-4 h-4 shrink-0" style={{ color: accentColor }} />}
                 </button>
               );
             })}
@@ -1623,19 +1843,17 @@ export function WatchaPlayer({
                 </button>
               )}
 
-              {allowTvCast && (
-                <button
-                  type="button"
-                  onClick={() => setActivePopover('cast')}
-                  className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
-                >
-                  <span className="flex items-center gap-2 font-semibold">
-                    <Cast className="w-3.5 h-3.5 text-slate-300" />
-                    Espelhar na TV
-                  </span>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setActivePopover('cast')}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-xs flex items-center justify-between text-white cursor-pointer"
+              >
+                <span className="flex items-center gap-2 font-semibold">
+                  <Cast className="w-3.5 h-3.5 text-slate-300" />
+                  Transmitir para TV & Apps
+                </span>
+                <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+              </button>
             </>
           )}
 
@@ -1756,18 +1974,20 @@ export function WatchaPlayer({
         </div>
       )}
 
-      {/* POPOVER 4: Espelhar na TV (Chromecast, AirPlay, Smart TV QR Code + Link) */}
+      {/* POPOVER 4: Espelhar na TV & Apps Externos (Chromecast, AirPlay, TV Smarters .M3U, Android, VLC, QR Code) */}
       {activePopover === 'cast' && (
         <div
           role="dialog"
           aria-label="Espelhar na TV"
-          className="absolute inset-0 z-30 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
         >
-          <div className="w-full max-w-md rounded-2xl bg-[#090e1f] border border-white/15 p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="w-full max-w-lg max-h-[92%] overflow-y-auto rounded-2xl bg-[#090e1f] border border-white/15 p-4 sm:p-5 shadow-2xl space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Cast className="w-5 h-5" style={{ color: accentColor }} />
-                <h3 className="font-display text-base font-bold text-white">Espelhar na TV</h3>
+                <h3 className="font-display text-base font-bold text-white">
+                  Transmitir para TV & Apps
+                </h3>
               </div>
               <button
                 type="button"
@@ -1782,24 +2002,66 @@ export function WatchaPlayer({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handlePromptChromecast}
-                className="h-11 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
               >
-                <Cast className="w-4 h-4" style={{ color: accentColor }} />
+                <Cast className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
                 Chromecast / Google TV
               </button>
 
               <button
                 type="button"
                 onClick={handlePromptAirPlay}
-                className="h-11 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
               >
-                <Tv className="w-4 h-4" style={{ color: accentColor }} />
+                <Tv className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
                 Apple AirPlay
               </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadM3u}
+                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Download className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                TV Smarters / IPTV (.M3U)
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCopyDirectStreamUrl}
+                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {directCopied ? (
+                  <Check className="w-4 h-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <Copy className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                )}
+                {directCopied ? 'URL Direta Copiada!' : 'Copiar URL Direta (IPTV)'}
+              </button>
+
+              {androidIntentUrl && (
+                <a
+                  href={androidIntentUrl}
+                  className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2"
+                >
+                  <Smartphone className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                  Abrir no Android (VLC / MX)
+                </a>
+              )}
+
+              {vlcStreamUrl && (
+                <a
+                  href={vlcStreamUrl}
+                  className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2"
+                >
+                  <ExternalLink className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                  Abrir no VLC Player
+                </a>
+              )}
             </div>
 
             {castStatusMsg && (
@@ -1808,23 +2070,25 @@ export function WatchaPlayer({
               </p>
             )}
 
-            <div className="rounded-xl bg-black/40 border border-white/10 p-3.5 flex flex-col sm:flex-row items-center gap-4">
+            <div className="rounded-xl bg-black/40 border border-white/10 p-3 flex flex-col sm:flex-row items-center gap-3.5">
               {castQrDataUrl && (
                 <img
                   src={castQrDataUrl}
                   alt="QR Code para abrir na Smart TV"
-                  className="w-28 h-28 rounded-xl bg-white p-1.5 shrink-0"
+                  className="w-24 h-24 rounded-xl bg-white p-1.5 shrink-0"
                 />
               )}
-              <div className="space-y-2 min-w-0 text-center sm:text-left">
-                <p className="text-xs font-bold text-white">Abrir direto na Smart TV</p>
+              <div className="space-y-1.5 min-w-0 text-center sm:text-left">
+                <p className="text-xs font-bold text-white">
+                  Smart TV, TV Box & TV Smarters
+                </p>
                 <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Escaneie o QR Code com o celular ou copie o link abaixo para abrir esta reprodução no navegador da sua Smart TV.
+                  Escaneie o QR Code no celular, baixe a playlist .M3U para TV Smarters / TiviMate ou copie o link desta página para abrir na sua TV.
                 </p>
                 <button
                   type="button"
                   onClick={handleCopyCastLink}
-                  className="h-9 px-3.5 rounded-lg text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                  className="h-8 px-3 rounded-lg text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
                   style={{ backgroundColor: accentColor }}
                 >
                   {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}

@@ -7,6 +7,7 @@ import {
   Database,
   Globe,
   KeyRound,
+  Play,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -32,6 +33,8 @@ interface AdminApiSourcesTabProps {
   saving: boolean;
   testingTarget: 'tmdb' | 'player' | 'firestore' | null;
   tmdbDiagnostic: DiagnosticResult | null;
+  customVideoSourcesCount?: number;
+  onOpenVideoSources?: () => void;
   onSave: (e: React.FormEvent) => void;
   onClearSecret: (target: 'tmdb' | 'gemini') => void;
   onTestTmdb: () => void;
@@ -83,6 +86,8 @@ export function AdminApiSourcesTab({
   saving,
   testingTarget,
   tmdbDiagnostic,
+  customVideoSourcesCount = 0,
+  onOpenVideoSources,
   onSave,
   onClearSecret,
   onTestTmdb,
@@ -421,6 +426,28 @@ export function AdminApiSourcesTab({
           </div>
         </section>
       </div>
+
+      {onOpenVideoSources && (
+        <section className="rounded-2xl bg-[#0c1224] border border-sky-400/25 p-5 flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1 max-w-2xl">
+            <h2 className="font-display text-sm sm:text-base font-bold text-white flex items-center gap-2">
+              <Play className="w-4 h-4 text-sky-400" />
+              APIs, Embeds & Fontes de Vídeo do WatchaPlayer
+            </h2>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Adicione novas APIs JSON, embeds ou links diretos (.m3u8/.mp4) para filmes e séries. O player próprio consome todas as fontes ativas automaticamente em ordem de prioridade ({customVideoSourcesCount} fonte{customVideoSourcesCount === 1 ? '' : 's'} customizada{customVideoSourcesCount === 1 ? '' : 's'} ativa{customVideoSourcesCount === 1 ? '' : 's'}).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenVideoSources}
+            className="h-10 px-4 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-white inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Globe className="w-4 h-4 text-sky-400" />
+            Gerenciar Fontes & APIs de Vídeo
+          </button>
+        </section>
+      )}
 
       <div className="flex justify-end">
         <button

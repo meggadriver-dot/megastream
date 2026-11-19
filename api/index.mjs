@@ -63,6 +63,7 @@ var DEFAULT_PLAYER_CONFIG = {
   watchaflixLang: "pt",
   customEmbedMovieTemplate: "",
   customEmbedTvTemplate: "",
+  customSources: [],
   embedTimeoutSeconds: 12,
   defaultAspectMode: "contain",
   autoEnableSubtitles: false,
@@ -101,6 +102,183 @@ function sanitizeEmbedTemplate(input) {
   if (!trimmed) return "";
   if (!/^https?:\/\//i.test(trimmed)) return "";
   return trimmed;
+}
+var CUSTOM_SOURCE_LANG_OPTIONS = [
+  { value: "pt", label: "Dublado (PT-BR)", shortTag: "PT-BR", langCode: "pt-br" },
+  { value: "sub", label: "Legendado (PT-BR)", shortTag: "LEG", langCode: "pt-sub" },
+  { value: "en", label: "Ingl\xEAs / Original", shortTag: "EN", langCode: "en-us" },
+  { value: "es", label: "Espanhol", shortTag: "ES", langCode: "es-es" },
+  { value: "auto", label: "Autom\xE1tico", shortTag: "AUTO", langCode: "auto" }
+];
+function sanitizeCustomVideoSourceLang(input) {
+  if (input === "pt" || input === "sub" || input === "en" || input === "es" || input === "auto") {
+    return input;
+  }
+  return "auto";
+}
+function hasUrlTemplatePlaceholder(template) {
+  if (!template || typeof template !== "string") return false;
+  return /\{(?:tmdbId|tmdb_id|TMDB_ID|id|imdbId|imdb_id|IMDB_ID)\}/.test(template);
+}
+var EXTENDED_LANG_META = {
+  fr: { label: "Franc\xEAs", shortTag: "FR", langCode: "fr" },
+  fre: { label: "Franc\xEAs", shortTag: "FR", langCode: "fr" },
+  fra: { label: "Franc\xEAs", shortTag: "FR", langCode: "fr" },
+  french: { label: "Franc\xEAs", shortTag: "FR", langCode: "fr" },
+  de: { label: "Alem\xE3o", shortTag: "DE", langCode: "de" },
+  ger: { label: "Alem\xE3o", shortTag: "DE", langCode: "de" },
+  deu: { label: "Alem\xE3o", shortTag: "DE", langCode: "de" },
+  german: { label: "Alem\xE3o", shortTag: "DE", langCode: "de" },
+  it: { label: "Italiano", shortTag: "IT", langCode: "it" },
+  ita: { label: "Italiano", shortTag: "IT", langCode: "it" },
+  italian: { label: "Italiano", shortTag: "IT", langCode: "it" },
+  ja: { label: "Japon\xEAs", shortTag: "JA", langCode: "ja" },
+  jpn: { label: "Japon\xEAs", shortTag: "JA", langCode: "ja" },
+  japanese: { label: "Japon\xEAs", shortTag: "JA", langCode: "ja" },
+  ko: { label: "Coreano", shortTag: "KO", langCode: "ko" },
+  kor: { label: "Coreano", shortTag: "KO", langCode: "ko" },
+  korean: { label: "Coreano", shortTag: "KO", langCode: "ko" },
+  hi: { label: "Hindi", shortTag: "HI", langCode: "hi" },
+  hin: { label: "Hindi", shortTag: "HI", langCode: "hi" },
+  hindi: { label: "Hindi", shortTag: "HI", langCode: "hi" }
+};
+function getCustomSourceLangMeta(lang) {
+  const normalized = (lang || "").trim().toLowerCase();
+  if (normalized === "sub" || normalized === "pt-sub" || normalized === "legendado") {
+    return CUSTOM_SOURCE_LANG_OPTIONS[1];
+  }
+  if (normalized === "pt" || normalized === "pt-br" || normalized === "dublado" || normalized === "portuguese") {
+    return CUSTOM_SOURCE_LANG_OPTIONS[0];
+  }
+  if (normalized === "en" || normalized === "en-us" || normalized === "original" || normalized === "english") {
+    return CUSTOM_SOURCE_LANG_OPTIONS[2];
+  }
+  if (normalized === "es" || normalized === "es-es" || normalized === "espanhol" || normalized === "spanish") {
+    return CUSTOM_SOURCE_LANG_OPTIONS[3];
+  }
+  const extended = EXTENDED_LANG_META[normalized];
+  if (extended) {
+    return {
+      value: "auto",
+      label: extended.label,
+      shortTag: extended.shortTag,
+      langCode: extended.langCode
+    };
+  }
+  return CUSTOM_SOURCE_LANG_OPTIONS[4];
+}
+function formatSourceLanguageOptionLabel(sourceName, lang) {
+  const cleanName = (sourceName || "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim();
+  const meta = getCustomSourceLangMeta(lang);
+  if (!cleanName) {
+    return {
+      label: meta.label,
+      languageLabel: meta.label,
+      sourceName: "",
+      langCode: meta.langCode
+    };
+  }
+  const label = meta.value === "auto" && meta.langCode === "auto" ? `${cleanName} (Auto)` : `${meta.label} \xB7 ${cleanName}`;
+  return {
+    label,
+    languageLabel: meta.label,
+    sourceName: cleanName,
+    langCode: meta.langCode
+  };
+}
+function consolidateAudioOptionsByLanguage(options) {
+  if (!Array.isArray(options) || options.length === 0) return [];
+  const hasDirectStream = options.some(
+    (opt) => opt.streamKind === "hls" || opt.streamKind === "video"
+  );
+  const filtered = hasDirectStream ? options.filter((opt) => opt.streamKind === "hls" || opt.streamKind === "video") : options;
+  const ordered = [...filtered].sort((a, b) => {
+    const aDirect = a.streamKind === "iframe" ? 1 : 0;
+    const bDirect = b.streamKind === "iframe" ? 1 : 0;
+    return aDirect - bDirect;
+  });
+  const grouped = /* @__PURE__ */ new Map();
+  const seenUrlsByGroup = /* @__PURE__ */ new Map();
+  for (const opt of ordered) {
+    const meta = getCustomSourceLangMeta(opt.lang);
+    const hasSpecificLang = meta.langCode !== "auto";
+    const isUnknownAuto = !hasSpecificLang && (!opt.languageLabel || opt.languageLabel === "Autom\xE1tico");
+    const cleanLanguageLabel = isUnknownAuto ? "\xC1udio Original" : hasSpecificLang ? meta.label : opt.languageLabel;
+    const groupKey = hasSpecificLang ? meta.langCode : "auto";
+    const canonicalLang = hasSpecificLang ? meta.langCode : "auto";
+    const existing = grouped.get(groupKey);
+    const candidateBackups = [
+      { streamUrl: opt.streamUrl, streamKind: opt.streamKind },
+      ...Array.isArray(opt.backupStreams) ? opt.backupStreams : []
+    ];
+    if (!existing) {
+      const seenUrls = /* @__PURE__ */ new Set([opt.streamUrl]);
+      const dedupedBackups = [];
+      for (const b of candidateBackups.slice(1)) {
+        if (!b?.streamUrl || seenUrls.has(b.streamUrl)) continue;
+        seenUrls.add(b.streamUrl);
+        dedupedBackups.push({ streamUrl: b.streamUrl, streamKind: b.streamKind });
+      }
+      seenUrlsByGroup.set(groupKey, seenUrls);
+      grouped.set(groupKey, {
+        id: opt.id,
+        label: cleanLanguageLabel,
+        languageLabel: cleanLanguageLabel,
+        lang: canonicalLang,
+        streamUrl: opt.streamUrl,
+        streamKind: opt.streamKind,
+        ...dedupedBackups.length > 0 ? { backupStreams: dedupedBackups } : {},
+        isCustomSource: opt.isCustomSource
+      });
+    } else {
+      const seenUrls = seenUrlsByGroup.get(groupKey);
+      const backups = existing.backupStreams ? [...existing.backupStreams] : [];
+      for (const b of candidateBackups) {
+        if (!b?.streamUrl || seenUrls.has(b.streamUrl)) continue;
+        seenUrls.add(b.streamUrl);
+        backups.push({ streamUrl: b.streamUrl, streamKind: b.streamKind });
+      }
+      if (backups.length > 0) {
+        existing.backupStreams = backups;
+      }
+    }
+  }
+  return Array.from(grouped.values());
+}
+function sanitizeCustomVideoSources(input) {
+  if (!Array.isArray(input)) return [];
+  const result = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  for (let i = 0; i < input.length && result.length < 50; i++) {
+    const raw = input[i];
+    if (!raw || typeof raw !== "object") continue;
+    const obj = raw;
+    const rawId = typeof obj.id === "string" ? obj.id.trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) : "";
+    const id = rawId || `src_${i + 1}`;
+    if (seenIds.has(id)) continue;
+    const name = typeof obj.name === "string" ? obj.name.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 60) : "";
+    if (!name) continue;
+    const kind = obj.kind === "api" || obj.kind === "embed" || obj.kind === "direct" ? obj.kind : "api";
+    const lang = sanitizeCustomVideoSourceLang(obj.lang);
+    const movieTemplate = sanitizeEmbedTemplate(typeof obj.movieTemplate === "string" ? obj.movieTemplate : "");
+    const tvTemplate = sanitizeEmbedTemplate(typeof obj.tvTemplate === "string" ? obj.tvTemplate : "");
+    if (!movieTemplate && !tvTemplate) continue;
+    const rawPriority = typeof obj.priority === "number" ? obj.priority : Number(obj.priority);
+    const priority = Number.isFinite(rawPriority) ? Math.max(1, Math.min(999, Math.round(rawPriority))) : i + 1;
+    const active = typeof obj.active === "boolean" ? obj.active : true;
+    seenIds.add(id);
+    result.push({
+      id,
+      name,
+      kind,
+      movieTemplate,
+      tvTemplate,
+      lang,
+      priority,
+      active
+    });
+  }
+  return result.sort((a, b) => a.priority - b.priority);
 }
 function sanitizeWatermarkText(input) {
   if (!input || typeof input !== "string") return "";
@@ -417,6 +595,7 @@ function buildOrderedSourceCascade(cfg, params) {
   if (!validId) return [];
   const season = params.mediaType === "tv" ? normalizeSeasonNumber(params.seasonNumber, 1) : void 0;
   const episode = params.mediaType === "tv" ? normalizeEpisodeNumber(params.episodeNumber, 1) : void 0;
+  const customSources = sanitizeCustomVideoSources(cfg.customSources).filter((s) => s.active);
   const customTemplateRaw = params.mediaType === "tv" ? cfg.customEmbedTvTemplate : cfg.customEmbedMovieTemplate;
   const customTemplateUrl = customTemplateRaw ? buildCustomEmbedUrl({
     template: customTemplateRaw,
@@ -467,6 +646,32 @@ function buildOrderedSourceCascade(cfg, params) {
   const hasCustomWatchaflix = normalizeWatchaFlixBaseUrl(cfg.watchaflixBaseUrl) !== DEFAULT_WATCHAFLIX_BASE_URL;
   const hasCustomMyembed = normalizeMyEmbedBaseUrl(cfg.myembedBaseUrl) !== DEFAULT_MYEMBED_BASE_URL;
   const rawList = [];
+  const pushCustomSources = () => {
+    for (const src of customSources) {
+      const template = params.mediaType === "tv" ? src.tvTemplate || src.movieTemplate : src.movieTemplate || src.tvTemplate;
+      if (!template) continue;
+      const builtUrl = buildCustomEmbedUrl({
+        template,
+        tmdbId: validId,
+        imdbId: params.imdbId,
+        mediaType: params.mediaType,
+        seasonNumber: season,
+        episodeNumber: episode,
+        player: cfg.defaultPlayer,
+        colorHex: cfg.defaultColorHex
+      });
+      if (!builtUrl) continue;
+      rawList.push({
+        sourceId: "custom_source",
+        customSourceId: src.id,
+        label: src.name,
+        url: builtUrl,
+        isCustomConfigured: true,
+        sourceKindHint: src.kind,
+        preferredLang: src.lang
+      });
+    }
+  };
   const pushCustomTemplate = () => {
     if (customTemplateUrl) {
       rawList.push({
@@ -512,11 +717,12 @@ function buildOrderedSourceCascade(cfg, params) {
   const pushNative = () => {
     rawList.push({
       sourceId: "native_watcha",
-      label: "MegaStream Nativo (WatchPlay / EmbedPlayer / PlayerFlix)",
+      label: "MegaStream Nativo (WatchPlay / VidSrc / EmbedPlayer)",
       isCustomConfigured: false
     });
   };
   if (cfg.sourceMode === "custom_template") {
+    pushCustomSources();
     pushCustomTemplate();
     pushNative();
     if (hasCustomWatchaflix) pushWatchaflix();
@@ -526,29 +732,28 @@ function buildOrderedSourceCascade(cfg, params) {
     pushMegaembed();
   } else if (cfg.sourceMode === "watchaflix") {
     pushWatchaflix();
+    pushCustomSources();
     pushNative();
     pushCustomTemplate();
     pushMyembed();
     pushMegaembed();
   } else if (cfg.sourceMode === "myembed") {
-    if (hasCustomMyembed) {
-      pushMyembed();
-      pushNative();
-    } else {
-      pushMyembed();
-      pushNative();
-    }
+    pushMyembed();
+    pushCustomSources();
+    pushNative();
     pushCustomTemplate();
     pushWatchaflix();
     pushMegaembed();
   } else if (cfg.sourceMode === "megaembed") {
     pushMegaembed();
+    pushCustomSources();
     pushNative();
     pushCustomTemplate();
     pushMyembed();
     pushWatchaflix();
   } else {
     pushNative();
+    pushCustomSources();
     pushCustomTemplate();
     if (hasCustomWatchaflix) pushWatchaflix();
     if (hasCustomMyembed) pushMyembed();
@@ -559,7 +764,7 @@ function buildOrderedSourceCascade(cfg, params) {
   const seen = /* @__PURE__ */ new Set();
   const deduped = [];
   for (const item of rawList) {
-    const key = `${item.sourceId}:${item.url || "native"}`;
+    const key = `${item.sourceId}:${item.customSourceId || ""}:${item.url || "native"}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);
@@ -571,9 +776,122 @@ function buildOrderedSourceCascade(cfg, params) {
 import fs4 from "node:fs";
 import path4 from "node:path";
 
-// server/repositories/interfaces.ts
+// server/services/FirestoreRestService.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
+function loadConfig() {
+  try {
+    const cfgPath = path2.resolve(process.cwd(), "firebase-applet-config.json");
+    if (fs2.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs2.readFileSync(cfgPath, "utf-8"));
+      if (parsed.projectId && parsed.firestoreDatabaseId) {
+        return {
+          projectId: parsed.projectId,
+          firestoreDatabaseId: parsed.firestoreDatabaseId
+        };
+      }
+    }
+  } catch {
+  }
+  return {
+    projectId: "gen-lang-client-0094430568",
+    firestoreDatabaseId: "ai-studio-7a3f426f-e541-4ad6-aab7-8258b241a13c"
+  };
+}
+function decodeValue(val) {
+  if ("stringValue" in val) return val.stringValue;
+  if ("booleanValue" in val) return val.booleanValue;
+  if ("integerValue" in val) return Number(val.integerValue);
+  if ("doubleValue" in val) return val.doubleValue;
+  if ("timestampValue" in val) return val.timestampValue;
+  if ("nullValue" in val) return null;
+  if ("arrayValue" in val) {
+    return (val.arrayValue.values ?? []).map(decodeValue);
+  }
+  if ("mapValue" in val) {
+    return decodeFields(val.mapValue.fields ?? {});
+  }
+  return null;
+}
+function decodeFields(fields) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields)) {
+    out[k] = decodeValue(v);
+  }
+  return out;
+}
+var FirestoreRestServiceImpl = class {
+  constructor() {
+    this.cfg = loadConfig();
+  }
+  get baseDocumentsUrl() {
+    return `https://firestore.googleapis.com/v1/projects/${this.cfg.projectId}/databases/${this.cfg.firestoreDatabaseId}/documents`;
+  }
+  buildHeaders(bearerToken, jsonBody = false) {
+    const headers = { Accept: "application/json" };
+    if (jsonBody) headers["Content-Type"] = "application/json";
+    const clean = bearerToken?.replace(/^Bearer\s+/i, "").trim();
+    if (clean) {
+      headers.Authorization = `Bearer ${clean}`;
+    }
+    return headers;
+  }
+  async getDocument(docPath, bearerToken) {
+    try {
+      const res = await fetch(`${this.baseDocumentsUrl}/${docPath}`, {
+        headers: this.buildHeaders(bearerToken, false),
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!res.ok) return null;
+      const doc = await res.json();
+      if (!doc.fields) return null;
+      return decodeFields(doc.fields);
+    } catch {
+      return null;
+    }
+  }
+  async queryActiveCollectionChecked(collectionId, bearerToken) {
+    try {
+      const res = await fetch(`${this.baseDocumentsUrl}:runQuery`, {
+        method: "POST",
+        headers: this.buildHeaders(bearerToken, true),
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "active" },
+                op: "EQUAL",
+                value: { booleanValue: true }
+              }
+            }
+          }
+        }),
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!res.ok) return { ok: false, items: [] };
+      const rows = await res.json();
+      const items = [];
+      for (const row of rows) {
+        if (row.document?.fields) {
+          items.push(decodeFields(row.document.fields));
+        }
+      }
+      return { ok: true, items };
+    } catch {
+      return { ok: false, items: [] };
+    }
+  }
+  async queryActiveCollection(collectionId, bearerToken) {
+    const res = await this.queryActiveCollectionChecked(collectionId, bearerToken);
+    return res.items;
+  }
+};
+var FirestoreRestService = new FirestoreRestServiceImpl();
+
+// server/repositories/interfaces.ts
+import fs3 from "node:fs";
+import path3 from "node:path";
 
 // shared/catalogUtils.ts
 var SUBSCRIPTION_PLANS = [
@@ -968,15 +1286,15 @@ function sanitizeSecretToken(raw, maxLength = 500) {
 }
 
 // server/repositories/interfaces.ts
-var DATA_FILE = process.env.VERCEL ? "/tmp/.megastream-store.json" : path2.resolve(process.cwd(), ".megastream-store.json");
+var DATA_FILE = process.env.VERCEL ? "/tmp/.megastream-store.json" : path3.resolve(process.cwd(), ".megastream-store.json");
 var JsonRepositoryStore = class {
   constructor() {
     this.state = this.load();
   }
   load() {
     try {
-      if (fs2.existsSync(DATA_FILE)) {
-        const raw = fs2.readFileSync(DATA_FILE, "utf-8");
+      if (fs3.existsSync(DATA_FILE)) {
+        const raw = fs3.readFileSync(DATA_FILE, "utf-8");
         return JSON.parse(raw);
       }
     } catch {
@@ -1007,7 +1325,7 @@ var JsonRepositoryStore = class {
   }
   save() {
     try {
-      fs2.writeFileSync(DATA_FILE, JSON.stringify(this.state, null, 2), "utf-8");
+      fs3.writeFileSync(DATA_FILE, JSON.stringify(this.state, null, 2), "utf-8");
     } catch {
     }
   }
@@ -1235,6 +1553,7 @@ var PlayerConfigStore = class {
       ),
       customEmbedMovieTemplate: sanitizeEmbedTemplate(stored.customEmbedMovieTemplate),
       customEmbedTvTemplate: sanitizeEmbedTemplate(stored.customEmbedTvTemplate),
+      customSources: sanitizeCustomVideoSources(stored.customSources),
       embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
         stored.embedTimeoutSeconds,
         DEFAULT_PLAYER_CONFIG.embedTimeoutSeconds
@@ -1303,6 +1622,7 @@ var PlayerConfigStore = class {
     const nextWatchaflixLang = partial.watchaflixLang !== void 0 ? validateWatchaFlixLang(partial.watchaflixLang, current.watchaflixLang) : current.watchaflixLang;
     const nextMovieTpl = partial.customEmbedMovieTemplate !== void 0 ? sanitizeEmbedTemplate(partial.customEmbedMovieTemplate) : current.customEmbedMovieTemplate;
     const nextTvTpl = partial.customEmbedTvTemplate !== void 0 ? sanitizeEmbedTemplate(partial.customEmbedTvTemplate) : current.customEmbedTvTemplate;
+    const nextCustomSources = partial.customSources !== void 0 ? sanitizeCustomVideoSources(partial.customSources) : current.customSources ?? [];
     const nextTimeout = partial.embedTimeoutSeconds !== void 0 ? sanitizeEmbedTimeoutSeconds(partial.embedTimeoutSeconds, current.embedTimeoutSeconds) : current.embedTimeoutSeconds;
     const nextAspectMode = partial.defaultAspectMode !== void 0 ? validatePlayerAspectMode(partial.defaultAspectMode, current.defaultAspectMode) : current.defaultAspectMode;
     const nextAutoEnableSubtitles = typeof partial.autoEnableSubtitles === "boolean" ? partial.autoEnableSubtitles : current.autoEnableSubtitles;
@@ -1338,6 +1658,7 @@ var PlayerConfigStore = class {
       watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,
       customEmbedTvTemplate: nextTvTpl,
+      customSources: nextCustomSources,
       embedTimeoutSeconds: nextTimeout,
       defaultAspectMode: nextAspectMode,
       autoEnableSubtitles: nextAutoEnableSubtitles,
@@ -1408,106 +1729,6 @@ var CacheServiceImpl = class {
   }
 };
 var CacheService = new CacheServiceImpl();
-
-// server/services/FirestoreRestService.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
-function loadConfig() {
-  try {
-    const cfgPath = path3.resolve(process.cwd(), "firebase-applet-config.json");
-    if (fs3.existsSync(cfgPath)) {
-      const parsed = JSON.parse(fs3.readFileSync(cfgPath, "utf-8"));
-      if (parsed.projectId && parsed.firestoreDatabaseId) {
-        return {
-          projectId: parsed.projectId,
-          firestoreDatabaseId: parsed.firestoreDatabaseId
-        };
-      }
-    }
-  } catch {
-  }
-  return {
-    projectId: "gen-lang-client-0094430568",
-    firestoreDatabaseId: "ai-studio-7a3f426f-e541-4ad6-aab7-8258b241a13c"
-  };
-}
-function decodeValue(val) {
-  if ("stringValue" in val) return val.stringValue;
-  if ("booleanValue" in val) return val.booleanValue;
-  if ("integerValue" in val) return Number(val.integerValue);
-  if ("doubleValue" in val) return val.doubleValue;
-  if ("timestampValue" in val) return val.timestampValue;
-  if ("nullValue" in val) return null;
-  if ("arrayValue" in val) {
-    return (val.arrayValue.values ?? []).map(decodeValue);
-  }
-  if ("mapValue" in val) {
-    return decodeFields(val.mapValue.fields ?? {});
-  }
-  return null;
-}
-function decodeFields(fields) {
-  const out = {};
-  for (const [k, v] of Object.entries(fields)) {
-    out[k] = decodeValue(v);
-  }
-  return out;
-}
-var FirestoreRestServiceImpl = class {
-  constructor() {
-    this.cfg = loadConfig();
-  }
-  get baseDocumentsUrl() {
-    return `https://firestore.googleapis.com/v1/projects/${this.cfg.projectId}/databases/${this.cfg.firestoreDatabaseId}/documents`;
-  }
-  async getDocument(docPath) {
-    try {
-      const res = await fetch(`${this.baseDocumentsUrl}/${docPath}`, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5e3)
-      });
-      if (!res.ok) return null;
-      const doc = await res.json();
-      if (!doc.fields) return null;
-      return decodeFields(doc.fields);
-    } catch {
-      return null;
-    }
-  }
-  async queryActiveCollection(collectionId) {
-    try {
-      const res = await fetch(`${this.baseDocumentsUrl}:runQuery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId }],
-            where: {
-              fieldFilter: {
-                field: { fieldPath: "active" },
-                op: "EQUAL",
-                value: { booleanValue: true }
-              }
-            }
-          }
-        }),
-        signal: AbortSignal.timeout(5e3)
-      });
-      if (!res.ok) return [];
-      const rows = await res.json();
-      const items = [];
-      for (const row of rows) {
-        if (row.document?.fields) {
-          items.push(decodeFields(row.document.fields));
-        }
-      }
-      return items;
-    } catch {
-      return [];
-    }
-  }
-};
-var FirestoreRestService = new FirestoreRestServiceImpl();
 
 // server/services/MegaEmbedService.ts
 var MegaEmbedServiceImpl = class {
@@ -1617,57 +1838,79 @@ var MegaEmbedService = new MegaEmbedServiceImpl();
 var SiteConfigServiceImpl = class {
   constructor() {
     this.lastHydratedAt = 0;
-    this.hydrationTtlMs = 2e4;
+    this.hydrationTtlMs = 2500;
+    this.hydrationPromise = null;
   }
   async ensureHydrated(force = false) {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-    const [remoteSite, remoteCustom] = await Promise.all([
-      FirestoreRestService.getDocument("siteConfig/global"),
-      FirestoreRestService.queryActiveCollection("customCatalog")
-    ]);
-    if (remoteSite) {
-      const local = repositoryStore.getSiteConfig();
-      const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
-      const remoteIso = toIsoTimestamp(remoteSite.updatedAt, "");
-      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
-      if (isLocalDefault || remoteTs >= localTs) {
-        const merged = sanitizeSiteConfig(remoteSite, local, true);
-        repositoryStore.saveSiteConfig(merged);
-      }
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
-    if (remoteCustom.length > 0) {
-      let changed = false;
-      const localList = repositoryStore.getCustomCatalog();
-      for (const raw of remoteCustom) {
-        try {
-          if (!raw.title) continue;
-          const existing = raw.id ? localList.find((c) => c.id === raw.id) : void 0;
-          const sanitized = sanitizeCustomMediaInput(raw, existing);
-          const remoteItemIso = toIsoTimestamp(raw.updatedAt, "");
-          if (remoteItemIso) {
-            sanitized.updatedAt = remoteItemIso;
-          }
-          if (!existing || existing.updatedAt !== sanitized.updatedAt) {
-            repositoryStore.upsertCustomMedia(sanitized);
-            changed = true;
-          }
-        } catch {
+    const run = (async () => {
+      const [remoteSite, remoteCustomRes] = await Promise.all([
+        FirestoreRestService.getDocument("siteConfig/global"),
+        FirestoreRestService.queryActiveCollectionChecked("customCatalog")
+      ]);
+      if (remoteSite) {
+        const local = repositoryStore.getSiteConfig();
+        const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
+        const remoteIso = toIsoTimestamp(remoteSite.updatedAt, "");
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+        if (isLocalDefault || localTs === 0 || changedRemote && remoteTs >= localTs) {
+          const merged = sanitizeSiteConfig(remoteSite, local, true);
+          repositoryStore.saveSiteConfig(merged);
         }
       }
-      if (changed) {
-        CacheService.clear("catalog:");
+      if (remoteCustomRes.ok) {
+        let changed = false;
+        const localList = repositoryStore.getCustomCatalog();
+        const remoteIds = /* @__PURE__ */ new Set();
+        for (const raw of remoteCustomRes.items) {
+          try {
+            if (!raw.title) continue;
+            const existing = raw.id ? localList.find((c) => c.id === raw.id) : void 0;
+            const sanitized = sanitizeCustomMediaInput(raw, existing);
+            const remoteItemIso = toIsoTimestamp(raw.updatedAt, "");
+            if (remoteItemIso) {
+              sanitized.updatedAt = remoteItemIso;
+            }
+            remoteIds.add(sanitized.id);
+            if (!existing || existing.updatedAt !== sanitized.updatedAt) {
+              repositoryStore.upsertCustomMedia(sanitized);
+              changed = true;
+            }
+          } catch {
+          }
+        }
+        for (const localItem of localList) {
+          if (!remoteIds.has(localItem.id)) {
+            if (repositoryStore.deleteCustomMedia(localItem.id)) {
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          CacheService.clear("catalog:");
+        }
       }
-    }
-    this.lastHydratedAt = Date.now();
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+    this.hydrationPromise = run;
+    return run;
   }
   getConfig() {
     return repositoryStore.getSiteConfig();
   }
-  async getConfigAsync() {
-    await this.ensureHydrated();
+  async getConfigAsync(force = false) {
+    await this.ensureHydrated(force);
     return repositoryStore.getSiteConfig();
   }
   updateConfig(input) {
@@ -1685,8 +1928,8 @@ var SiteConfigServiceImpl = class {
   listCustomCatalog() {
     return repositoryStore.getCustomCatalog();
   }
-  async listCustomCatalogAsync() {
-    await this.ensureHydrated();
+  async listCustomCatalogAsync(force = false) {
+    await this.ensureHydrated(force);
     return repositoryStore.getCustomCatalog();
   }
   getCustomMatch(tmdbId, mediaType) {
@@ -1841,12 +2084,13 @@ function convertSrtToVtt(rawText, offsetSeconds = 0) {
   return `${out.join("\n").replace(/\n{3,}/g, "\n\n").trim()}
 `;
 }
-function buildHlsProxyPlaylist(manifestText, upstreamUrl, proxyBasePrefix) {
+function buildHlsProxyPlaylist(manifestText, upstreamUrl, proxyBasePrefix, signUrl) {
   const toProxyUrl = (rawRef) => {
     const trimmed = rawRef.trim();
     if (!trimmed) return trimmed;
     const resolved = new URL(trimmed, upstreamUrl).toString();
-    return `${proxyBasePrefix}?u=${encodeURIComponent(resolved)}`;
+    const sigParam = signUrl ? `&s=${encodeURIComponent(signUrl(resolved))}` : "";
+    return `${proxyBasePrefix}?u=${encodeURIComponent(resolved)}${sigParam}`;
   };
   return (manifestText || "").replace(/\r\n/g, "\n").split("\n").map((line) => {
     const trimmed = line.trim();
@@ -2039,24 +2283,47 @@ function classifyPlayableMediaUrl(rawCandidate, baseUrl, allowOpaqueStreamKey = 
     return null;
   }
 }
-function extractPlayableStreamFromBody(body, baseUrl) {
+function normalizeExtractedLangHint(raw) {
+  if (typeof raw !== "string") return void 0;
+  const s = raw.trim().toLowerCase();
+  if (!s) return void 0;
+  if (/(?:legend|pt-sub|\bsub\b|\bleg\b)/i.test(s)) return "sub";
+  if (/(?:dublad|portugu|\bpt-br\b|\bpt\b|\bpor\b|\bpob\b|\bdub\b)/i.test(s)) return "pt";
+  if (/(?:ingl[eê]s|english|\ben-us\b|\ben\b|\beng\b|\boriginal\b)/i.test(s)) return "en";
+  if (/(?:espan|spanish|\bes-es\b|\bes\b|\bspa\b|latino|castellano)/i.test(s)) return "es";
+  if (/(?:fran[cç]|french|\bfr\b|\bfre\b|\bfra\b)/i.test(s)) return "fr";
+  if (/(?:alem[aã]|german|\bde\b|\bger\b|\bdeu\b)/i.test(s)) return "de";
+  if (/(?:italian|\bit\b|\bita\b)/i.test(s)) return "it";
+  if (/(?:japon|japanese|\bja\b|\bjpn\b)/i.test(s)) return "ja";
+  if (/(?:corean|korean|\bko\b|\bkor\b)/i.test(s)) return "ko";
+  if (/(?:\bhindi\b|\bhi\b|\bhin\b)/i.test(s)) return "hi";
+  return void 0;
+}
+function extractPlayableStreamsFromBody(body, baseUrl) {
   const raw = (body || "").trim();
-  if (!raw) return null;
+  if (!raw) return [];
+  const results = [];
+  const seenUrls = /* @__PURE__ */ new Set();
+  const pushUnique = (item) => {
+    if (!item.streamUrl || seenUrls.has(item.streamUrl)) return;
+    seenUrls.add(item.streamUrl);
+    results.push(item);
+  };
   if (raw.startsWith("{") || raw.startsWith("[")) {
     try {
       const parsed = JSON.parse(raw);
-      const visit = (node, depth = 0) => {
-        if (!node || depth > 5) return null;
+      const visit = (node, depth = 0, inheritedPoster = null) => {
+        if (!node || depth > 5 || results.length >= 12) return;
         if (Array.isArray(node)) {
           for (const item of node) {
-            const hit = visit(item, depth + 1);
-            if (hit) return hit;
+            visit(item, depth + 1, inheritedPoster);
           }
-          return null;
+          return;
         }
         if (typeof node === "object") {
           const obj = node;
-          const posterRaw = typeof obj.poster === "string" ? obj.poster : typeof obj.videoImage === "string" ? obj.videoImage : typeof obj.bgImage === "string" ? obj.bgImage : null;
+          const posterRaw = typeof obj.poster === "string" ? obj.poster : typeof obj.videoImage === "string" ? obj.videoImage : typeof obj.bgImage === "string" ? obj.bgImage : inheritedPoster;
+          const itemLangHint = normalizeExtractedLangHint(obj.lang) || normalizeExtractedLangHint(obj.language) || normalizeExtractedLangHint(obj.idioma) || normalizeExtractedLangHint(obj.audio) || normalizeExtractedLangHint(obj.label) || normalizeExtractedLangHint(obj.title) || normalizeExtractedLangHint(obj.name);
           const explicitKeys = [
             "securedLink",
             "videoSource",
@@ -2071,43 +2338,62 @@ function extractPlayableStreamFromBody(body, baseUrl) {
           for (const key of explicitKeys) {
             const val = obj[key];
             if (typeof val === "string") {
-              const strictOpaque = key === "securedLink" || key === "videoSource" || key === "streamUrl" || key === "hlsUrl";
+              const strictOpaque = key === "securedLink" || key === "videoSource" || key === "streamUrl" || key === "hlsUrl" || key === "url" && (obj.type === "hls" || obj.type === "mp4" || obj.type === "video" || obj.hls === true);
               const classified = classifyPlayableMediaUrl(val, baseUrl, strictOpaque);
               if (classified) {
-                const isExplicitMp4 = key === "mp4" || classified.streamKind === "video";
-                return {
+                const isExplicitMp4 = key === "mp4" || obj.type === "mp4" || obj.type === "video" || classified.streamKind === "video";
+                pushUnique({
                   streamUrl: classified.streamUrl,
-                  streamKind: isExplicitMp4 && obj.hls !== true ? "video" : "hls",
-                  posterUrl: posterRaw
-                };
+                  streamKind: isExplicitMp4 && obj.hls !== true && obj.type !== "hls" ? "video" : "hls",
+                  posterUrl: posterRaw,
+                  ...itemLangHint ? { detectedLang: itemLangHint } : {}
+                });
+                break;
               }
             }
           }
-          for (const nestedKey of ["sources", "streams", "files", "data", "result", "stream"]) {
+          for (const nestedKey of [
+            "sources",
+            "streams",
+            "files",
+            "playlist",
+            "links",
+            "servers",
+            "data",
+            "result",
+            "stream"
+          ]) {
             if (nestedKey in obj) {
-              const hit = visit(obj[nestedKey], depth + 1);
-              if (hit) {
-                if (!hit.posterUrl && posterRaw) hit.posterUrl = posterRaw;
-                return hit;
-              }
+              visit(obj[nestedKey], depth + 1, posterRaw);
             }
           }
         }
-        return null;
       };
-      const jsonMatch = visit(parsed);
-      if (jsonMatch) return jsonMatch;
+      visit(parsed);
+      if (results.length > 0) return results;
     } catch {
     }
   }
   const normalizedHtml = raw.replace(/\\\//g, "/");
   const posterMatch = normalizedHtml.match(/data-poster=["']([^"']+)["']/i) || normalizedHtml.match(/poster\s*[:=]\s*["']([^"']+)["']/i);
   const posterUrl = posterMatch?.[1]?.trim() || null;
+  for (const tagMatch of normalizedHtml.matchAll(/<source\b([^>]+)>/gi)) {
+    const attrs = tagMatch[1] || "";
+    const src = attrs.match(/src=["']([^"']+)["']/i)?.[1];
+    if (!src) continue;
+    const classified = classifyPlayableMediaUrl(src, baseUrl, false);
+    if (!classified) continue;
+    const labelHint = normalizeExtractedLangHint(attrs.match(/(?:label|title|data-lang|srclang)=["']([^"']+)["']/i)?.[1]);
+    pushUnique({
+      ...classified,
+      posterUrl,
+      ...labelHint ? { detectedLang: labelHint } : {}
+    });
+  }
   const patterns = [
     { regex: /hls\.loadSource\(\s*["']([^"']+)["']\s*\)/gi, allowOpaque: true },
     { regex: /(?:securedLink|videoSource|streamUrl|hlsUrl)\s*[:=]\s*["']([^"']+)["']/gi, allowOpaque: true },
     { regex: /(?:file|url|src|source)\s*:\s*["']([^"']+\.(?:m3u8|mp4|webm|mov|m4v)(?:\?[^"']*)?)["']/gi, allowOpaque: false },
-    { regex: /<source[^>]+src=["']([^"']+)["']/gi, allowOpaque: false },
     { regex: /<video[^>]+src=["']([^"']+)["']/gi, allowOpaque: false },
     { regex: /https?:\/\/[^\s"'<>\\]+\.(?:m3u8|mp4|m4v|webm)(?:\?[^\s"'<>\\]*)?/gi, allowOpaque: false }
   ];
@@ -2116,26 +2402,31 @@ function extractPlayableStreamFromBody(body, baseUrl) {
       const candidate = match[1] || match[0];
       const classified = classifyPlayableMediaUrl(candidate, baseUrl, allowOpaque);
       if (classified) {
-        return {
+        pushUnique({
           ...classified,
           posterUrl
-        };
+        });
+        if (results.length >= 8) break;
       }
     }
+    if (results.length >= 8) break;
   }
-  return null;
+  return results;
 }
 function extractNestedEmbedUrls(html, baseUrl) {
   const normalized = (html || "").replace(/\\\//g, "/");
   const urls = [];
   const seen = /* @__PURE__ */ new Set();
-  for (const match of normalized.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) {
-    const raw = (match[1] || "").trim();
-    if (!raw || raw === "about:blank" || raw.startsWith("javascript:")) continue;
+  const pushCandidate = (raw) => {
+    const clean = (raw || "").trim();
+    if (!clean || clean === "about:blank" || clean.startsWith("javascript:")) return;
     try {
-      const resolved = new URL(raw, baseUrl);
-      if (resolved.protocol !== "https:" && resolved.protocol !== "http:") continue;
-      if (!isSafePublicHost(resolved.hostname) || isAdOrTrackerHost(resolved.hostname)) continue;
+      const resolved = new URL(clean, baseUrl);
+      if (resolved.protocol !== "https:" && resolved.protocol !== "http:") return;
+      if (!isSafePublicHost(resolved.hostname) || isAdOrTrackerHost(resolved.hostname)) return;
+      if (/\.(?:css|js|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|json)(?:$|\?)/i.test(resolved.pathname)) {
+        return;
+      }
       const finalStr = resolved.toString();
       if (!seen.has(finalStr)) {
         seen.add(finalStr);
@@ -2143,8 +2434,264 @@ function extractNestedEmbedUrls(html, baseUrl) {
       }
     } catch {
     }
+  };
+  for (const match of normalized.matchAll(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi)) {
+    pushCandidate(match[1]);
+  }
+  for (const match of normalized.matchAll(/(?:data-embed|data-url|data-player)=["'](https?:\/\/[^"']+)["']/gi)) {
+    pushCandidate(match[1]);
+  }
+  for (const match of normalized.matchAll(/\b(?:go|loadPlayer|setEmbed|changeServer)\(\s*["'](https?:\/\/[^"']+)["']/gi)) {
+    pushCandidate(match[1]);
   }
   return urls;
+}
+function hasAdOrAntiSandboxTraps(html) {
+  const sample = (html || "").slice(0, 8e4);
+  return /frameElement\.hasAttribute\(\s*["']sandbox["']\s*\)|\/asb\.html\b|cst-captcha|jw-gate-cst/i.test(
+    sample
+  ) || /mypopads\.com|popads\.net|popcash|exoclick|adsterra|waust\.at\/d\.js/i.test(sample);
+}
+function parsePlayerFlixStyleUrl(urlStr) {
+  try {
+    const parsed = new URL((urlStr || "").trim());
+    const host = parsed.hostname.toLowerCase();
+    if (!/^(?:[a-z0-9-]+\.)?(?:myembed\.biz|playerflix\.ink|embedmovies\.org)$/i.test(host)) {
+      return null;
+    }
+    const tvMatch = parsed.pathname.match(
+      /^\/(?:serie|tv|tvshow)\/(\d+|tt\d+)\/(\d+)\/(\d+)/i
+    );
+    if (tvMatch) {
+      return {
+        origin: host.includes("playerflix.ink") ? parsed.origin : "https://playerflix.ink",
+        mediaType: "tv",
+        id: tvMatch[1],
+        season: Number(tvMatch[2]) || 1,
+        episode: Number(tvMatch[3]) || 1
+      };
+    }
+    const movieMatch = parsed.pathname.match(/^\/(?:filme|movie)\/(\d+|tt\d+)/i);
+    if (movieMatch) {
+      return {
+        origin: host.includes("playerflix.ink") ? parsed.origin : "https://playerflix.ink",
+        mediaType: "movie",
+        id: movieMatch[1],
+        season: null,
+        episode: null
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function extractBalancedJsonAfterVarQ(html) {
+  const match = /\bvar\s+Q\s*=\s*\{/.exec(html);
+  if (!match) return null;
+  const start = match.index + match[0].length - 1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  const limit = Math.min(html.length, start + 12e4);
+  for (let i = start; i < limit; i++) {
+    const ch = html[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return html.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+function parseBuzzQPayload(html, pageUrl) {
+  if (!html || !pageUrl) return null;
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(pageUrl);
+  } catch {
+    return null;
+  }
+  const rawJson = extractBalancedJsonAfterVarQ(html);
+  if (!rawJson) return null;
+  let qObj;
+  try {
+    qObj = JSON.parse(rawJson);
+  } catch {
+    return null;
+  }
+  const token = typeof qObj.t === "string" ? qObj.t.trim() : "";
+  const rawServers = Array.isArray(qObj.ssr?.servers) ? qObj.ssr.servers : [];
+  if (!token || rawServers.length === 0) return null;
+  const servers = [];
+  for (const s of rawServers) {
+    if (!s || typeof s.ref !== "string" || !s.ref.trim()) continue;
+    servers.push({
+      ref: s.ref.trim(),
+      name: typeof s.name === "string" ? s.name.trim() : "",
+      lang: typeof s.lang === "string" && s.lang.trim() ? s.lang.trim() : null
+    });
+  }
+  if (servers.length === 0) return null;
+  const baseHrefMatch = html.match(/<base[^>]+href=["']([^"']+)["']/i);
+  let resolvedBaseUrl = `${parsedUrl.origin}/`;
+  if (baseHrefMatch?.[1]) {
+    try {
+      resolvedBaseUrl = new URL(baseHrefMatch[1].trim(), parsedUrl.origin).toString();
+    } catch {
+      resolvedBaseUrl = `${parsedUrl.origin}/`;
+    }
+  }
+  const candidates = [];
+  const pushBase = (urlCandidate) => {
+    try {
+      const u = new URL(urlCandidate, resolvedBaseUrl).toString();
+      if (!candidates.includes(u)) {
+        candidates.push(u);
+      }
+    } catch {
+    }
+  };
+  const usesPlPrefix = /pl\/api\.php/i.test(html) || /vidsrc\.buzz/i.test(parsedUrl.hostname);
+  if (usesPlPrefix) {
+    pushBase(`${parsedUrl.origin}/pl/api.php`);
+    pushBase(new URL("api.php", resolvedBaseUrl).toString());
+    pushBase(`${parsedUrl.origin}/api.php`);
+  } else {
+    pushBase(new URL("api.php", resolvedBaseUrl).toString());
+    pushBase(`${parsedUrl.origin}/api.php`);
+    pushBase(`${parsedUrl.origin}/pl/api.php`);
+  }
+  return {
+    token,
+    playApiBases: candidates,
+    servers
+  };
+}
+
+// server/utils/proxyToken.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+var cachedSecret = null;
+function resolveSecret() {
+  if (cachedSecret) return cachedSecret;
+  const envSecret = process.env.STREAM_TOKEN_SECRET?.trim() || process.env.SESSION_SECRET?.trim();
+  if (envSecret && envSecret.length >= 16) {
+    cachedSecret = envSecret;
+    return cachedSecret;
+  }
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || process.env.VITE_FIREBASE_PROJECT_ID?.trim() || "gen-lang-client-0094430568";
+  const apiKey = process.env.FIREBASE_API_KEY?.trim() || process.env.VITE_FIREBASE_API_KEY?.trim() || "megastream-stateless-proxy-key";
+  cachedSecret = `ms-v1:${projectId}:${apiKey}`;
+  return cachedSecret;
+}
+function toBase64Url(input) {
+  return Buffer.from(input).toString("base64url");
+}
+function fromBase64Url(input) {
+  return Buffer.from(input, "base64url");
+}
+function hmacSign(data, secret = resolveSecret()) {
+  return createHmac("sha256", secret).update(data).digest("base64url");
+}
+function safeEqualStrings(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+function signStreamSessionToken(payload, ttlSeconds = 6 * 3600, secretOverride) {
+  const compact = {
+    u: payload.u,
+    ...payload.r ? { r: payload.r } : {},
+    ...payload.o ? { o: payload.o } : {},
+    sr: payload.sr,
+    k: payload.k,
+    exp: Math.floor(Date.now() / 1e3) + Math.max(60, ttlSeconds)
+  };
+  const body = toBase64Url(JSON.stringify(compact));
+  const sig = hmacSign(`st:${body}`, secretOverride);
+  return `v1.${body}.${sig}`;
+}
+function verifyStreamSessionToken(token, secretOverride) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "v1") return null;
+  const [, body, sig] = parts;
+  if (!body || !sig) return null;
+  const expectedSig = hmacSign(`st:${body}`, secretOverride);
+  if (!safeEqualStrings(sig, expectedSig)) return null;
+  try {
+    const parsed = JSON.parse(fromBase64Url(body).toString("utf8"));
+    if (!parsed || typeof parsed.u !== "string" || typeof parsed.exp !== "number") {
+      return null;
+    }
+    if (parsed.exp < Math.floor(Date.now() / 1e3)) {
+      return null;
+    }
+    if (parsed.k !== "hls" && parsed.k !== "video" && parsed.k !== "iframe") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function signSubtitleToken(payload, ttlSeconds = 12 * 3600, secretOverride) {
+  const compact = {
+    u: payload.u,
+    l: payload.l,
+    ...payload.e ? { e: payload.e } : {},
+    exp: Math.floor(Date.now() / 1e3) + Math.max(60, ttlSeconds)
+  };
+  const body = toBase64Url(JSON.stringify(compact));
+  const sig = hmacSign(`sub:${body}`, secretOverride);
+  return `sv1.${body}.${sig}`;
+}
+function verifySubtitleToken(token, secretOverride) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "sv1") return null;
+  const [, body, sig] = parts;
+  if (!body || !sig) return null;
+  const expectedSig = hmacSign(`sub:${body}`, secretOverride);
+  if (!safeEqualStrings(sig, expectedSig)) return null;
+  try {
+    const parsed = JSON.parse(fromBase64Url(body).toString("utf8"));
+    if (!parsed || typeof parsed.u !== "string" || typeof parsed.exp !== "number") {
+      return null;
+    }
+    if (parsed.exp < Math.floor(Date.now() / 1e3)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function signSegmentUrl(sessionToken, segmentUrl, secretOverride) {
+  return hmacSign(`seg:${sessionToken}:${segmentUrl}`, secretOverride).slice(0, 24);
+}
+function verifySegmentUrl(sessionToken, segmentUrl, providedSig, secretOverride) {
+  if (!sessionToken || !segmentUrl || !providedSig) return false;
+  const expected = signSegmentUrl(sessionToken, segmentUrl, secretOverride);
+  return safeEqualStrings(providedSig, expected);
 }
 
 // server/services/StreamResolverService.ts
@@ -2164,25 +2711,67 @@ var StreamResolverServiceImpl = class {
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:" || !isSafePublicHost(parsed.hostname)) {
       throw new Error("Origem de stream n\xE3o permitida.");
     }
-    const id = crypto.randomBytes(12).toString("hex");
+    const streamKind = params.streamKind === "video" ? "video" : "hls";
+    const sendReferer = params.sendReferer !== false;
+    const token = signStreamSessionToken({
+      u: params.upstreamUrl,
+      r: params.referer || void 0,
+      o: params.origin || void 0,
+      sr: sendReferer,
+      k: streamKind
+    });
     if (this.hlsSessions.size > 400) {
       const oldestKey = this.hlsSessions.keys().next().value;
       if (oldestKey) this.hlsSessions.delete(oldestKey);
     }
     const primaryHost = parsed.hostname.toLowerCase();
-    this.hlsSessions.set(id, {
-      id,
+    this.hlsSessions.set(token, {
+      id: token,
       upstreamUrl: params.upstreamUrl,
       allowedHost: primaryHost,
       allowedHosts: /* @__PURE__ */ new Set([primaryHost]),
       referer: params.referer,
       origin: params.origin,
-      sendReferer: params.sendReferer !== false,
-      streamKind: params.streamKind ?? "hls",
+      sendReferer,
+      streamKind,
       userAgent: DESKTOP_CHROME_UA,
       createdAt: Date.now()
     });
-    return id;
+    return token;
+  }
+  resolveHlsSession(token) {
+    const cached = this.hlsSessions.get(token);
+    if (cached) return cached;
+    const decoded = verifyStreamSessionToken(token);
+    if (!decoded) return null;
+    let primaryHost = "";
+    try {
+      const parsed = new URL(decoded.u);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:" || !isSafePublicHost(parsed.hostname)) {
+        return null;
+      }
+      primaryHost = parsed.hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+    const session = {
+      id: token,
+      upstreamUrl: decoded.u,
+      allowedHost: primaryHost,
+      allowedHosts: /* @__PURE__ */ new Set([primaryHost]),
+      referer: decoded.r || "",
+      origin: decoded.o || "",
+      sendReferer: decoded.sr,
+      streamKind: decoded.k === "video" ? "video" : "hls",
+      userAgent: DESKTOP_CHROME_UA,
+      createdAt: Date.now()
+    };
+    if (this.hlsSessions.size > 400) {
+      const oldestKey = this.hlsSessions.keys().next().value;
+      if (oldestKey) this.hlsSessions.delete(oldestKey);
+    }
+    this.hlsSessions.set(token, session);
+    return session;
   }
   buildProxyPlaybackUrl(sessionId, streamKind) {
     return streamKind === "video" ? `/api/player/video/${sessionId}` : `/api/player/hls/${sessionId}/playlist.m3u8`;
@@ -2216,21 +2805,40 @@ var StreamResolverServiceImpl = class {
     return merged;
   }
   registerSubtitleEntry(entry) {
-    const id = crypto.createHash("sha1").update(entry.url).digest("hex").slice(0, 16);
-    if (!this.subtitleRegistry.has(id)) {
+    const token = signSubtitleToken({
+      u: entry.url,
+      l: entry.lang,
+      e: entry.encoding
+    });
+    if (!this.subtitleRegistry.has(token)) {
       if (this.subtitleRegistry.size > 800) {
         const oldestKey = this.subtitleRegistry.keys().next().value;
         if (oldestKey) this.subtitleRegistry.delete(oldestKey);
       }
-      this.subtitleRegistry.set(id, {
-        id,
+      this.subtitleRegistry.set(token, {
+        id: token,
         url: entry.url,
         lang: entry.lang,
         encoding: entry.encoding,
         createdAt: Date.now()
       });
     }
-    return id;
+    return token;
+  }
+  resolveSubtitleEntry(subId) {
+    const cached = this.subtitleRegistry.get(subId);
+    if (cached) return cached;
+    const verified = verifySubtitleToken(subId);
+    if (!verified) return null;
+    const entry = {
+      id: subId,
+      url: verified.u,
+      lang: verified.l,
+      encoding: verified.e,
+      createdAt: Date.now()
+    };
+    this.subtitleRegistry.set(subId, entry);
+    return entry;
   }
   async probeDirectMediaUrl(params) {
     let parsed;
@@ -2303,7 +2911,7 @@ var StreamResolverServiceImpl = class {
             cloudflareBlocked: true
           };
         }
-        if (/#EXTM3U/i.test(htmlSample)) {
+        if (/^\s*#EXTM3U/i.test(htmlSample)) {
           return { ok: true, kind: "hls", finalUrl, sendReferer };
         }
         return { ok: false, kind: params.expectedKind, finalUrl, sendReferer };
@@ -2328,9 +2936,11 @@ var StreamResolverServiceImpl = class {
       params.signal?.removeEventListener("abort", onParentAbort);
     }
   }
-  async extractWatchPlayStream(embedUrl) {
+  async extractWatchPlayStream(embedUrl, signal) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7e3);
+    const timer = setTimeout(() => controller.abort(), 6500);
+    const onParentAbort = () => controller.abort();
+    signal?.addEventListener("abort", onParentAbort, { once: true });
     try {
       const res = await fetch(embedUrl, {
         redirect: "follow",
@@ -2350,44 +2960,49 @@ var StreamResolverServiceImpl = class {
       let fallbackPoster = null;
       let fallbackKind = null;
       if (!rawStreamUrl || !/^https?:\/\//i.test(rawStreamUrl)) {
-        const fallback = extractPlayableStreamFromBody(html, finalUrl);
+        const fallback = extractPlayableStreamsFromBody(html, finalUrl)[0];
         if (!fallback) return null;
         rawStreamUrl = fallback.streamUrl;
         fallbackPoster = fallback.posterUrl;
         fallbackKind = fallback.streamKind;
       }
-      try {
-        const parsedStream = new URL(rawStreamUrl);
-        if (!isSafePublicHost(parsedStream.hostname) || isAdOrTrackerHost(parsedStream.hostname)) {
-          return null;
-        }
-      } catch {
+      const isMp4 = fallbackKind === "video" || /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(rawStreamUrl);
+      const probe = await this.probeDirectMediaUrl({
+        url: rawStreamUrl,
+        referer: finalUrl,
+        origin: finalOrigin,
+        expectedKind: isMp4 ? "video" : "hls",
+        signal: controller.signal
+      });
+      if (!probe.ok) {
         return null;
       }
       const audioMatch = html.match(/MyPlayerAudio\s*=\s*["']([^"']+)["']/);
       const posterMatch = html.match(/data-poster=["']([^"']+)["']/);
-      const isMp4 = fallbackKind === "video" || /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/i.test(rawStreamUrl);
       return {
-        streamUrl: rawStreamUrl,
-        streamKind: isMp4 ? "video" : "hls",
+        streamUrl: probe.finalUrl || rawStreamUrl,
+        streamKind: probe.kind,
         audioLabel: audioMatch?.[1]?.trim() || "Dublado",
         posterUrl: posterMatch?.[1]?.trim() || fallbackPoster,
-        referer: finalUrl,
-        origin: finalOrigin,
-        sendReferer: true,
+        referer: probe.sendReferer ? finalUrl : "",
+        origin: probe.sendReferer ? finalOrigin : "",
+        sendReferer: probe.sendReferer,
         sourceKind: "watchplay"
       };
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onParentAbort);
     }
   }
-  async extractEmbedPlayerStream(embedUrl, langHint) {
+  async extractEmbedPlayerStream(embedUrl, langHint, signal) {
     const parsed = extractEmbedPlayerHash(embedUrl);
     if (!parsed) return null;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7e3);
+    const timer = setTimeout(() => controller.abort(), 6500);
+    const onParentAbort = () => controller.abort();
+    signal?.addEventListener("abort", onParentAbort, { once: true });
     try {
       const endpoint = `${parsed.origin}/player/index.php?data=${encodeURIComponent(parsed.hash)}&do=getVideo`;
       const body = `hash=${encodeURIComponent(parsed.hash)}&r=${encodeURIComponent("https://playerflix.ink/")}`;
@@ -2407,30 +3022,209 @@ var StreamResolverServiceImpl = class {
       const payload = await res.json();
       const rawUrl = (payload.securedLink || payload.videoSource || "").trim();
       if (!/^https?:\/\//i.test(rawUrl)) return null;
-      try {
-        const parsedStream = new URL(rawUrl);
-        if (!isSafePublicHost(parsedStream.hostname) || isAdOrTrackerHost(parsedStream.hostname)) {
-          return null;
-        }
-      } catch {
-        return null;
-      }
       const isMp4 = /\.mp4(?:$|[?#])/i.test(rawUrl) && payload.hls !== true;
-      const isPt = (langHint || "").toLowerCase().startsWith("pt");
-      return {
-        streamUrl: rawUrl,
-        streamKind: isMp4 ? "video" : "hls",
-        audioLabel: isPt ? "Dublado" : "Legendado",
-        posterUrl: payload.videoImage || null,
+      const probe = await this.probeDirectMediaUrl({
+        url: rawUrl,
         referer: `${parsed.origin}/`,
         origin: parsed.origin,
+        expectedKind: isMp4 ? "video" : "hls",
+        signal: controller.signal
+      });
+      if (!probe.ok) {
+        return null;
+      }
+      const isPt = (langHint || "").toLowerCase().startsWith("pt");
+      return {
+        streamUrl: probe.finalUrl || rawUrl,
+        streamKind: probe.kind,
+        audioLabel: isPt ? "Dublado" : "Legendado",
+        posterUrl: payload.videoImage || null,
+        referer: probe.sendReferer ? `${parsed.origin}/` : "",
+        origin: probe.sendReferer ? parsed.origin : "",
+        sendReferer: probe.sendReferer,
         sourceKind: "embedplayer"
       };
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onParentAbort);
     }
+  }
+  async resolveBuzzQServersFromHtml(params) {
+    const parsedQ = parseBuzzQPayload(params.html, params.finalPageUrl);
+    if (!parsedQ) return [];
+    const pageOrigin = new URL(params.finalPageUrl).origin;
+    const scoreServerLang = (lang) => {
+      const l = (lang || "").trim().toLowerCase();
+      if (!l) return 2;
+      if (/^(?:pt|portugu)/i.test(l)) return 0;
+      if (/^(?:en|eng)/i.test(l)) return 0;
+      if (/^(?:es|span|espa|fr|french|de|germ|it|ital|ja|jap|ko|kor)/i.test(l)) return 1;
+      return 4;
+    };
+    const servers = [...parsedQ.servers].sort(
+      (a, b) => scoreServerLang(a.lang) - scoreServerLang(b.lang)
+    );
+    const hasPrimaryWesternServer = servers.some(
+      (s) => /^(?:pt|portugu|en|eng|es|span|espa)/i.test((s.lang || "").trim())
+    );
+    const results = await Promise.all(
+      servers.slice(0, 6).map(async (srv) => {
+        if (!srv.ref) return null;
+        const rawLangClean = (srv.lang || "").trim().toLowerCase();
+        if (hasPrimaryWesternServer && /^(?:hindi|tamil|telugu|kannada|malayalam|bengali|marathi|punjabi)$/i.test(rawLangClean)) {
+          return null;
+        }
+        try {
+          let playJson = null;
+          for (const baseEndpoint of parsedQ.playApiBases) {
+            const apiUrl = `${baseEndpoint}?a=play&ref=${encodeURIComponent(srv.ref)}&t=${encodeURIComponent(parsedQ.token)}`;
+            const apiRes = await fetch(apiUrl, {
+              signal: params.signal,
+              headers: {
+                "User-Agent": DESKTOP_CHROME_UA,
+                Referer: params.finalPageUrl,
+                "X-Requested-With": "XMLHttpRequest",
+                Accept: "application/json, text/javascript, */*; q=0.01"
+              }
+            });
+            if (!apiRes.ok) continue;
+            const json = await apiRes.json().catch(() => null);
+            if (json?.url) {
+              playJson = json;
+              break;
+            }
+          }
+          if (!playJson?.url) return null;
+          const resolvedStreamUrl = new URL(playJson.url, params.finalPageUrl).toString();
+          const expectedKind = playJson.type === "mp4" || playJson.type === "video" ? "video" : "hls";
+          const probe = await this.probeDirectMediaUrl({
+            url: resolvedStreamUrl,
+            referer: `${pageOrigin}/`,
+            origin: pageOrigin,
+            expectedKind,
+            signal: params.signal
+          });
+          if (!probe.ok) return null;
+          const srvLangRaw = (srv.lang || params.langHint || "").trim().toLowerCase();
+          let langCode = "en-us";
+          let languageLabel = "Ingl\xEAs / Original";
+          if (/^(?:pt|portugu)/i.test(srvLangRaw)) {
+            langCode = "pt-br";
+            languageLabel = "Dublado (PT-BR)";
+          } else if (/^(?:es|span|espa)/i.test(srvLangRaw)) {
+            langCode = "es-es";
+            languageLabel = "Espanhol";
+          } else if (/^(?:fr|french|fran)/i.test(srvLangRaw)) {
+            langCode = "fr";
+            languageLabel = "Franc\xEAs";
+          } else if (/^(?:de|germ|alem)/i.test(srvLangRaw)) {
+            langCode = "de";
+            languageLabel = "Alem\xE3o";
+          } else if (/^(?:it|ital)/i.test(srvLangRaw)) {
+            langCode = "it";
+            languageLabel = "Italiano";
+          } else if (/^(?:ja|jap)/i.test(srvLangRaw)) {
+            langCode = "ja";
+            languageLabel = "Japon\xEAs";
+          } else if (/^(?:ko|kor)/i.test(srvLangRaw)) {
+            langCode = "ko";
+            languageLabel = "Coreano";
+          } else if (/^(?:hi|hin)/i.test(srvLangRaw)) {
+            langCode = "hi";
+            languageLabel = "Hindi";
+          }
+          return {
+            streamUrl: probe.finalUrl || resolvedStreamUrl,
+            streamKind: probe.kind,
+            audioLabel: languageLabel,
+            languageLabel,
+            langCode,
+            posterUrl: null,
+            referer: probe.sendReferer ? `${pageOrigin}/` : "",
+            origin: probe.sendReferer ? pageOrigin : "",
+            sendReferer: probe.sendReferer,
+            sourceKind: "vidsrcbuzz"
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+    return results.filter((r) => r !== null);
+  }
+  async extractVidSrcBuzzFromEmbedUrl(embedUrl, opts = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7500);
+    const onParentAbort = () => controller.abort();
+    opts.signal?.addEventListener("abort", onParentAbort, { once: true });
+    try {
+      const pageRes = await fetch(embedUrl, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": DESKTOP_CHROME_UA,
+          Referer: "https://www.2embed.cc/"
+        }
+      });
+      if (!pageRes.ok) return [];
+      const finalPageUrl = pageRes.url || embedUrl;
+      const html = await pageRes.text();
+      if (isCloudflareChallengeHtml(html, pageRes.status)) return [];
+      return await this.resolveBuzzQServersFromHtml({
+        html,
+        finalPageUrl,
+        langHint: opts.langHint,
+        signal: controller.signal
+      });
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onParentAbort);
+    }
+  }
+  async extractVidSrcBuzzStreams(params) {
+    const buildBuzzMirrorUrls = (id) => {
+      const path5 = params.mediaType === "tv" ? `/embed/tv/${id}/${params.season ?? 1}/${params.episode ?? 1}` : `/embed/movie/${id}`;
+      return [
+        `https://vidsrc.buzz${path5}`,
+        `https://videm.buzz${path5}`,
+        `https://videm.cc${path5}`
+      ];
+    };
+    const [vidsrcUrl, videmBuzzUrl, videmCcUrl] = buildBuzzMirrorUrls(params.tmdbId);
+    const [vidsrcRes, videmRes] = await Promise.all([
+      this.extractVidSrcBuzzFromEmbedUrl(vidsrcUrl, {
+        langHint: "en",
+        signal: params.signal
+      }),
+      this.extractVidSrcBuzzFromEmbedUrl(videmBuzzUrl, {
+        langHint: "en",
+        signal: params.signal
+      })
+    ]);
+    const combined = [...vidsrcRes, ...videmRes];
+    if (combined.length > 0) return combined;
+    const ccRes = await this.extractVidSrcBuzzFromEmbedUrl(videmCcUrl, {
+      langHint: "en",
+      signal: params.signal
+    });
+    if (ccRes.length > 0) return ccRes;
+    if (params.imdbId && /^tt\d{5,12}$/i.test(params.imdbId)) {
+      const imdbMirrors = buildBuzzMirrorUrls(params.imdbId);
+      const imdbResults = await Promise.all(
+        imdbMirrors.slice(0, 2).map(
+          (u) => this.extractVidSrcBuzzFromEmbedUrl(u, {
+            langHint: "en",
+            signal: params.signal
+          })
+        )
+      );
+      return imdbResults.flat();
+    }
+    return [];
   }
   async extractFromConfiguredUrl(targetUrl, opts = {}) {
     const depth = opts.depth ?? 0;
@@ -2443,15 +3237,110 @@ var StreamResolverServiceImpl = class {
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:" || !isSafePublicHost(parsed.hostname) || isAdOrTrackerHost(parsed.hostname)) {
       return { candidate: null, cloudflareBlocked: false };
     }
+    const resolveCustomMeta = (detectedLangCode) => {
+      const effectiveLang = opts.hasExplicitLang && opts.langHint && opts.langHint !== "auto" ? opts.langHint : detectedLangCode || opts.langHint || "auto";
+      return formatSourceLanguageOptionLabel(opts.sourceName, effectiveLang);
+    };
+    const initialMeta = resolveCustomMeta();
+    const defaultLabel = initialMeta.languageLabel;
+    const pfParsed = parsePlayerFlixStyleUrl(targetUrl);
+    if (pfParsed) {
+      const numericTmdb = /^\d+$/.test(pfParsed.id) ? Number(pfParsed.id) : 0;
+      const imdbStr = /^tt\d{5,12}$/i.test(pfParsed.id) ? pfParsed.id : null;
+      const pfController = new AbortController();
+      const pfTimer = setTimeout(() => pfController.abort(), 7e3);
+      const onParentAbort2 = () => pfController.abort();
+      opts.signal?.addEventListener("abort", onParentAbort2, { once: true });
+      try {
+        const pfRes = await this.resolvePlayerFlixAndWatchPlay({
+          tmdbId: numericTmdb,
+          imdbId: imdbStr,
+          mediaType: pfParsed.mediaType,
+          season: pfParsed.season,
+          episode: pfParsed.episode,
+          signal: pfController.signal
+        });
+        if (pfRes.candidates.length > 0) {
+          const picked = pfRes.candidates.map((item) => {
+            const detLang = item.langCode.startsWith("pt") ? "pt" : item.langCode.startsWith("en") ? "sub" : "auto";
+            const meta = resolveCustomMeta(detLang);
+            return {
+              ...item.extracted,
+              audioLabel: meta.languageLabel,
+              langCode: meta.langCode,
+              languageLabel: meta.languageLabel,
+              posterUrl: item.extracted.posterUrl || pfRes.bgImage,
+              isCustomSource: opts.isCustomSource
+            };
+          });
+          return {
+            candidate: picked[0],
+            extraCandidates: picked.slice(1),
+            cloudflareBlocked: false
+          };
+        }
+        return {
+          candidate: null,
+          cloudflareBlocked: pfRes.cloudflareOnly
+        };
+      } finally {
+        clearTimeout(pfTimer);
+        opts.signal?.removeEventListener("abort", onParentAbort2);
+      }
+    }
+    if (/(?:vidsrc\.buzz|videm\.buzz|videm\.cc)/i.test(parsed.hostname)) {
+      const buzzList = await this.extractVidSrcBuzzFromEmbedUrl(targetUrl, {
+        langHint: opts.langHint,
+        signal: opts.signal
+      });
+      if (buzzList.length > 0) {
+        const mapped = buzzList.map((item) => {
+          const meta = resolveCustomMeta(item.langCode);
+          return {
+            ...item,
+            audioLabel: meta.languageLabel,
+            langCode: meta.langCode,
+            languageLabel: meta.languageLabel,
+            isCustomSource: opts.isCustomSource
+          };
+        });
+        return {
+          candidate: mapped[0],
+          extraCandidates: mapped.slice(1),
+          cloudflareBlocked: false
+        };
+      }
+      return { candidate: null, cloudflareBlocked: false };
+    }
     if (extractEmbedPlayerHash(targetUrl)) {
-      const candidate = await this.extractEmbedPlayerStream(targetUrl, opts.langHint);
+      const candidate = await this.extractEmbedPlayerStream(targetUrl, opts.langHint, opts.signal);
+      if (candidate) {
+        const meta = resolveCustomMeta(candidate.langCode);
+        if (opts.sourceName) {
+          candidate.audioLabel = meta.label;
+          candidate.sourceName = meta.sourceName;
+        }
+        candidate.langCode = meta.langCode;
+        candidate.languageLabel = meta.languageLabel;
+        candidate.isCustomSource = opts.isCustomSource;
+      }
       return { candidate, cloudflareBlocked: false };
     }
     if (/watchplay\.shop/i.test(parsed.hostname)) {
-      const candidate = await this.extractWatchPlayStream(targetUrl);
+      const candidate = await this.extractWatchPlayStream(targetUrl, opts.signal);
+      if (candidate) {
+        const detectedLang = /leg|en/i.test(candidate.audioLabel) ? "sub" : "pt";
+        const meta = resolveCustomMeta(candidate.langCode || detectedLang);
+        if (opts.sourceName) {
+          candidate.audioLabel = meta.label;
+          candidate.sourceName = meta.sourceName;
+        }
+        candidate.langCode = meta.langCode;
+        candidate.languageLabel = meta.languageLabel;
+        candidate.isCustomSource = opts.isCustomSource;
+      }
       return { candidate, cloudflareBlocked: false };
     }
-    const defaultLabel = opts.langHint === "en" ? "Original" : "Dublado (PT-BR)";
     const cleanPath = parsed.pathname.toLowerCase();
     const looksDirectHls = cleanPath.endsWith(".m3u8") || /format=m3u8|type=hls/i.test(parsed.search);
     const looksDirectVideo = /\.(?:mp4|webm|ogg|ogv|mov|m4v)$/i.test(cleanPath);
@@ -2474,6 +3363,10 @@ var StreamResolverServiceImpl = class {
             streamUrl: targetUrl,
             streamKind: looksDirectVideo ? "video" : "hls",
             audioLabel: defaultLabel,
+            langCode: initialMeta.langCode,
+            sourceName: initialMeta.sourceName,
+            languageLabel: initialMeta.languageLabel,
+            isCustomSource: opts.isCustomSource,
             posterUrl: null,
             referer: "",
             origin: "",
@@ -2489,6 +3382,10 @@ var StreamResolverServiceImpl = class {
           streamUrl: probe.finalUrl || targetUrl,
           streamKind: probe.kind,
           audioLabel: defaultLabel,
+          langCode: initialMeta.langCode,
+          sourceName: initialMeta.sourceName,
+          languageLabel: initialMeta.languageLabel,
+          isCustomSource: opts.isCustomSource,
           posterUrl: null,
           referer: probe.sendReferer ? `${parsed.origin}/` : "",
           origin: probe.sendReferer ? parsed.origin : "",
@@ -2519,10 +3416,11 @@ var StreamResolverServiceImpl = class {
     try {
       let sendReferer = true;
       let res = await fetchPage(true);
+      const cfHeaderMitigated = (res.headers.get("cf-mitigated") || "").toLowerCase() === "challenge";
       if (res.status === 401 || res.status === 403) {
         const errBytes = await this.readHeadBytes(res, 16384);
         const errSample = new TextDecoder("utf-8", { fatal: false }).decode(errBytes);
-        if (isCloudflareChallengeHtml(errSample, res.status)) {
+        if (cfHeaderMitigated || isCloudflareChallengeHtml(errSample, res.status)) {
           return { candidate: null, cloudflareBlocked: true };
         }
         sendReferer = false;
@@ -2532,12 +3430,13 @@ var StreamResolverServiceImpl = class {
       const finalOrigin = new URL(finalUrl).origin;
       const ct = (res.headers.get("content-type") || "").toLowerCase();
       const disp = res.headers.get("content-disposition");
+      const finalCfMitigated = (res.headers.get("cf-mitigated") || "").toLowerCase() === "challenge";
       if (!res.ok && res.status !== 206) {
         const errBytes = await this.readHeadBytes(res, 16384);
         const errSample = new TextDecoder("utf-8", { fatal: false }).decode(errBytes);
         return {
           candidate: null,
-          cloudflareBlocked: isCloudflareChallengeHtml(errSample, res.status)
+          cloudflareBlocked: finalCfMitigated || isCloudflareChallengeHtml(errSample, res.status)
         };
       }
       const headBytes = await this.readHeadBytes(res, 131072);
@@ -2554,6 +3453,10 @@ var StreamResolverServiceImpl = class {
             streamUrl: finalUrl,
             streamKind: sniffedKind,
             audioLabel: defaultLabel,
+            langCode: initialMeta.langCode,
+            sourceName: initialMeta.sourceName,
+            languageLabel: initialMeta.languageLabel,
+            isCustomSource: opts.isCustomSource,
             posterUrl: null,
             referer: sendReferer ? `${finalOrigin}/` : "",
             origin: sendReferer ? finalOrigin : "",
@@ -2566,58 +3469,115 @@ var StreamResolverServiceImpl = class {
         return { candidate: null, cloudflareBlocked: false };
       }
       const body = new TextDecoder("utf-8", { fatal: false }).decode(headBytes);
-      if (isCloudflareChallengeHtml(body, res.status)) {
+      if (finalCfMitigated || isCloudflareChallengeHtml(body, res.status)) {
         return { candidate: null, cloudflareBlocked: true };
       }
-      const extracted = extractPlayableStreamFromBody(body, finalUrl);
-      if (extracted) {
-        const probe = await this.probeDirectMediaUrl({
-          url: extracted.streamUrl,
-          referer: finalUrl,
-          origin: finalOrigin,
-          expectedKind: extracted.streamKind,
-          signal: opts.signal
-        });
-        if (probe.ok) {
-          return {
-            cloudflareBlocked: false,
-            candidate: {
-              streamUrl: probe.finalUrl || extracted.streamUrl,
+      const extractedList = extractPlayableStreamsFromBody(body, finalUrl);
+      if (extractedList.length > 0) {
+        const probedList = await Promise.all(
+          extractedList.slice(0, 4).map(async (item) => {
+            const meta = resolveCustomMeta(item.detectedLang);
+            const probe = await this.probeDirectMediaUrl({
+              url: item.streamUrl,
+              referer: finalUrl,
+              origin: finalOrigin,
+              expectedKind: item.streamKind,
+              signal: opts.signal
+            });
+            return { item, meta, probe };
+          })
+        );
+        const verifiedCandidates = [];
+        let firstFallback;
+        let sawCfInStreams = false;
+        for (const { item, meta, probe } of probedList) {
+          if (probe.ok) {
+            verifiedCandidates.push({
+              streamUrl: probe.finalUrl || item.streamUrl,
               streamKind: probe.kind,
-              audioLabel: defaultLabel,
-              posterUrl: extracted.posterUrl,
+              audioLabel: meta.languageLabel,
+              langCode: meta.langCode,
+              sourceName: meta.sourceName,
+              languageLabel: meta.languageLabel,
+              isCustomSource: opts.isCustomSource,
+              posterUrl: item.posterUrl,
               referer: probe.sendReferer ? finalUrl : "",
               origin: probe.sendReferer ? finalOrigin : "",
               sendReferer: probe.sendReferer,
               sourceKind: "custom"
-            }
-          };
-        }
-        if (!probe.cloudflareBlocked) {
-          return {
-            candidate: null,
-            cloudflareBlocked: false,
-            directBrowserFallback: {
-              streamUrl: extracted.streamUrl,
-              streamKind: extracted.streamKind,
-              audioLabel: defaultLabel,
-              posterUrl: extracted.posterUrl,
+            });
+          } else if (probe.cloudflareBlocked) {
+            sawCfInStreams = true;
+          } else if (!firstFallback) {
+            firstFallback = {
+              streamUrl: item.streamUrl,
+              streamKind: item.streamKind,
+              audioLabel: meta.languageLabel,
+              langCode: meta.langCode,
+              sourceName: meta.sourceName,
+              languageLabel: meta.languageLabel,
+              isCustomSource: opts.isCustomSource,
+              posterUrl: item.posterUrl,
               referer: "",
               origin: "",
               sendReferer: false,
               useDirectClientUrl: true,
               sourceKind: "custom"
-            }
+            };
+          }
+        }
+        if (verifiedCandidates.length > 0) {
+          return {
+            cloudflareBlocked: false,
+            candidate: verifiedCandidates[0],
+            extraCandidates: verifiedCandidates.slice(1)
+          };
+        }
+        if (!sawCfInStreams && firstFallback) {
+          return {
+            candidate: null,
+            cloudflareBlocked: false,
+            directBrowserFallback: firstFallback
           };
         }
       }
-      if (depth < 1) {
-        const nestedUrls = extractNestedEmbedUrls(body, finalUrl).filter(
-          (u) => !/(?:superflixapi|embedplayabyss|playerflix\.ink)/i.test(u)
-        );
-        for (const nestedUrl of nestedUrls.slice(0, 2)) {
+      const buzzMirrorList = await this.resolveBuzzQServersFromHtml({
+        html: body,
+        finalPageUrl: finalUrl,
+        langHint: opts.langHint,
+        signal: controller.signal
+      });
+      if (buzzMirrorList.length > 0) {
+        const mapped = buzzMirrorList.map((item) => {
+          const meta = resolveCustomMeta(item.langCode);
+          return {
+            ...item,
+            audioLabel: meta.languageLabel,
+            langCode: meta.langCode,
+            languageLabel: meta.languageLabel,
+            isCustomSource: opts.isCustomSource
+          };
+        });
+        return {
+          candidate: mapped[0],
+          extraCandidates: mapped.slice(1),
+          cloudflareBlocked: false
+        };
+      }
+      if (depth < 2) {
+        const nestedUrls = extractNestedEmbedUrls(body, finalUrl).filter((u) => !/(?:superflixapi|embedplayabyss)/i.test(u)).sort((a, b) => {
+          const score = (urlItem) => /(?:vidsrc\.buzz|videm\.buzz|videm\.cc|watchplay\.shop|embedplayer\d*\.xyz|playerflix\.ink|myembed\.biz)/i.test(
+            urlItem
+          ) ? 0 : 1;
+          return score(a) - score(b);
+        });
+        for (const nestedUrl of nestedUrls.slice(0, 5)) {
           const nested = await this.extractFromConfiguredUrl(nestedUrl, {
             langHint: opts.langHint,
+            hasExplicitLang: opts.hasExplicitLang,
+            sourceName: opts.sourceName,
+            isCustomSource: opts.isCustomSource,
+            allowIframeFallback: false,
             depth: depth + 1,
             signal: opts.signal
           });
@@ -2625,6 +3585,30 @@ var StreamResolverServiceImpl = class {
             return nested;
           }
         }
+      }
+      const adBlocked = hasAdOrAntiSandboxTraps(body);
+      if (adBlocked) {
+        return { candidate: null, cloudflareBlocked: false, blockedByAds: true };
+      }
+      if (opts.allowIframeFallback && res.ok && ct.includes("text/html")) {
+        return {
+          candidate: null,
+          cloudflareBlocked: false,
+          iframeFallback: {
+            streamUrl: finalUrl,
+            streamKind: "iframe",
+            audioLabel: defaultLabel,
+            langCode: initialMeta.langCode,
+            languageLabel: initialMeta.languageLabel,
+            isCustomSource: opts.isCustomSource,
+            posterUrl: null,
+            referer: "",
+            origin: "",
+            sendReferer: false,
+            useDirectClientUrl: true,
+            sourceKind: "custom"
+          }
+        };
       }
       return { candidate: null, cloudflareBlocked: false };
     } catch {
@@ -2634,12 +3618,12 @@ var StreamResolverServiceImpl = class {
       opts.signal?.removeEventListener("abort", onParentAbort);
     }
   }
-  async extractCandidateOption(opt) {
+  async extractCandidateOption(opt, signal) {
     if (!opt.embed) return null;
     if (opt.id === "embedplayer" || /embedplayer\d*\.xyz/i.test(opt.embed)) {
-      return this.extractEmbedPlayerStream(opt.embed, opt.lang);
+      return this.extractEmbedPlayerStream(opt.embed, opt.lang, signal);
     }
-    return this.extractWatchPlayStream(opt.embed);
+    return this.extractWatchPlayStream(opt.embed, signal);
   }
   async fetchAjaxStreamOptions(params) {
     const qs = new URLSearchParams({
@@ -2687,7 +3671,7 @@ var StreamResolverServiceImpl = class {
     );
     return { bgImage, options: cleanOptions, cloudflareOnly };
   }
-  async resolveBuiltInWatchaPipeline(params) {
+  async resolvePlayerFlixAndWatchPlay(params) {
     const primary = await this.fetchAjaxStreamOptions({
       id: String(params.tmdbId),
       mediaType: params.mediaType,
@@ -2746,78 +3730,135 @@ var StreamResolverServiceImpl = class {
       }
     }
     const extractedResults = await Promise.all(
-      candidateOptions.slice(0, 6).map(async (opt, idx) => {
-        const extracted = await this.extractCandidateOption(opt);
+      candidateOptions.slice(0, 6).map(async (opt) => {
+        const extracted = await this.extractCandidateOption(opt, params.signal);
         if (!extracted) return null;
         const langCode = (opt.lang || "pt-br").toLowerCase();
-        return { idx, langCode, extracted };
+        return { langCode, extracted };
       })
     );
-    const byLang = /* @__PURE__ */ new Map();
-    for (const item of extractedResults) {
-      if (!item) continue;
-      const { idx, langCode, extracted } = item;
-      const langGroup = langCode.startsWith("pt") ? "pt" : langCode.startsWith("en") ? "en" : langCode;
-      const existing = byLang.get(langGroup);
-      if (existing && (existing.sourceKind === "watchplay" || extracted.sourceKind !== "watchplay")) {
+    return {
+      bgImage,
+      cloudflareOnly,
+      candidates: extractedResults.filter(
+        (item) => item !== null
+      )
+    };
+  }
+  async resolveBuiltInWatchaPipeline(params) {
+    const [flixRes, buzzList] = await Promise.all([
+      this.resolvePlayerFlixAndWatchPlay(params),
+      this.extractVidSrcBuzzStreams(params)
+    ]);
+    const options = [];
+    const upstreamById = /* @__PURE__ */ new Map();
+    const seenUrls = /* @__PURE__ */ new Set();
+    let posterUrl = flixRes.bgImage;
+    const byLangGroup = /* @__PURE__ */ new Map();
+    for (const item of flixRes.candidates) {
+      const langGroup = item.langCode.startsWith("pt") ? "pt" : item.langCode.startsWith("en") ? "en" : item.langCode;
+      const existing = byLangGroup.get(langGroup);
+      if (existing && (existing.extracted.sourceKind === "watchplay" || item.extracted.sourceKind !== "watchplay")) {
         continue;
       }
+      byLangGroup.set(langGroup, item);
+    }
+    let idx = 0;
+    for (const { langCode, extracted } of byLangGroup.values()) {
+      if (seenUrls.has(extracted.streamUrl)) continue;
+      seenUrls.add(extracted.streamUrl);
+      if (!posterUrl && extracted.posterUrl) posterUrl = extracted.posterUrl;
       const sessionId = this.registerHlsSession({
         upstreamUrl: extracted.streamUrl,
         referer: extracted.referer,
         origin: extracted.origin,
         sendReferer: extracted.sendReferer,
-        streamKind: extracted.streamKind
+        streamKind: extracted.streamKind === "video" ? "video" : "hls"
       });
-      const friendlyAudio = extracted.audioLabel === "Dublado" || langCode.startsWith("pt") ? "Dublado (PT-BR)" : extracted.audioLabel === "Legendado" || langCode.startsWith("en") ? "Legendado (Original)" : extracted.audioLabel;
-      byLang.set(langGroup, {
-        sourceKind: extracted.sourceKind,
-        posterUrl: extracted.posterUrl,
-        option: {
-          id: `audio_${idx}_${langCode}`,
-          label: friendlyAudio,
-          lang: langCode,
-          streamUrl: this.buildProxyPlaybackUrl(sessionId, extracted.streamKind),
-          streamKind: extracted.streamKind
-        }
+      const isPt = extracted.audioLabel === "Dublado" || langCode.startsWith("pt");
+      const isSub = extracted.audioLabel === "Legendado" || langCode.startsWith("en");
+      const languageLabel = isPt ? "Dublado (PT-BR)" : isSub ? "Legendado (PT-BR)" : extracted.audioLabel;
+      const optId = `audio_native_${idx}_${isPt ? "pt-br" : isSub ? "pt-sub" : langCode}`;
+      const playbackKind = extracted.streamKind === "video" ? "video" : "hls";
+      upstreamById.set(optId, extracted.streamUrl);
+      options.push({
+        id: optId,
+        label: languageLabel,
+        languageLabel,
+        lang: isPt ? "pt-br" : isSub ? "pt-sub" : langCode,
+        streamUrl: this.buildProxyPlaybackUrl(sessionId, playbackKind),
+        streamKind: playbackKind,
+        isCustomSource: false
       });
+      idx += 1;
     }
-    const audioOptions = Array.from(byLang.values()).map((v) => v.option);
+    for (const extracted of buzzList) {
+      if (seenUrls.has(extracted.streamUrl)) continue;
+      seenUrls.add(extracted.streamUrl);
+      const sessionId = this.registerHlsSession({
+        upstreamUrl: extracted.streamUrl,
+        referer: extracted.referer,
+        origin: extracted.origin,
+        sendReferer: extracted.sendReferer,
+        streamKind: extracted.streamKind === "video" ? "video" : "hls"
+      });
+      const langCode = extracted.langCode || "en-us";
+      const languageLabel = extracted.languageLabel || (langCode.startsWith("pt") ? "Dublado (PT-BR)" : langCode.startsWith("es") ? "Espanhol" : "Ingl\xEAs / Original");
+      const optId = `audio_buzz_${idx}_${langCode}`;
+      const playbackKind = extracted.streamKind === "video" ? "video" : "hls";
+      upstreamById.set(optId, extracted.streamUrl);
+      options.push({
+        id: optId,
+        label: languageLabel,
+        languageLabel,
+        lang: langCode,
+        streamUrl: this.buildProxyPlaybackUrl(sessionId, playbackKind),
+        streamKind: playbackKind,
+        isCustomSource: false
+      });
+      idx += 1;
+    }
     if (params.preferredLang === "en") {
-      audioOptions.sort((a, b) => (a.lang.startsWith("en") ? 0 : 1) - (b.lang.startsWith("en") ? 0 : 1));
+      options.sort((a, b) => (a.lang.startsWith("en") ? 0 : 1) - (b.lang.startsWith("en") ? 0 : 1));
     } else {
-      audioOptions.sort((a, b) => (a.lang.startsWith("pt") ? 0 : 1) - (b.lang.startsWith("pt") ? 0 : 1));
+      options.sort((a, b) => (a.lang.startsWith("pt") ? 0 : 1) - (b.lang.startsWith("pt") ? 0 : 1));
     }
-    const posterUrl = Array.from(byLang.values()).find((item) => item.posterUrl)?.posterUrl || bgImage;
-    if (audioOptions.length > 0) {
-      cloudflareOnly = false;
-    }
-    return { audioOptions, posterUrl, cloudflareOnly };
+    return {
+      audioOptions: options,
+      upstreamById,
+      posterUrl,
+      cloudflareOnly: options.length === 0 && flixRes.cloudflareOnly
+    };
   }
   buildCandidateOption(id, c, preferredLang) {
-    const lang = preferredLang === "en" ? "en-us" : "pt-br";
-    if (c.useDirectClientUrl) {
+    const meta = getCustomSourceLangMeta(c.langCode || preferredLang);
+    const lang = c.langCode || meta.langCode;
+    const cleanLanguageLabel = c.languageLabel || meta.label;
+    const baseOption = {
+      id,
+      label: cleanLanguageLabel,
+      languageLabel: cleanLanguageLabel,
+      lang,
+      streamKind: c.streamKind,
+      isCustomSource: c.isCustomSource
+    };
+    if (c.useDirectClientUrl || c.streamKind === "iframe") {
       return {
-        id,
-        label: c.audioLabel,
-        lang,
-        streamUrl: c.streamUrl,
-        streamKind: c.streamKind
+        ...baseOption,
+        streamUrl: c.streamUrl
       };
     }
+    const proxyKind = c.streamKind === "video" ? "video" : "hls";
     const sessionId = this.registerHlsSession({
       upstreamUrl: c.streamUrl,
       referer: c.referer,
       origin: c.origin,
       sendReferer: c.sendReferer,
-      streamKind: c.streamKind
+      streamKind: proxyKind
     });
     return {
-      id,
-      label: c.audioLabel,
-      lang,
-      streamUrl: this.buildProxyPlaybackUrl(sessionId, c.streamKind),
-      streamKind: c.streamKind
+      ...baseOption,
+      streamUrl: this.buildProxyPlaybackUrl(sessionId, proxyKind)
     };
   }
   async resolvePlayableStreams(params) {
@@ -2825,6 +3866,7 @@ var StreamResolverServiceImpl = class {
     const preferredLang = params.preferredLang ?? cfg.watchaflixLang ?? "pt";
     const season = params.mediaType === "tv" ? params.seasonNumber ?? 1 : null;
     const episode = params.mediaType === "tv" ? params.episodeNumber ?? 1 : null;
+    const activeCustomSources = sanitizeCustomVideoSources(cfg.customSources).filter((s) => s.active);
     const configFingerprint = crypto.createHash("sha1").update(
       JSON.stringify({
         sourceMode: cfg.sourceMode,
@@ -2834,21 +3876,17 @@ var StreamResolverServiceImpl = class {
         watchaflixBaseUrl: cfg.watchaflixBaseUrl,
         customEmbedMovieTemplate: cfg.customEmbedMovieTemplate,
         customEmbedTvTemplate: cfg.customEmbedTvTemplate,
+        customSources: activeCustomSources,
         preferImdbForMovies: cfg.preferImdbForMovies,
-        customStreamUrl: params.customStreamUrl || ""
+        customStreamUrl: params.customStreamUrl || "",
+        updatedAt: cfg.updatedAt || ""
       })
-    ).digest("hex").slice(0, 10);
+    ).digest("hex").slice(0, 12);
     const cacheKey = `${params.mediaType}:${params.tmdbId}:${season ?? 0}:${episode ?? 0}:${configFingerprint}`;
     const cached = this.streamCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() && cached.audioOptions.length > 0) {
-      const sortedCached = [...cached.audioOptions];
-      if (preferredLang === "en") {
-        sortedCached.sort((a, b) => (a.lang.startsWith("en") ? 0 : 1) - (b.lang.startsWith("en") ? 0 : 1));
-      } else {
-        sortedCached.sort((a, b) => (a.lang.startsWith("pt") ? 0 : 1) - (b.lang.startsWith("pt") ? 0 : 1));
-      }
       return {
-        audioOptions: sortedCached,
+        audioOptions: [...cached.audioOptions],
         posterUrl: cached.posterUrl,
         cloudflareOnly: cached.cloudflareOnly,
         resolvedSource: cached.resolvedSource
@@ -2863,10 +3901,18 @@ var StreamResolverServiceImpl = class {
       }
       let sawCloudflare = false;
       let fallbackPoster = null;
-      let pendingDirectFallback = null;
+      const upstreamById = /* @__PURE__ */ new Map();
+      const collectedOptions = [];
+      const resolvedCustomDirectOptions = [];
+      const resolvedCustomIframeOptions = [];
+      const directFallbacks = [];
       if (params.customStreamUrl) {
         const customRes = await this.extractFromConfiguredUrl(params.customStreamUrl, {
           langHint: preferredLang,
+          hasExplicitLang: false,
+          sourceName: "Fonte do Cat\xE1logo",
+          isCustomSource: true,
+          allowIframeFallback: true,
           signal: controller.signal
         });
         if (customRes.cloudflareBlocked) sawCloudflare = true;
@@ -2876,6 +3922,7 @@ var StreamResolverServiceImpl = class {
             customRes.candidate,
             preferredLang
           );
+          upstreamById.set(opt.id, customRes.candidate.streamUrl);
           const result = {
             audioOptions: [opt],
             posterUrl: customRes.candidate.posterUrl,
@@ -2885,18 +3932,22 @@ var StreamResolverServiceImpl = class {
           this.saveCache(cacheKey, result);
           return result;
         }
-        if (customRes.directBrowserFallback) {
-          pendingDirectFallback = {
-            option: this.buildCandidateOption(
-              `custom_item_${preferredLang}`,
-              customRes.directBrowserFallback,
-              preferredLang
-            ),
-            posterUrl: customRes.directBrowserFallback.posterUrl,
-            source: "custom_catalog_item_direct"
-          };
-          if (customRes.directBrowserFallback.posterUrl) {
-            fallbackPoster = customRes.directBrowserFallback.posterUrl;
+        const catalogFb = customRes.directBrowserFallback || customRes.iframeFallback;
+        if (catalogFb) {
+          const opt = this.buildCandidateOption(
+            `custom_item_${preferredLang}`,
+            catalogFb,
+            preferredLang
+          );
+          upstreamById.set(opt.id, catalogFb.streamUrl);
+          directFallbacks.push({
+            option: opt,
+            posterUrl: catalogFb.posterUrl,
+            source: "custom_catalog_item_direct",
+            upstreamUrl: catalogFb.streamUrl
+          });
+          if (catalogFb.posterUrl) {
+            fallbackPoster = catalogFb.posterUrl;
           }
         }
       }
@@ -2907,30 +3958,104 @@ var StreamResolverServiceImpl = class {
         seasonNumber: params.seasonNumber,
         episodeNumber: params.episodeNumber
       });
-      for (const stage of cascade) {
+      const customSourceStages = cascade.filter((s) => s.sourceId === "custom_source" && Boolean(s.url));
+      const nonCustomStages = cascade.filter((s) => s.sourceId !== "custom_source");
+      const hasNativeStage = nonCustomStages.some((s) => s.sourceId === "native_watcha");
+      const [customBatchResults, nativeParallelRes] = await Promise.all([
+        customSourceStages.length > 0 ? Promise.all(
+          customSourceStages.slice(0, 20).map(async (stage, idx) => {
+            const hasExplicitLang = Boolean(stage.preferredLang && stage.preferredLang !== "auto");
+            const langHint = hasExplicitLang ? stage.preferredLang : "auto";
+            const extractedRes = await this.extractFromConfiguredUrl(stage.url, {
+              langHint,
+              hasExplicitLang,
+              sourceName: stage.label,
+              isCustomSource: true,
+              allowIframeFallback: stage.sourceKindHint === "embed",
+              signal: controller.signal
+            });
+            if (extractedRes.cloudflareBlocked) sawCloudflare = true;
+            if (extractedRes.candidate) {
+              const allCandidates = [
+                extractedRes.candidate,
+                ...extractedRes.extraCandidates || []
+              ];
+              const built = allCandidates.map((cand, subIdx) => {
+                if (!fallbackPoster && cand.posterUrl) {
+                  fallbackPoster = cand.posterUrl;
+                }
+                const opt = this.buildCandidateOption(
+                  `custom_src_${stage.customSourceId || idx}_${subIdx}_${cand.langCode || langHint}`,
+                  cand,
+                  langHint
+                );
+                upstreamById.set(opt.id, cand.streamUrl);
+                return opt;
+              });
+              return { kind: "direct", opts: built };
+            }
+            if (extractedRes.directBrowserFallback) {
+              const fb = extractedRes.directBrowserFallback;
+              const opt = this.buildCandidateOption(
+                `custom_src_direct_${stage.customSourceId || idx}_${langHint}`,
+                fb,
+                langHint
+              );
+              upstreamById.set(opt.id, fb.streamUrl);
+              return { kind: "direct", opts: [opt] };
+            }
+            if (extractedRes.iframeFallback) {
+              const ifb = extractedRes.iframeFallback;
+              const opt = this.buildCandidateOption(
+                `custom_src_embed_${stage.customSourceId || idx}_${langHint}`,
+                ifb,
+                langHint
+              );
+              upstreamById.set(opt.id, ifb.streamUrl);
+              return { kind: "iframe", opts: [opt] };
+            }
+            return null;
+          })
+        ) : Promise.resolve([]),
+        hasNativeStage ? this.resolveBuiltInWatchaPipeline({
+          tmdbId: params.tmdbId,
+          imdbId: resolvedImdb,
+          mediaType: params.mediaType,
+          season,
+          episode,
+          preferredLang,
+          signal: controller.signal
+        }) : Promise.resolve(null)
+      ]);
+      for (const item of customBatchResults) {
+        if (!item) continue;
+        if (item.kind === "iframe") {
+          resolvedCustomIframeOptions.push(...item.opts);
+        } else {
+          resolvedCustomDirectOptions.push(...item.opts);
+        }
+      }
+      let resolvedSourceTag;
+      if (resolvedCustomDirectOptions.length > 0) {
+        collectedOptions.push(...resolvedCustomDirectOptions);
+        resolvedSourceTag = "custom_source";
+      }
+      for (const stage of nonCustomStages) {
         if (controller.signal.aborted) break;
         if (stage.sourceId === "native_watcha") {
-          const nativeRes = await this.resolveBuiltInWatchaPipeline({
-            tmdbId: params.tmdbId,
-            imdbId: resolvedImdb,
-            mediaType: params.mediaType,
-            season,
-            episode,
-            preferredLang,
-            signal: controller.signal
-          });
-          if (nativeRes.posterUrl && !fallbackPoster) fallbackPoster = nativeRes.posterUrl;
-          if (nativeRes.cloudflareOnly) sawCloudflare = true;
-          if (nativeRes.audioOptions.length > 0) {
-            const audioOptions = pendingDirectFallback ? [pendingDirectFallback.option, ...nativeRes.audioOptions] : nativeRes.audioOptions;
-            const result = {
-              audioOptions,
-              posterUrl: nativeRes.posterUrl || fallbackPoster,
-              cloudflareOnly: false,
-              resolvedSource: pendingDirectFallback ? pendingDirectFallback.source : stage.sourceId
-            };
-            this.saveCache(cacheKey, result);
-            return result;
+          if (nativeParallelRes) {
+            if (nativeParallelRes.posterUrl && !fallbackPoster) {
+              fallbackPoster = nativeParallelRes.posterUrl;
+            }
+            if (nativeParallelRes.cloudflareOnly) sawCloudflare = true;
+            for (const [k, v] of nativeParallelRes.upstreamById.entries()) {
+              upstreamById.set(k, v);
+            }
+            if (nativeParallelRes.audioOptions.length > 0) {
+              collectedOptions.push(...nativeParallelRes.audioOptions);
+              if (!resolvedSourceTag) resolvedSourceTag = stage.sourceId;
+              break;
+            }
           }
           continue;
         }
@@ -2941,44 +4066,88 @@ var StreamResolverServiceImpl = class {
         }
         const extractedRes = await this.extractFromConfiguredUrl(stage.url, {
           langHint: preferredLang,
+          hasExplicitLang: true,
+          sourceName: stage.label,
+          isCustomSource: stage.isCustomConfigured,
+          allowIframeFallback: stage.sourceId === "custom_template",
           signal: controller.signal
         });
         if (extractedRes.cloudflareBlocked) sawCloudflare = true;
         if (extractedRes.candidate) {
-          const c = extractedRes.candidate;
+          const allCandidates = [
+            extractedRes.candidate,
+            ...extractedRes.extraCandidates || []
+          ];
+          for (let subIdx = 0; subIdx < allCandidates.length; subIdx++) {
+            const cand = allCandidates[subIdx];
+            const opt = this.buildCandidateOption(
+              `${stage.sourceId}_${subIdx}_${cand.langCode || preferredLang}`,
+              cand,
+              preferredLang
+            );
+            upstreamById.set(opt.id, cand.streamUrl);
+            if (!fallbackPoster && cand.posterUrl) {
+              fallbackPoster = cand.posterUrl;
+            }
+            collectedOptions.push(opt);
+          }
+          if (!resolvedSourceTag) resolvedSourceTag = stage.sourceId;
+          break;
+        }
+        if (extractedRes.directBrowserFallback) {
+          const fb = extractedRes.directBrowserFallback;
           const opt = this.buildCandidateOption(
             `${stage.sourceId}_${preferredLang}`,
-            c,
+            fb,
             preferredLang
           );
-          const audioOptions = pendingDirectFallback ? [pendingDirectFallback.option, opt] : [opt];
-          const result = {
-            audioOptions,
-            posterUrl: c.posterUrl || fallbackPoster,
-            cloudflareOnly: false,
-            resolvedSource: pendingDirectFallback ? pendingDirectFallback.source : stage.sourceId
-          };
-          this.saveCache(cacheKey, result);
-          return result;
-        }
-        if (extractedRes.directBrowserFallback && !pendingDirectFallback) {
-          pendingDirectFallback = {
-            option: this.buildCandidateOption(
-              `${stage.sourceId}_${preferredLang}`,
-              extractedRes.directBrowserFallback,
-              preferredLang
-            ),
-            posterUrl: extractedRes.directBrowserFallback.posterUrl,
-            source: `${stage.sourceId}_direct`
-          };
+          upstreamById.set(opt.id, fb.streamUrl);
+          directFallbacks.push({
+            option: opt,
+            posterUrl: fb.posterUrl,
+            source: `${stage.sourceId}_direct`,
+            upstreamUrl: fb.streamUrl
+          });
         }
       }
-      if (pendingDirectFallback) {
+      if (resolvedCustomIframeOptions.length > 0) {
+        collectedOptions.push(...resolvedCustomIframeOptions);
+        if (!resolvedSourceTag) resolvedSourceTag = "custom_source";
+      }
+      for (const fb of directFallbacks) {
+        collectedOptions.push(fb.option);
+        if (!fallbackPoster && fb.posterUrl) fallbackPoster = fb.posterUrl;
+        if (!resolvedSourceTag) resolvedSourceTag = fb.source;
+      }
+      if (collectedOptions.length > 0) {
+        const deduped = [];
+        const seenKeys = /* @__PURE__ */ new Set();
+        const seenNativeUpstreams = /* @__PURE__ */ new Set();
+        const customUpstreams = /* @__PURE__ */ new Set();
+        for (const opt of collectedOptions) {
+          if (opt.isCustomSource) {
+            const up = upstreamById.get(opt.id);
+            if (up) customUpstreams.add(up);
+          }
+        }
+        for (const opt of collectedOptions) {
+          const upstream = upstreamById.get(opt.id) || opt.streamUrl;
+          if (!opt.isCustomSource) {
+            if (customUpstreams.has(upstream) || seenNativeUpstreams.has(upstream)) continue;
+            seenNativeUpstreams.add(upstream);
+          } else {
+            const customKey = `${opt.id}:${upstream}`;
+            if (seenKeys.has(customKey)) continue;
+            seenKeys.add(customKey);
+          }
+          deduped.push(opt);
+        }
+        const consolidated = consolidateAudioOptionsByLanguage(deduped);
         const result = {
-          audioOptions: [pendingDirectFallback.option],
-          posterUrl: pendingDirectFallback.posterUrl || fallbackPoster,
+          audioOptions: consolidated,
+          posterUrl: fallbackPoster,
           cloudflareOnly: false,
-          resolvedSource: pendingDirectFallback.source
+          resolvedSource: resolvedSourceTag
         };
         this.saveCache(cacheKey, result);
         return result;
@@ -3003,6 +4172,115 @@ var StreamResolverServiceImpl = class {
       ...result,
       expiresAt: Date.now() + 5 * 6e4
     });
+  }
+  async testCustomSources(sources) {
+    const cleanSources = sanitizeCustomVideoSources(sources);
+    if (cleanSources.length === 0) return [];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 11e3);
+    try {
+      return await Promise.all(
+        cleanSources.slice(0, 20).map(async (src) => {
+          const started = Date.now();
+          const mediaType = src.movieTemplate ? "movie" : "tv";
+          const template = mediaType === "movie" ? src.movieTemplate : src.tvTemplate;
+          const testedUrl = buildCustomEmbedUrl({
+            template,
+            tmdbId: mediaType === "movie" ? 693134 : 1396,
+            imdbId: mediaType === "movie" ? "tt15239678" : "tt0903747",
+            mediaType,
+            seasonNumber: 1,
+            episodeNumber: 1
+          }) || template;
+          if (src.kind !== "direct" && !hasUrlTemplatePlaceholder(template)) {
+            return {
+              id: src.id,
+              name: src.name,
+              status: "missing_placeholders",
+              detectedLanguages: [],
+              testedUrl,
+              message: "Template sem vari\xE1vel ({tmdbId}, {id} ou {imdbId}). Esta fonte sempre carregar\xE1 o mesmo t\xEDtulo fixo.",
+              latencyMs: Date.now() - started
+            };
+          }
+          const hasExplicitLang = Boolean(src.lang && src.lang !== "auto");
+          const langHint = hasExplicitLang ? src.lang : "auto";
+          const res = await this.extractFromConfiguredUrl(testedUrl, {
+            langHint,
+            hasExplicitLang,
+            sourceName: src.name,
+            isCustomSource: true,
+            allowIframeFallback: src.kind === "embed",
+            signal: controller.signal
+          });
+          const latencyMs = Date.now() - started;
+          if (res.candidate) {
+            const allCands = [res.candidate, ...res.extraCandidates || []];
+            const langs = Array.from(
+              new Set(
+                allCands.map((c) => getCustomSourceLangMeta(c.langCode).label).filter((l) => l && l !== "Autom\xE1tico")
+              )
+            );
+            return {
+              id: src.id,
+              name: src.name,
+              status: "ok_direct",
+              detectedLanguages: langs.length > 0 ? langs : [getCustomSourceLangMeta(src.lang).label],
+              streamKind: res.candidate.streamKind,
+              testedUrl,
+              message: `Reprodu\xE7\xE3o direta pronta no player nativo (${res.candidate.streamKind.toUpperCase()}) \xB7 Idiomas: ${langs.join(", ") || getCustomSourceLangMeta(src.lang).label}`,
+              latencyMs
+            };
+          }
+          if (res.cloudflareBlocked) {
+            return {
+              id: src.id,
+              name: src.name,
+              status: "blocked_cloudflare",
+              detectedLanguages: [],
+              testedUrl,
+              message: "Bloqueada pelo Cloudflare (HTTP 403 / Verifica\xE7\xE3o humana). Provedores com desafio Cloudflare ou X-Frame-Options bloqueiam a extra\xE7\xE3o direta para o player sem an\xFAncios.",
+              latencyMs
+            };
+          }
+          if (res.blockedByAds) {
+            return {
+              id: src.id,
+              name: src.name,
+              status: "blocked_ads",
+              detectedLanguages: [],
+              testedUrl,
+              message: "Bloqueada automaticamente: esta fonte injeta popups, captchas ou scripts anti-sandbox.",
+              latencyMs
+            };
+          }
+          if (res.directBrowserFallback) {
+            const label = getCustomSourceLangMeta(res.directBrowserFallback.langCode).label;
+            return {
+              id: src.id,
+              name: src.name,
+              status: "ok_direct",
+              detectedLanguages: [label],
+              streamKind: res.directBrowserFallback.streamKind,
+              testedUrl,
+              message: `Fluxo direto detectado (${res.directBrowserFallback.streamKind.toUpperCase()}) \xB7 Idioma: ${label}`,
+              latencyMs
+            };
+          }
+          return {
+            id: src.id,
+            name: src.name,
+            status: "unavailable",
+            detectedLanguages: [],
+            testedUrl,
+            message: "Nenhum stream direto (.m3u8/.mp4) encontrado para o t\xEDtulo de teste (HTTP 404, timeout ou p\xE1gina protegida).",
+            latencyMs
+          };
+        })
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
   async resolveNativeStreams(params) {
     const res = await this.resolvePlayableStreams(params);
@@ -3082,7 +4360,7 @@ var StreamResolverServiceImpl = class {
     }
   }
   async handleHlsManifestRequest(token, req, res) {
-    const session = this.hlsSessions.get(token);
+    const session = this.resolveHlsSession(token);
     if (!session) {
       res.status(404).json({ error: "Sess\xE3o de stream expirada. Recarregue o player." });
       return;
@@ -3090,8 +4368,8 @@ var StreamResolverServiceImpl = class {
     const range = typeof req.headers.range === "string" ? req.headers.range : void 0;
     await this.proxyHlsResource(session, session.upstreamUrl, range, res);
   }
-  async handleHlsSegmentRequest(token, targetUrl, req, res) {
-    const session = this.hlsSessions.get(token);
+  async handleHlsSegmentRequest(token, targetUrl, sig, req, res) {
+    const session = this.resolveHlsSession(token);
     if (!session) {
       res.status(404).json({ error: "Sess\xE3o de stream expirada. Recarregue o player." });
       return;
@@ -3105,7 +4383,8 @@ var StreamResolverServiceImpl = class {
     }
     const targetHost = parsedTarget.hostname.toLowerCase();
     const sessionRoot = session.allowedHost.split(".").slice(-2).join(".");
-    const isAllowed = (parsedTarget.protocol === "https:" || parsedTarget.protocol === "http:") && isSafePublicHost(targetHost) && (session.allowedHosts.has(targetHost) || targetHost === session.allowedHost || targetHost.endsWith(`.${sessionRoot}`));
+    const hasValidSig = Boolean(sig && verifySegmentUrl(token, parsedTarget.toString(), sig));
+    const isAllowed = (parsedTarget.protocol === "https:" || parsedTarget.protocol === "http:") && isSafePublicHost(targetHost) && (hasValidSig || session.allowedHosts.has(targetHost) || targetHost === session.allowedHost || targetHost.endsWith(`.${sessionRoot}`));
     if (!isAllowed) {
       res.status(403).json({ error: "Origem de segmento n\xE3o autorizada." });
       return;
@@ -3179,7 +4458,8 @@ var StreamResolverServiceImpl = class {
         const rewritten = buildHlsProxyPlaylist(
           rawManifest,
           effectiveUrl,
-          `/api/player/hls/${session.id}/seg`
+          `/api/player/hls/${session.id}/seg`,
+          (resolvedUrl) => signSegmentUrl(session.id, resolvedUrl)
         );
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
         res.setHeader("Cache-Control", "no-store");
@@ -3222,7 +4502,7 @@ var StreamResolverServiceImpl = class {
     }
   }
   async handleSubtitleVttRequest(subId, res) {
-    const entry = this.subtitleRegistry.get(subId);
+    const entry = this.resolveSubtitleEntry(subId);
     if (!entry || !isAllowedSubtitleHost(entry.url)) {
       res.status(404).send("WEBVTT\n\n");
       return;
@@ -3697,7 +4977,7 @@ var TMDBServiceImpl = class {
     if (!isBearerJwt) {
       url.searchParams.set("api_key", token);
     }
-    const cacheKey = `tmdb:${url.toString()}`;
+    const cacheKey = `tmdb:${settings.catalogSource}:${settings.tmdbLanguage}:${settings.tmdbImageQuality}:${settings.tmdbImageBaseUrl}:${url.toString()}`;
     const cached = CacheService.get(cacheKey);
     if (cached) return cached;
     const headers = { Accept: "application/json" };
@@ -4179,70 +5459,86 @@ var TMDBService = new TMDBServiceImpl();
 var PlayerServiceImpl = class {
   constructor() {
     this.lastHydratedAt = 0;
-    this.hydrationTtlMs = 2e4;
+    this.hydrationTtlMs = 2500;
+    this.hydrationPromise = null;
   }
   async ensureHydrated(force = false) {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-    const remote = await FirestoreRestService.getDocument("playerSettings/global");
-    if (remote) {
-      const local = playerConfigStore.getConfig();
-      const localTs = Date.parse(local.updatedAt || "") || 0;
-      const remoteIso = toIsoTimestamp(remote.updatedAt, "");
-      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      if (localTs === 0 || remoteTs >= localTs || local.updatedAt === "2026-01-01T00:00:00.000Z") {
-        const resolvedMode = resolveHydratedSourceMode({
-          remoteSourceMode: remote.sourceMode,
-          remoteAntiAdSandbox: remote.antiAdSandbox,
-          remoteHasPrincipalFields: typeof remote.defaultAspectMode === "string",
-          fallback: local.sourceMode
-        });
-        playerConfigStore.updateConfig(
-          {
-            sourceMode: resolvedMode,
-            defaultDomain: remote.defaultDomain,
-            fallbackDomain: remote.fallbackDomain,
-            autoFallback: remote.autoFallback,
-            defaultPlayer: remote.defaultPlayer,
-            defaultColorHex: remote.defaultColorHex,
-            myembedBaseUrl: remote.myembedBaseUrl,
-            antiAdSandbox: remote.antiAdSandbox,
-            preferImdbForMovies: remote.preferImdbForMovies,
-            watchaflixBaseUrl: remote.watchaflixBaseUrl,
-            watchaflixLang: remote.watchaflixLang,
-            customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
-            customEmbedTvTemplate: remote.customEmbedTvTemplate,
-            embedTimeoutSeconds: remote.embedTimeoutSeconds,
-            defaultAspectMode: remote.defaultAspectMode,
-            autoEnableSubtitles: remote.autoEnableSubtitles,
-            defaultSubtitleSize: remote.defaultSubtitleSize,
-            defaultSubtitleColor: remote.defaultSubtitleColor,
-            defaultSubtitleBg: remote.defaultSubtitleBg,
-            allowTvCast: remote.allowTvCast,
-            allowPipMode: remote.allowPipMode,
-            allowTheaterMode: remote.allowTheaterMode,
-            watermarkEnabled: remote.watermarkEnabled,
-            watermarkText: remote.watermarkText,
-            watermarkLogoUrl: remote.watermarkLogoUrl,
-            watermarkPosition: remote.watermarkPosition,
-            watermarkOpacity: remote.watermarkOpacity,
-            watermarkSize: remote.watermarkSize,
-            autoNextEpisode: remote.autoNextEpisode,
-            autoNextCountdownSeconds: remote.autoNextCountdownSeconds,
-            updatedAt: remoteIso || void 0
-          },
-          true
-        );
-      }
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
-    this.lastHydratedAt = Date.now();
+    const run = (async () => {
+      const remote = await FirestoreRestService.getDocument("playerSettings/global");
+      if (remote) {
+        const local = playerConfigStore.getConfig();
+        const localTs = Date.parse(local.updatedAt || "") || 0;
+        const remoteIso = toIsoTimestamp(remote.updatedAt, "");
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === "2026-01-01T00:00:00.000Z";
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+        if (isLocalDefault || localTs === 0 || changedRemote && remoteTs >= localTs) {
+          const resolvedMode = resolveHydratedSourceMode({
+            remoteSourceMode: remote.sourceMode,
+            remoteAntiAdSandbox: remote.antiAdSandbox,
+            remoteHasPrincipalFields: typeof remote.defaultAspectMode === "string",
+            fallback: local.sourceMode
+          });
+          playerConfigStore.updateConfig(
+            {
+              sourceMode: resolvedMode,
+              defaultDomain: remote.defaultDomain,
+              fallbackDomain: remote.fallbackDomain,
+              autoFallback: remote.autoFallback,
+              defaultPlayer: remote.defaultPlayer,
+              defaultColorHex: remote.defaultColorHex,
+              myembedBaseUrl: remote.myembedBaseUrl,
+              antiAdSandbox: remote.antiAdSandbox,
+              preferImdbForMovies: remote.preferImdbForMovies,
+              watchaflixBaseUrl: remote.watchaflixBaseUrl,
+              watchaflixLang: remote.watchaflixLang,
+              customEmbedMovieTemplate: remote.customEmbedMovieTemplate,
+              customEmbedTvTemplate: remote.customEmbedTvTemplate,
+              customSources: remote.customSources,
+              embedTimeoutSeconds: remote.embedTimeoutSeconds,
+              defaultAspectMode: remote.defaultAspectMode,
+              autoEnableSubtitles: remote.autoEnableSubtitles,
+              defaultSubtitleSize: remote.defaultSubtitleSize,
+              defaultSubtitleColor: remote.defaultSubtitleColor,
+              defaultSubtitleBg: remote.defaultSubtitleBg,
+              allowTvCast: remote.allowTvCast,
+              allowPipMode: remote.allowPipMode,
+              allowTheaterMode: remote.allowTheaterMode,
+              watermarkEnabled: remote.watermarkEnabled,
+              watermarkText: remote.watermarkText,
+              watermarkLogoUrl: remote.watermarkLogoUrl,
+              watermarkPosition: remote.watermarkPosition,
+              watermarkOpacity: remote.watermarkOpacity,
+              watermarkSize: remote.watermarkSize,
+              autoNextEpisode: remote.autoNextEpisode,
+              autoNextCountdownSeconds: remote.autoNextCountdownSeconds,
+              updatedAt: remoteIso || void 0
+            },
+            true
+          );
+          StreamResolverService.clearCache();
+        }
+      }
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+    this.hydrationPromise = run;
+    return run;
   }
   getConfig() {
     return playerConfigStore.getConfig();
   }
-  async getConfigAsync() {
-    await this.ensureHydrated();
+  async getConfigAsync(force = false) {
+    await this.ensureHydrated(force);
     return playerConfigStore.getConfig();
   }
   updateConfig(partial) {
@@ -4290,7 +5586,10 @@ var PlayerServiceImpl = class {
         ...basePayload,
         embedUrl: primary.streamUrl,
         streamKind: primary.streamKind,
-        sandboxPolicy: "none",
+        sandboxPolicy: resolveSandboxPolicy({
+          streamKind: primary.streamKind,
+          antiAdSandbox: cfg.antiAdSandbox
+        }),
         audioOptions: playableStreams.audioOptions,
         subtitles,
         posterUrl: playableStreams.posterUrl,
@@ -4341,33 +5640,77 @@ var PlayerService = new PlayerServiceImpl();
 var SystemSettingsServiceImpl = class {
   constructor() {
     this.lastHydratedAt = 0;
-    this.hydrationTtlMs = 2e4;
+    this.lastSecretsHydratedAt = 0;
+    this.hydrationTtlMs = 2500;
+    this.hydrationPromise = null;
   }
   async ensureHydrated(force = false) {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-    const remote = await FirestoreRestService.getDocument(
-      "systemSettings/global"
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
+    }
+    const run = (async () => {
+      const remote = await FirestoreRestService.getDocument(
+        "systemSettings/global"
+      );
+      if (remote) {
+        const local = repositoryStore.getSystemSettings();
+        const localTs = Date.parse(local.updatedAt || DEFAULT_SYSTEM_SETTINGS.updatedAt) || 0;
+        const remoteIso = toIsoTimestamp(remote.updatedAt, "");
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt;
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+        if (isLocalDefault || localTs === 0 || changedRemote && remoteTs >= localTs) {
+          const merged = sanitizeSystemSettings(remote, local, true);
+          repositoryStore.saveSystemSettings(merged);
+          CacheService.clear("catalog:");
+          CacheService.clear("tmdb:");
+        }
+      }
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+    this.hydrationPromise = run;
+    return run;
+  }
+  async ensureSecretsHydrated(bearerToken, force = false) {
+    if (!bearerToken) return;
+    if (!force && Date.now() - this.lastSecretsHydratedAt < 1e4) return;
+    const remoteSecrets = await FirestoreRestService.getDocument(
+      "adminSecrets/apiKeys",
+      bearerToken
     );
-    if (remote) {
-      const local = repositoryStore.getSystemSettings();
-      const localTs = Date.parse(local.updatedAt || DEFAULT_SYSTEM_SETTINGS.updatedAt) || 0;
-      const remoteIso = toIsoTimestamp(remote.updatedAt, "");
+    if (remoteSecrets) {
+      const localSecrets = repositoryStore.getAdminSecrets();
+      const localTs = Date.parse(localSecrets.updatedAt || "") || 0;
+      const remoteIso = toIsoTimestamp(remoteSecrets.updatedAt, "");
       const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      const isLocalDefault = local.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt;
-      if (isLocalDefault || remoteTs >= localTs) {
-        const merged = sanitizeSystemSettings(remote, local, true);
-        repositoryStore.saveSystemSettings(merged);
+      if (localTs === 0 || remoteTs >= localTs) {
+        const next = {};
+        if (typeof remoteSecrets.tmdbAccessToken === "string" && remoteSecrets.tmdbAccessToken.trim()) {
+          next.tmdbAccessToken = remoteSecrets.tmdbAccessToken.trim();
+        }
+        if (typeof remoteSecrets.geminiApiKey === "string" && remoteSecrets.geminiApiKey.trim()) {
+          next.geminiApiKey = remoteSecrets.geminiApiKey.trim();
+        }
+        if (remoteIso) next.updatedAt = remoteIso;
+        repositoryStore.saveAdminSecrets(next);
+        CacheService.clear("catalog:");
+        CacheService.clear("tmdb:");
       }
     }
-    this.lastHydratedAt = Date.now();
+    this.lastSecretsHydratedAt = Date.now();
   }
   getSettings() {
     return repositoryStore.getSystemSettings();
   }
-  async getSettingsAsync() {
-    await this.ensureHydrated();
+  async getSettingsAsync(force = false) {
+    await this.ensureHydrated(force);
     return repositoryStore.getSystemSettings();
   }
   async getPublicRuntimeSettingsAsync() {
@@ -4400,8 +5743,11 @@ var SystemSettingsServiceImpl = class {
       hasEnvGeminiKey
     };
   }
-  async getAdminPayloadAsync() {
-    await this.ensureHydrated();
+  async getAdminPayloadAsync(force = false, bearerToken) {
+    await Promise.all([
+      this.ensureHydrated(force),
+      this.ensureSecretsHydrated(bearerToken, force)
+    ]);
     return {
       settings: repositoryStore.getSystemSettings(),
       secretsStatus: this.getSecretsStatus()
@@ -4511,6 +5857,27 @@ function getFirebaseProjectId() {
 var AuthenticationServiceImpl = class {
   constructor() {
     this.projectId = getFirebaseProjectId();
+    this.remoteAdminCache = /* @__PURE__ */ new Map();
+  }
+  async checkFirestoreAdmin(uid, bearerToken) {
+    const cached = this.remoteAdminCache.get(uid);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.isAdmin;
+    }
+    try {
+      const [adminDoc, userDoc] = await Promise.all([
+        FirestoreRestService.getDocument(`admins/${uid}`, bearerToken),
+        FirestoreRestService.getDocument(`users/${uid}`, bearerToken)
+      ]);
+      const isAdmin = Boolean(adminDoc) || userDoc?.role === "admin";
+      this.remoteAdminCache.set(uid, {
+        isAdmin,
+        expiresAt: Date.now() + 6e4
+      });
+      return isAdmin;
+    } catch {
+      return false;
+    }
   }
   async verifyBearerToken(authHeader) {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -4532,8 +5899,11 @@ var AuthenticationServiceImpl = class {
         return null;
       }
       const existingUser = repositoryStore.getUser(uid);
-      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase());
-      const isAdmin = isAdminEmail && Boolean(payload.email_verified) || existingUser?.role === "admin";
+      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase()) && Boolean(payload.email_verified);
+      let isAdmin = isAdminEmail || existingUser?.role === "admin";
+      if (!isAdmin) {
+        isAdmin = await this.checkFirestoreAdmin(uid, token);
+      }
       return {
         uid,
         email: payload.email,
@@ -4720,7 +6090,10 @@ var CatalogServiceImpl = class {
   }
   async getHomeSections() {
     await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
-    const cached = CacheService.get("catalog:home");
+    const sys = SystemSettingsService.getSettings();
+    const customRev = repositoryStore.getCustomCatalog().filter((c) => c.active).map((c) => `${c.id}:${c.updatedAt}`).join("|");
+    const homeCacheKey = `catalog:home:${sys.catalogSource}:${sys.tmdbLanguage}:${sys.tmdbImageQuality}:${sys.tmdbImageBaseUrl}:${customRev}`;
+    const cached = CacheService.get(homeCacheKey);
     if (cached) return cached;
     const [
       trending,
@@ -4783,7 +6156,7 @@ var CatalogServiceImpl = class {
       demoMode: popularMovies.demoMode
     };
     const ttlMs = Math.max(1, SystemSettingsService.getSettings().cacheTtlMinutes || 5) * 60 * 1e3;
-    CacheService.set("catalog:home", payload, ttlMs);
+    CacheService.set(homeCacheKey, payload, ttlMs);
     return payload;
   }
   getCachedGenreCount() {
@@ -4804,45 +6177,66 @@ var VALID_CATEGORIES = [
 var ChannelServiceImpl = class {
   constructor() {
     this.lastHydratedAt = 0;
-    this.hydrationTtlMs = 2e4;
+    this.hydrationTtlMs = 2500;
+    this.hydrationPromise = null;
   }
   async ensureHydrated(force = false) {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-    const remoteChannels = await FirestoreRestService.queryActiveCollection("channels");
-    for (const raw of remoteChannels) {
-      if (!raw.id || !raw.name || !raw.category || !VALID_CATEGORIES.includes(raw.category) || !raw.streamUrl || !isValidStreamUrl(raw.streamUrl)) {
-        continue;
-      }
-      const normalized = {
-        id: String(raw.id),
-        name: sanitizePlainText(raw.name, 100),
-        category: raw.category,
-        streamUrl: String(raw.streamUrl).trim().slice(0, 500),
-        logoUrl: raw.logoUrl ? String(raw.logoUrl).trim().slice(0, 500) : void 0,
-        description: raw.description ? sanitizePlainText(raw.description, 300) : void 0,
-        active: raw.active !== false,
-        createdAt: toIsoTimestamp(raw.createdAt, (/* @__PURE__ */ new Date()).toISOString())
-      };
-      repositoryStore.upsertChannel(normalized);
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
-    this.lastHydratedAt = Date.now();
+    const run = (async () => {
+      const remoteRes = await FirestoreRestService.queryActiveCollectionChecked("channels");
+      if (remoteRes.ok) {
+        const remoteIds = /* @__PURE__ */ new Set();
+        for (const raw of remoteRes.items) {
+          if (!raw.id || !raw.name || !raw.category || !VALID_CATEGORIES.includes(raw.category) || !raw.streamUrl || !isValidStreamUrl(raw.streamUrl)) {
+            continue;
+          }
+          const normalized = {
+            id: String(raw.id),
+            name: sanitizePlainText(raw.name, 100),
+            category: raw.category,
+            streamUrl: String(raw.streamUrl).trim().slice(0, 500),
+            logoUrl: raw.logoUrl ? String(raw.logoUrl).trim().slice(0, 500) : void 0,
+            description: raw.description ? sanitizePlainText(raw.description, 300) : void 0,
+            active: raw.active !== false,
+            createdAt: toIsoTimestamp(raw.createdAt, (/* @__PURE__ */ new Date()).toISOString())
+          };
+          remoteIds.add(normalized.id);
+          repositoryStore.upsertChannel(normalized);
+        }
+        for (const localCh of repositoryStore.getChannels()) {
+          if (!remoteIds.has(localCh.id)) {
+            repositoryStore.deleteChannel(localCh.id);
+          }
+        }
+      }
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+    this.hydrationPromise = run;
+    return run;
   }
   listPublic(category) {
     const channels = repositoryStore.getChannels().filter((c) => c.active);
     if (!category || category === "Todos") return channels;
     return channels.filter((c) => c.category === category);
   }
-  async listPublicAsync(category) {
-    await this.ensureHydrated();
+  async listPublicAsync(category, force = false) {
+    await this.ensureHydrated(force);
     return this.listPublic(category);
   }
   listAllAdmin() {
     return repositoryStore.getChannels();
   }
-  async listAllAdminAsync() {
-    await this.ensureHydrated();
+  async listAllAdminAsync(force = false) {
+    await this.ensureHydrated(force);
     return this.listAllAdmin();
   }
   createOrUpdate(payload) {
@@ -5061,12 +6455,13 @@ var RecommendationService = new RecommendationServiceImpl();
 
 // server/services/AdminService.ts
 var AdminServiceImpl = class {
-  async getDashboardStats() {
+  async getDashboardStats(force = false, bearerToken) {
     await Promise.all([
-      ChannelService.ensureHydrated(),
-      SiteConfigService.ensureHydrated(),
-      SystemSettingsService.ensureHydrated(),
-      PlayerService.ensureHydrated()
+      ChannelService.ensureHydrated(force),
+      SiteConfigService.ensureHydrated(force),
+      SystemSettingsService.ensureHydrated(force),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, force),
+      PlayerService.ensureHydrated(force)
     ]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
@@ -5096,8 +6491,12 @@ var AdminServiceImpl = class {
       ]
     };
   }
-  async getIntegrationStatus() {
-    await Promise.all([SystemSettingsService.ensureHydrated(), PlayerService.ensureHydrated()]);
+  async getIntegrationStatus(force = false, bearerToken) {
+    await Promise.all([
+      SystemSettingsService.ensureHydrated(force),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, force),
+      PlayerService.ensureHydrated(force)
+    ]);
     const synced = await CatalogService.getSyncedCatalog();
     const sys = SystemSettingsService.getSettings();
     const tmdbToken = SystemSettingsService.getActiveTmdbToken();
@@ -5119,13 +6518,17 @@ var AdminServiceImpl = class {
       catalogSyncedCount: synced.length
     };
   }
-  async runDiagnostic(target) {
+  async runDiagnostic(target, bearerToken) {
     const started = Date.now();
+    await Promise.all([
+      SystemSettingsService.ensureHydrated(true),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, true)
+    ]);
     if (target === "tmdb") {
       return TMDBService.testConnection();
     }
     if (target === "player") {
-      await PlayerService.ensureHydrated();
+      await PlayerService.ensureHydrated(true);
       const cfg = playerConfigStore.getConfig();
       try {
         const [movieRes, tvRes] = await Promise.all([
@@ -5644,6 +7047,16 @@ function createApiApp() {
   app2.set("trust proxy", 1);
   app2.use(express.json({ limit: "1mb" }));
   app2.use("/api", rateLimitMiddleware(240, 6e4));
+  app2.use("/api", (req, res, next) => {
+    const p = req.path || "";
+    const isImmutableMediaChunk = p.startsWith("/player/hls/") && p.endsWith("/seg") || p.startsWith("/player/video/") || p.startsWith("/player/subtitle/");
+    if (!isImmutableMediaChunk) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+    next();
+  });
   app2.get("/api/health", async (_req, res) => {
     await SystemSettingsService.ensureHydrated().catch(() => null);
     res.json({
@@ -5668,9 +7081,9 @@ function createApiApp() {
       next(err);
     }
   });
-  app2.get("/api/integrations/status", requireAdmin, async (_req, res, next) => {
+  app2.get("/api/integrations/status", requireAdmin, async (req, res, next) => {
     try {
-      const status = await AdminService.getIntegrationStatus();
+      const status = await AdminService.getIntegrationStatus(true, req.headers.authorization);
       res.json(status);
     } catch (err) {
       next(err);
@@ -5836,10 +7249,11 @@ function createApiApp() {
   });
   app2.get("/api/player/hls/:token/seg", async (req, res) => {
     const targetUrl = typeof req.query.u === "string" ? req.query.u : "";
+    const sig = typeof req.query.s === "string" ? req.query.s : "";
     if (!targetUrl) {
       return res.status(400).json({ error: "Par\xE2metro de segmento ausente." });
     }
-    await StreamResolverService.handleHlsSegmentRequest(req.params.token, targetUrl, req, res);
+    await StreamResolverService.handleHlsSegmentRequest(req.params.token, targetUrl, sig, req, res);
   });
   app2.get("/api/player/subtitle/:subId.vtt", async (req, res) => {
     await StreamResolverService.handleSubtitleVttRequest(req.params.subId, res);
@@ -6047,11 +7461,11 @@ function createApiApp() {
     const removed = HistoryService.remove(req.identity.uid, tmdbId, mediaType);
     res.json({ removed });
   });
-  app2.get("/api/admin/dashboard", requireAdmin, async (_req, res, next) => {
+  app2.get("/api/admin/dashboard", requireAdmin, async (req, res, next) => {
     try {
       const [stats, integrations] = await Promise.all([
-        AdminService.getDashboardStats(),
-        AdminService.getIntegrationStatus()
+        AdminService.getDashboardStats(true, req.headers.authorization),
+        AdminService.getIntegrationStatus(true, req.headers.authorization)
       ]);
       res.json({ stats, integrations });
     } catch (err) {
@@ -6068,7 +7482,7 @@ function createApiApp() {
   });
   app2.get("/api/admin/channels", requireAdmin, async (_req, res, next) => {
     try {
-      res.json({ items: await ChannelService.listAllAdminAsync() });
+      res.json({ items: await ChannelService.listAllAdminAsync(true) });
     } catch (err) {
       next(err);
     }
@@ -6088,7 +7502,7 @@ function createApiApp() {
   });
   app2.get("/api/admin/player-config", requireAdmin, async (_req, res, next) => {
     try {
-      res.json(await PlayerService.getConfigAsync());
+      res.json(await PlayerService.getConfigAsync(true));
     } catch (err) {
       next(err);
     }
@@ -6097,9 +7511,19 @@ function createApiApp() {
     const updated = PlayerService.updateConfig(req.body ?? {});
     res.json(updated);
   });
+  app2.post("/api/admin/player-sources/test", requireAdmin, async (req, res, next) => {
+    try {
+      const cfg = await PlayerService.getConfigAsync(true);
+      const rawSources = Array.isArray(req.body?.customSources) ? req.body.customSources : cfg.customSources || [];
+      const results = await StreamResolverService.testCustomSources(rawSources);
+      res.json({ results });
+    } catch (err) {
+      next(err);
+    }
+  });
   app2.get("/api/admin/site-config", requireAdmin, async (_req, res, next) => {
     try {
-      res.json(await SiteConfigService.getConfigAsync());
+      res.json(await SiteConfigService.getConfigAsync(true));
     } catch (err) {
       next(err);
     }
@@ -6108,9 +7532,9 @@ function createApiApp() {
     const updated = SiteConfigService.updateConfig(req.body ?? {});
     res.json(updated);
   });
-  app2.get("/api/admin/system-settings", requireAdmin, async (_req, res, next) => {
+  app2.get("/api/admin/system-settings", requireAdmin, async (req, res, next) => {
     try {
-      res.json(await SystemSettingsService.getAdminPayloadAsync());
+      res.json(await SystemSettingsService.getAdminPayloadAsync(true, req.headers.authorization));
     } catch (err) {
       next(err);
     }
@@ -6126,7 +7550,7 @@ function createApiApp() {
   app2.post("/api/admin/diagnostics/test", requireAdmin, async (req, res, next) => {
     try {
       const target = req.body?.target === "player" || req.body?.target === "firestore" ? req.body.target : "tmdb";
-      const result = await AdminService.runDiagnostic(target);
+      const result = await AdminService.runDiagnostic(target, req.headers.authorization);
       res.json(result);
     } catch (err) {
       next(err);
@@ -6134,7 +7558,7 @@ function createApiApp() {
   });
   app2.get("/api/admin/catalog/custom", requireAdmin, async (_req, res, next) => {
     try {
-      res.json({ items: await SiteConfigService.listCustomCatalogAsync() });
+      res.json({ items: await SiteConfigService.listCustomCatalogAsync(true) });
     } catch (err) {
       next(err);
     }

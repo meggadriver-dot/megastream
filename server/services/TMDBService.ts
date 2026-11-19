@@ -111,7 +111,7 @@ class TMDBServiceImpl {
       url.searchParams.set('api_key', token);
     }
 
-    const cacheKey = `tmdb:${url.toString()}`;
+    const cacheKey = `tmdb:${settings.catalogSource}:${settings.tmdbLanguage}:${settings.tmdbImageQuality}:${settings.tmdbImageBaseUrl}:${url.toString()}`;
     const cached = CacheService.get<T>(cacheKey);
     if (cached) return cached;
 

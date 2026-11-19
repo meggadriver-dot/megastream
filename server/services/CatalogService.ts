@@ -80,7 +80,14 @@ class CatalogServiceImpl {
 
   async getHomeSections() {
     await Promise.all([SiteConfigService.ensureHydrated(), SystemSettingsService.ensureHydrated()]);
-    const cached = CacheService.get<Record<string, unknown>>('catalog:home');
+    const sys = SystemSettingsService.getSettings();
+    const customRev = repositoryStore
+      .getCustomCatalog()
+      .filter((c) => c.active)
+      .map((c) => `${c.id}:${c.updatedAt}`)
+      .join('|');
+    const homeCacheKey = `catalog:home:${sys.catalogSource}:${sys.tmdbLanguage}:${sys.tmdbImageQuality}:${sys.tmdbImageBaseUrl}:${customRev}`;
+    const cached = CacheService.get<Record<string, unknown>>(homeCacheKey);
     if (cached) return cached;
 
     const [
@@ -149,7 +156,7 @@ class CatalogServiceImpl {
     };
 
     const ttlMs = Math.max(1, SystemSettingsService.getSettings().cacheTtlMinutes || 5) * 60 * 1000;
-    CacheService.set('catalog:home', payload, ttlMs);
+    CacheService.set(homeCacheKey, payload, ttlMs);
     return payload;
   }
 

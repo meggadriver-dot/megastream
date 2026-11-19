@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { FirestoreRestService } from './FirestoreRestService.ts';
 import type { UserProfile } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { SystemSettingsService } from './SystemSettingsService.ts';
@@ -30,6 +31,28 @@ function getFirebaseProjectId(): string {
 
 class AuthenticationServiceImpl {
   private projectId = getFirebaseProjectId();
+  private readonly remoteAdminCache = new Map<string, { isAdmin: boolean; expiresAt: number }>();
+
+  private async checkFirestoreAdmin(uid: string, bearerToken: string): Promise<boolean> {
+    const cached = this.remoteAdminCache.get(uid);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.isAdmin;
+    }
+    try {
+      const [adminDoc, userDoc] = await Promise.all([
+        FirestoreRestService.getDocument<Record<string, unknown>>(`admins/${uid}`, bearerToken),
+        FirestoreRestService.getDocument<{ role?: string }>(`users/${uid}`, bearerToken),
+      ]);
+      const isAdmin = Boolean(adminDoc) || userDoc?.role === 'admin';
+      this.remoteAdminCache.set(uid, {
+        isAdmin,
+        expiresAt: Date.now() + 60_000,
+      });
+      return isAdmin;
+    } catch {
+      return false;
+    }
+  }
 
   async verifyBearerToken(authHeader?: string): Promise<VerifiedIdentity | null> {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -38,12 +61,10 @@ class AuthenticationServiceImpl {
     const token = authHeader.slice(7).trim();
     if (!token) return null;
 
-    // Decode JWT payload safely and verify issuer/audience/expiration against Google Identity
     const parts = token.split('.');
     if (parts.length !== 3) return null;
 
     try {
-      // Verify signature/token via Google's tokeninfo or securetoken JWKS verification
       const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf-8');
       const payload = JSON.parse(payloadJson) as {
         sub?: string;
@@ -68,10 +89,13 @@ class AuthenticationServiceImpl {
         return null;
       }
 
-      // Cross-verify token authenticity with Firebase Auth REST lookup when API key is configured
       const existingUser = repositoryStore.getUser(uid);
-      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase());
-      const isAdmin = (isAdminEmail && Boolean(payload.email_verified)) || existingUser?.role === 'admin';
+      const isAdminEmail = ADMIN_EMAILS.has(payload.email.toLowerCase()) && Boolean(payload.email_verified);
+      let isAdmin = isAdminEmail || existingUser?.role === 'admin';
+
+      if (!isAdmin) {
+        isAdmin = await this.checkFirestoreAdmin(uid, token);
+      }
 
       return {
         uid,

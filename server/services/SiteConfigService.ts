@@ -11,67 +11,94 @@ import { FirestoreRestService } from './FirestoreRestService.ts';
 
 class SiteConfigServiceImpl {
   private lastHydratedAt = 0;
-  private readonly hydrationTtlMs = 20_000;
+  private readonly hydrationTtlMs = 2_500;
+  private hydrationPromise: Promise<void> | null = null;
 
   async ensureHydrated(force = false): Promise<void> {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-
-    const [remoteSite, remoteCustom] = await Promise.all([
-      FirestoreRestService.getDocument<Partial<SiteConfig>>('siteConfig/global'),
-      FirestoreRestService.queryActiveCollection<
-        Partial<CustomMediaItem> & { title?: string; mediaType?: string }
-      >('customCatalog'),
-    ]);
-
-    if (remoteSite) {
-      const local = repositoryStore.getSiteConfig();
-      const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
-      const remoteIso = toIsoTimestamp(remoteSite.updatedAt, '');
-      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
-
-      if (isLocalDefault || remoteTs >= localTs) {
-        const merged = sanitizeSiteConfig(remoteSite, local, true);
-        repositoryStore.saveSiteConfig(merged);
-      }
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
 
-    if (remoteCustom.length > 0) {
-      let changed = false;
-      const localList = repositoryStore.getCustomCatalog();
-      for (const raw of remoteCustom) {
-        try {
-          if (!raw.title) continue;
-          const existing = raw.id ? localList.find((c) => c.id === raw.id) : undefined;
-          const sanitized = sanitizeCustomMediaInput(raw, existing);
-          const remoteItemIso = toIsoTimestamp(raw.updatedAt, '');
-          if (remoteItemIso) {
-            sanitized.updatedAt = remoteItemIso;
-          }
-          if (!existing || existing.updatedAt !== sanitized.updatedAt) {
-            repositoryStore.upsertCustomMedia(sanitized);
-            changed = true;
-          }
-        } catch {
-          // Skip malformed remote item gracefully
+    const run = (async () => {
+      const [remoteSite, remoteCustomRes] = await Promise.all([
+        FirestoreRestService.getDocument<Partial<SiteConfig>>('siteConfig/global'),
+        FirestoreRestService.queryActiveCollectionChecked<
+          Partial<CustomMediaItem> & { title?: string; mediaType?: string }
+        >('customCatalog'),
+      ]);
+
+      if (remoteSite) {
+        const local = repositoryStore.getSiteConfig();
+        const localTs = Date.parse(local.updatedAt || DEFAULT_SITE_CONFIG.updatedAt) || 0;
+        const remoteIso = toIsoTimestamp(remoteSite.updatedAt, '');
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === DEFAULT_SITE_CONFIG.updatedAt;
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+
+        if (isLocalDefault || localTs === 0 || (changedRemote && remoteTs >= localTs)) {
+          const merged = sanitizeSiteConfig(remoteSite, local, true);
+          repositoryStore.saveSiteConfig(merged);
         }
       }
-      if (changed) {
-        CacheService.clear('catalog:');
-      }
-    }
 
-    this.lastHydratedAt = Date.now();
+      if (remoteCustomRes.ok) {
+        let changed = false;
+        const localList = repositoryStore.getCustomCatalog();
+        const remoteIds = new Set<string>();
+
+        for (const raw of remoteCustomRes.items) {
+          try {
+            if (!raw.title) continue;
+            const existing = raw.id ? localList.find((c) => c.id === raw.id) : undefined;
+            const sanitized = sanitizeCustomMediaInput(raw, existing);
+            const remoteItemIso = toIsoTimestamp(raw.updatedAt, '');
+            if (remoteItemIso) {
+              sanitized.updatedAt = remoteItemIso;
+            }
+            remoteIds.add(sanitized.id);
+            if (!existing || existing.updatedAt !== sanitized.updatedAt) {
+              repositoryStore.upsertCustomMedia(sanitized);
+              changed = true;
+            }
+          } catch {
+            // Skip malformed remote item gracefully
+          }
+        }
+
+        // Remove items deactivated/deleted on Firestore from this lambda's local cache
+        for (const localItem of localList) {
+          if (!remoteIds.has(localItem.id)) {
+            if (repositoryStore.deleteCustomMedia(localItem.id)) {
+              changed = true;
+            }
+          }
+        }
+
+        if (changed) {
+          CacheService.clear('catalog:');
+        }
+      }
+
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+
+    this.hydrationPromise = run;
+    return run;
   }
 
   getConfig(): SiteConfig {
     return repositoryStore.getSiteConfig();
   }
 
-  async getConfigAsync(): Promise<SiteConfig> {
-    await this.ensureHydrated();
+  async getConfigAsync(force = false): Promise<SiteConfig> {
+    await this.ensureHydrated(force);
     return repositoryStore.getSiteConfig();
   }
 
@@ -92,8 +119,8 @@ class SiteConfigServiceImpl {
     return repositoryStore.getCustomCatalog();
   }
 
-  async listCustomCatalogAsync(): Promise<CustomMediaItem[]> {
-    await this.ensureHydrated();
+  async listCustomCatalogAsync(force = false): Promise<CustomMediaItem[]> {
+    await this.ensureHydrated(force);
     return repositoryStore.getCustomCatalog();
   }
 

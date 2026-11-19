@@ -181,6 +181,24 @@
         "watchaflixLang": { "type": "string", "enum": ["pt", "en"] },
         "customEmbedMovieTemplate": { "type": "string", "maxLength": 500 },
         "customEmbedTvTemplate": { "type": "string", "maxLength": 500 },
+        "customSources": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 48 },
+              "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+              "kind": { "type": "string", "enum": ["api", "embed", "direct"] },
+              "movieTemplate": { "type": "string", "maxLength": 500 },
+              "tvTemplate": { "type": "string", "maxLength": 500 },
+              "lang": { "type": "string", "enum": ["pt", "sub", "en", "es", "auto"] },
+              "priority": { "type": "number" },
+              "active": { "type": "boolean" }
+            },
+            "required": ["id", "name", "kind", "movieTemplate", "tvTemplate", "lang", "priority", "active"]
+          }
+        },
         "embedTimeoutSeconds": { "type": "number" },
         "defaultAspectMode": { "type": "string", "enum": ["contain", "cover", "fill", "cinema"] },
         "autoEnableSubtitles": { "type": "boolean" },

@@ -3,6 +3,7 @@ import {
   normalizeMyEmbedBaseUrl,
   normalizeWatchaFlixBaseUrl,
   sanitizeAutoNextCountdownSeconds,
+  sanitizeCustomVideoSources,
   sanitizeEmbedTemplate,
   sanitizeEmbedTimeoutSeconds,
   sanitizeHexColor,
@@ -84,6 +85,7 @@ class PlayerConfigStore {
       ),
       customEmbedMovieTemplate: sanitizeEmbedTemplate(stored.customEmbedMovieTemplate),
       customEmbedTvTemplate: sanitizeEmbedTemplate(stored.customEmbedTvTemplate),
+      customSources: sanitizeCustomVideoSources(stored.customSources),
       embedTimeoutSeconds: sanitizeEmbedTimeoutSeconds(
         stored.embedTimeoutSeconds,
         DEFAULT_PLAYER_CONFIG.embedTimeoutSeconds
@@ -222,6 +224,11 @@ class PlayerConfigStore {
         ? sanitizeEmbedTemplate(partial.customEmbedTvTemplate)
         : current.customEmbedTvTemplate;
 
+    const nextCustomSources =
+      partial.customSources !== undefined
+        ? sanitizeCustomVideoSources(partial.customSources)
+        : current.customSources ?? [];
+
     const nextTimeout =
       partial.embedTimeoutSeconds !== undefined
         ? sanitizeEmbedTimeoutSeconds(partial.embedTimeoutSeconds, current.embedTimeoutSeconds)
@@ -325,6 +332,7 @@ class PlayerConfigStore {
       watchaflixLang: nextWatchaflixLang,
       customEmbedMovieTemplate: nextMovieTpl,
       customEmbedTvTemplate: nextTvTpl,
+      customSources: nextCustomSources,
       embedTimeoutSeconds: nextTimeout,
       defaultAspectMode: nextAspectMode,
       autoEnableSubtitles: nextAutoEnableSubtitles,

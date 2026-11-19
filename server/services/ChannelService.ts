@@ -15,41 +15,64 @@ const VALID_CATEGORIES: ChannelCategory[] = [
 
 class ChannelServiceImpl {
   private lastHydratedAt = 0;
-  private readonly hydrationTtlMs = 20_000;
+  private readonly hydrationTtlMs = 2_500;
+  private hydrationPromise: Promise<void> | null = null;
 
   async ensureHydrated(force = false): Promise<void> {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-
-    const remoteChannels =
-      await FirestoreRestService.queryActiveCollection<Partial<LiveChannel>>('channels');
-
-    for (const raw of remoteChannels) {
-      if (
-        !raw.id ||
-        !raw.name ||
-        !raw.category ||
-        !VALID_CATEGORIES.includes(raw.category) ||
-        !raw.streamUrl ||
-        !isValidStreamUrl(raw.streamUrl)
-      ) {
-        continue;
-      }
-      const normalized: LiveChannel = {
-        id: String(raw.id),
-        name: sanitizePlainText(raw.name, 100),
-        category: raw.category,
-        streamUrl: String(raw.streamUrl).trim().slice(0, 500),
-        logoUrl: raw.logoUrl ? String(raw.logoUrl).trim().slice(0, 500) : undefined,
-        description: raw.description ? sanitizePlainText(raw.description, 300) : undefined,
-        active: raw.active !== false,
-        createdAt: toIsoTimestamp(raw.createdAt, new Date().toISOString()),
-      };
-      repositoryStore.upsertChannel(normalized);
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
 
-    this.lastHydratedAt = Date.now();
+    const run = (async () => {
+      const remoteRes =
+        await FirestoreRestService.queryActiveCollectionChecked<Partial<LiveChannel>>('channels');
+
+      if (remoteRes.ok) {
+        const remoteIds = new Set<string>();
+        for (const raw of remoteRes.items) {
+          if (
+            !raw.id ||
+            !raw.name ||
+            !raw.category ||
+            !VALID_CATEGORIES.includes(raw.category) ||
+            !raw.streamUrl ||
+            !isValidStreamUrl(raw.streamUrl)
+          ) {
+            continue;
+          }
+          const normalized: LiveChannel = {
+            id: String(raw.id),
+            name: sanitizePlainText(raw.name, 100),
+            category: raw.category,
+            streamUrl: String(raw.streamUrl).trim().slice(0, 500),
+            logoUrl: raw.logoUrl ? String(raw.logoUrl).trim().slice(0, 500) : undefined,
+            description: raw.description ? sanitizePlainText(raw.description, 300) : undefined,
+            active: raw.active !== false,
+            createdAt: toIsoTimestamp(raw.createdAt, new Date().toISOString()),
+          };
+          remoteIds.add(normalized.id);
+          repositoryStore.upsertChannel(normalized);
+        }
+
+        for (const localCh of repositoryStore.getChannels()) {
+          if (!remoteIds.has(localCh.id)) {
+            repositoryStore.deleteChannel(localCh.id);
+          }
+        }
+      }
+
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+
+    this.hydrationPromise = run;
+    return run;
   }
 
   listPublic(category?: string): LiveChannel[] {
@@ -58,8 +81,8 @@ class ChannelServiceImpl {
     return channels.filter((c) => c.category === category);
   }
 
-  async listPublicAsync(category?: string): Promise<LiveChannel[]> {
-    await this.ensureHydrated();
+  async listPublicAsync(category?: string, force = false): Promise<LiveChannel[]> {
+    await this.ensureHydrated(force);
     return this.listPublic(category);
   }
 
@@ -67,8 +90,8 @@ class ChannelServiceImpl {
     return repositoryStore.getChannels();
   }
 
-  async listAllAdminAsync(): Promise<LiveChannel[]> {
-    await this.ensureHydrated();
+  async listAllAdminAsync(force = false): Promise<LiveChannel[]> {
+    await this.ensureHydrated(force);
     return this.listAllAdmin();
   }
 

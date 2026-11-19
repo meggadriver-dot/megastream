@@ -28,39 +28,86 @@ export interface UpdateSystemSettingsPayload extends Partial<SystemSettings> {
 
 class SystemSettingsServiceImpl {
   private lastHydratedAt = 0;
-  private readonly hydrationTtlMs = 20_000;
+  private lastSecretsHydratedAt = 0;
+  private readonly hydrationTtlMs = 2_500;
+  private hydrationPromise: Promise<void> | null = null;
 
   async ensureHydrated(force = false): Promise<void> {
     if (!force && Date.now() - this.lastHydratedAt < this.hydrationTtlMs) {
       return;
     }
-
-    const remote = await FirestoreRestService.getDocument<Partial<SystemSettings>>(
-      'systemSettings/global'
-    );
-
-    if (remote) {
-      const local = repositoryStore.getSystemSettings();
-      const localTs = Date.parse(local.updatedAt || DEFAULT_SYSTEM_SETTINGS.updatedAt) || 0;
-      const remoteIso = toIsoTimestamp(remote.updatedAt, '');
-      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
-      const isLocalDefault = local.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt;
-
-      if (isLocalDefault || remoteTs >= localTs) {
-        const merged = sanitizeSystemSettings(remote, local, true);
-        repositoryStore.saveSystemSettings(merged);
-      }
+    if (!force && this.hydrationPromise) {
+      return this.hydrationPromise;
     }
 
-    this.lastHydratedAt = Date.now();
+    const run = (async () => {
+      const remote = await FirestoreRestService.getDocument<Partial<SystemSettings>>(
+        'systemSettings/global'
+      );
+
+      if (remote) {
+        const local = repositoryStore.getSystemSettings();
+        const localTs = Date.parse(local.updatedAt || DEFAULT_SYSTEM_SETTINGS.updatedAt) || 0;
+        const remoteIso = toIsoTimestamp(remote.updatedAt, '');
+        const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+        const isLocalDefault = local.updatedAt === DEFAULT_SYSTEM_SETTINGS.updatedAt;
+        const changedRemote = remoteIso && remoteIso !== local.updatedAt;
+
+        if (isLocalDefault || localTs === 0 || (changedRemote && remoteTs >= localTs)) {
+          const merged = sanitizeSystemSettings(remote, local, true);
+          repositoryStore.saveSystemSettings(merged);
+          CacheService.clear('catalog:');
+          CacheService.clear('tmdb:');
+        }
+      }
+
+      this.lastHydratedAt = Date.now();
+    })().finally(() => {
+      if (this.hydrationPromise === run) {
+        this.hydrationPromise = null;
+      }
+    });
+
+    this.hydrationPromise = run;
+    return run;
+  }
+
+  async ensureSecretsHydrated(bearerToken?: string, force = false): Promise<void> {
+    if (!bearerToken) return;
+    if (!force && Date.now() - this.lastSecretsHydratedAt < 10_000) return;
+
+    const remoteSecrets = await FirestoreRestService.getDocument<StoredAdminSecrets>(
+      'adminSecrets/apiKeys',
+      bearerToken
+    );
+    if (remoteSecrets) {
+      const localSecrets = repositoryStore.getAdminSecrets();
+      const localTs = Date.parse(localSecrets.updatedAt || '') || 0;
+      const remoteIso = toIsoTimestamp(remoteSecrets.updatedAt, '');
+      const remoteTs = remoteIso ? Date.parse(remoteIso) : 0;
+      if (localTs === 0 || remoteTs >= localTs) {
+        const next: StoredAdminSecrets = {};
+        if (typeof remoteSecrets.tmdbAccessToken === 'string' && remoteSecrets.tmdbAccessToken.trim()) {
+          next.tmdbAccessToken = remoteSecrets.tmdbAccessToken.trim();
+        }
+        if (typeof remoteSecrets.geminiApiKey === 'string' && remoteSecrets.geminiApiKey.trim()) {
+          next.geminiApiKey = remoteSecrets.geminiApiKey.trim();
+        }
+        if (remoteIso) next.updatedAt = remoteIso;
+        repositoryStore.saveAdminSecrets(next);
+        CacheService.clear('catalog:');
+        CacheService.clear('tmdb:');
+      }
+    }
+    this.lastSecretsHydratedAt = Date.now();
   }
 
   getSettings(): SystemSettings {
     return repositoryStore.getSystemSettings();
   }
 
-  async getSettingsAsync(): Promise<SystemSettings> {
-    await this.ensureHydrated();
+  async getSettingsAsync(force = false): Promise<SystemSettings> {
+    await this.ensureHydrated(force);
     return repositoryStore.getSystemSettings();
   }
 
@@ -99,8 +146,11 @@ class SystemSettingsServiceImpl {
     };
   }
 
-  async getAdminPayloadAsync(): Promise<AdminSystemSettingsResponse> {
-    await this.ensureHydrated();
+  async getAdminPayloadAsync(force = false, bearerToken?: string): Promise<AdminSystemSettingsResponse> {
+    await Promise.all([
+      this.ensureHydrated(force),
+      this.ensureSecretsHydrated(bearerToken, force),
+    ]);
     return {
       settings: repositoryStore.getSystemSettings(),
       secretsStatus: this.getSecretsStatus(),

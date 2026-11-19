@@ -4,6 +4,7 @@ import { DEFAULT_SITE_CONFIG } from '../../shared/siteConfigUtils.ts';
 import { DEFAULT_SYSTEM_SETTINGS } from '../../shared/systemSettingsUtils.ts';
 import type {
   CustomMediaItem,
+  CustomVideoSource,
   FavoriteItem,
   HistoryItem,
   LiveChannel,
@@ -39,6 +40,7 @@ export interface StoredPlayerSettings {
   watchaflixLang?: WatchaFlixLang;
   customEmbedMovieTemplate?: string;
   customEmbedTvTemplate?: string;
+  customSources?: CustomVideoSource[];
   embedTimeoutSeconds?: number;
   defaultAspectMode?: PlayerAspectMode;
   autoEnableSubtitles?: boolean;

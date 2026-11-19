@@ -18,12 +18,13 @@ import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
 
 class AdminServiceImpl {
-  async getDashboardStats(): Promise<AdminDashboardStats> {
+  async getDashboardStats(force = false, bearerToken?: string): Promise<AdminDashboardStats> {
     await Promise.all([
-      ChannelService.ensureHydrated(),
-      SiteConfigService.ensureHydrated(),
-      SystemSettingsService.ensureHydrated(),
-      PlayerService.ensureHydrated(),
+      ChannelService.ensureHydrated(force),
+      SiteConfigService.ensureHydrated(force),
+      SystemSettingsService.ensureHydrated(force),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, force),
+      PlayerService.ensureHydrated(force),
     ]);
     const users = repositoryStore.getUsers();
     const activeUsers = users.filter((u) => !u.blocked).length;
@@ -55,8 +56,12 @@ class AdminServiceImpl {
     };
   }
 
-  async getIntegrationStatus(): Promise<IntegrationStatus> {
-    await Promise.all([SystemSettingsService.ensureHydrated(), PlayerService.ensureHydrated()]);
+  async getIntegrationStatus(force = false, bearerToken?: string): Promise<IntegrationStatus> {
+    await Promise.all([
+      SystemSettingsService.ensureHydrated(force),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, force),
+      PlayerService.ensureHydrated(force),
+    ]);
     const synced = await CatalogService.getSyncedCatalog();
     const sys = SystemSettingsService.getSettings();
     const tmdbToken = SystemSettingsService.getActiveTmdbToken();
@@ -80,14 +85,21 @@ class AdminServiceImpl {
     };
   }
 
-  async runDiagnostic(target: 'tmdb' | 'player' | 'firestore'): Promise<DiagnosticResult> {
+  async runDiagnostic(
+    target: 'tmdb' | 'player' | 'firestore',
+    bearerToken?: string
+  ): Promise<DiagnosticResult> {
     const started = Date.now();
+    await Promise.all([
+      SystemSettingsService.ensureHydrated(true),
+      SystemSettingsService.ensureSecretsHydrated(bearerToken, true),
+    ]);
     if (target === 'tmdb') {
       return TMDBService.testConnection();
     }
 
     if (target === 'player') {
-      await PlayerService.ensureHydrated();
+      await PlayerService.ensureHydrated(true);
       const cfg = playerConfigStore.getConfig();
       try {
         const [movieRes, tvRes] = await Promise.all([

@@ -181,13 +181,15 @@ export function parseVttCues(vttText: string): VttCueItem[] {
 export function buildHlsProxyPlaylist(
   manifestText: string,
   upstreamUrl: string,
-  proxyBasePrefix: string
+  proxyBasePrefix: string,
+  signUrl?: (resolvedUrl: string) => string
 ): string {
   const toProxyUrl = (rawRef: string): string => {
     const trimmed = rawRef.trim();
     if (!trimmed) return trimmed;
     const resolved = new URL(trimmed, upstreamUrl).toString();
-    return `${proxyBasePrefix}?u=${encodeURIComponent(resolved)}`;
+    const sigParam = signUrl ? `&s=${encodeURIComponent(signUrl(resolved))}` : '';
+    return `${proxyBasePrefix}?u=${encodeURIComponent(resolved)}${sigParam}`;
   };
 
   return (manifestText || '')
@@ -473,27 +475,53 @@ export interface ExtractedPlayableBodyResult {
   streamUrl: string;
   streamKind: 'hls' | 'video';
   posterUrl: string | null;
+  detectedLang?: string;
 }
 
-export function extractPlayableStreamFromBody(
+function normalizeExtractedLangHint(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw.trim().toLowerCase();
+  if (!s) return undefined;
+  if (/(?:legend|pt-sub|\bsub\b|\bleg\b)/i.test(s)) return 'sub';
+  if (/(?:dublad|portugu|\bpt-br\b|\bpt\b|\bpor\b|\bpob\b|\bdub\b)/i.test(s)) return 'pt';
+  if (/(?:ingl[eê]s|english|\ben-us\b|\ben\b|\beng\b|\boriginal\b)/i.test(s)) return 'en';
+  if (/(?:espan|spanish|\bes-es\b|\bes\b|\bspa\b|latino|castellano)/i.test(s)) return 'es';
+  if (/(?:fran[cç]|french|\bfr\b|\bfre\b|\bfra\b)/i.test(s)) return 'fr';
+  if (/(?:alem[aã]|german|\bde\b|\bger\b|\bdeu\b)/i.test(s)) return 'de';
+  if (/(?:italian|\bit\b|\bita\b)/i.test(s)) return 'it';
+  if (/(?:japon|japanese|\bja\b|\bjpn\b)/i.test(s)) return 'ja';
+  if (/(?:corean|korean|\bko\b|\bkor\b)/i.test(s)) return 'ko';
+  if (/(?:\bhindi\b|\bhi\b|\bhin\b)/i.test(s)) return 'hi';
+  return undefined;
+}
+
+export function extractPlayableStreamsFromBody(
   body: string,
   baseUrl: string
-): ExtractedPlayableBodyResult | null {
+): ExtractedPlayableBodyResult[] {
   const raw = (body || '').trim();
-  if (!raw) return null;
+  if (!raw) return [];
 
-  // 1. JSON API responses (e.g. WatchPlay/EmbedPlayer/custom JSON APIs)
+  const results: ExtractedPlayableBodyResult[] = [];
+  const seenUrls = new Set<string>();
+
+  const pushUnique = (item: ExtractedPlayableBodyResult) => {
+    if (!item.streamUrl || seenUrls.has(item.streamUrl)) return;
+    seenUrls.add(item.streamUrl);
+    results.push(item);
+  };
+
+  // 1. JSON API responses (e.g. WatchPlay/EmbedPlayer/custom multi-language JSON APIs)
   if (raw.startsWith('{') || raw.startsWith('[')) {
     try {
       const parsed = JSON.parse(raw) as unknown;
-      const visit = (node: unknown, depth = 0): ExtractedPlayableBodyResult | null => {
-        if (!node || depth > 5) return null;
+      const visit = (node: unknown, depth = 0, inheritedPoster: string | null = null): void => {
+        if (!node || depth > 5 || results.length >= 12) return;
         if (Array.isArray(node)) {
           for (const item of node) {
-            const hit = visit(item, depth + 1);
-            if (hit) return hit;
+            visit(item, depth + 1, inheritedPoster);
           }
-          return null;
+          return;
         }
         if (typeof node === 'object') {
           const obj = node as Record<string, unknown>;
@@ -504,7 +532,16 @@ export function extractPlayableStreamFromBody(
                 ? obj.videoImage
                 : typeof obj.bgImage === 'string'
                   ? obj.bgImage
-                  : null;
+                  : inheritedPoster;
+
+          const itemLangHint =
+            normalizeExtractedLangHint(obj.lang) ||
+            normalizeExtractedLangHint(obj.language) ||
+            normalizeExtractedLangHint(obj.idioma) ||
+            normalizeExtractedLangHint(obj.audio) ||
+            normalizeExtractedLangHint(obj.label) ||
+            normalizeExtractedLangHint(obj.title) ||
+            normalizeExtractedLangHint(obj.name);
 
           const explicitKeys = [
             'securedLink',
@@ -524,33 +561,50 @@ export function extractPlayableStreamFromBody(
                 key === 'securedLink' ||
                 key === 'videoSource' ||
                 key === 'streamUrl' ||
-                key === 'hlsUrl';
+                key === 'hlsUrl' ||
+                (key === 'url' &&
+                  (obj.type === 'hls' ||
+                    obj.type === 'mp4' ||
+                    obj.type === 'video' ||
+                    obj.hls === true));
               const classified = classifyPlayableMediaUrl(val, baseUrl, strictOpaque);
               if (classified) {
-                const isExplicitMp4 = key === 'mp4' || classified.streamKind === 'video';
-                return {
+                const isExplicitMp4 =
+                  key === 'mp4' ||
+                  obj.type === 'mp4' ||
+                  obj.type === 'video' ||
+                  classified.streamKind === 'video';
+                pushUnique({
                   streamUrl: classified.streamUrl,
-                  streamKind: isExplicitMp4 && obj.hls !== true ? 'video' : 'hls',
+                  streamKind:
+                    isExplicitMp4 && obj.hls !== true && obj.type !== 'hls' ? 'video' : 'hls',
                   posterUrl: posterRaw,
-                };
+                  ...(itemLangHint ? { detectedLang: itemLangHint } : {}),
+                });
+                break;
               }
             }
           }
-          for (const nestedKey of ['sources', 'streams', 'files', 'data', 'result', 'stream']) {
+          for (const nestedKey of [
+            'sources',
+            'streams',
+            'files',
+            'playlist',
+            'links',
+            'servers',
+            'data',
+            'result',
+            'stream',
+          ]) {
             if (nestedKey in obj) {
-              const hit = visit(obj[nestedKey], depth + 1);
-              if (hit) {
-                if (!hit.posterUrl && posterRaw) hit.posterUrl = posterRaw;
-                return hit;
-              }
+              visit(obj[nestedKey], depth + 1, posterRaw);
             }
           }
         }
-        return null;
       };
 
-      const jsonMatch = visit(parsed);
-      if (jsonMatch) return jsonMatch;
+      visit(parsed);
+      if (results.length > 0) return results;
     } catch {
       // Not strict JSON — continue to HTML/JS scan
     }
@@ -563,11 +617,25 @@ export function extractPlayableStreamFromBody(
     normalizedHtml.match(/poster\s*[:=]\s*["']([^"']+)["']/i);
   const posterUrl = posterMatch?.[1]?.trim() || null;
 
+  for (const tagMatch of normalizedHtml.matchAll(/<source\b([^>]+)>/gi)) {
+    const attrs = tagMatch[1] || '';
+    const src = attrs.match(/src=["']([^"']+)["']/i)?.[1];
+    if (!src) continue;
+    const classified = classifyPlayableMediaUrl(src, baseUrl, false);
+    if (!classified) continue;
+    const labelHint =
+      normalizeExtractedLangHint(attrs.match(/(?:label|title|data-lang|srclang)=["']([^"']+)["']/i)?.[1]);
+    pushUnique({
+      ...classified,
+      posterUrl,
+      ...(labelHint ? { detectedLang: labelHint } : {}),
+    });
+  }
+
   const patterns: Array<{ regex: RegExp; allowOpaque: boolean }> = [
     { regex: /hls\.loadSource\(\s*["']([^"']+)["']\s*\)/gi, allowOpaque: true },
     { regex: /(?:securedLink|videoSource|streamUrl|hlsUrl)\s*[:=]\s*["']([^"']+)["']/gi, allowOpaque: true },
     { regex: /(?:file|url|src|source)\s*:\s*["']([^"']+\.(?:m3u8|mp4|webm|mov|m4v)(?:\?[^"']*)?)["']/gi, allowOpaque: false },
-    { regex: /<source[^>]+src=["']([^"']+)["']/gi, allowOpaque: false },
     { regex: /<video[^>]+src=["']([^"']+)["']/gi, allowOpaque: false },
     { regex: /https?:\/\/[^\s"'<>\\]+\.(?:m3u8|mp4|m4v|webm)(?:\?[^\s"'<>\\]*)?/gi, allowOpaque: false },
   ];
@@ -577,15 +645,27 @@ export function extractPlayableStreamFromBody(
       const candidate = match[1] || match[0];
       const classified = classifyPlayableMediaUrl(candidate, baseUrl, allowOpaque);
       if (classified) {
-        return {
+        pushUnique({
           ...classified,
           posterUrl,
-        };
+        });
+        if (results.length >= 8) break;
       }
     }
+    if (results.length >= 8) break;
   }
 
-  return null;
+  return results;
+}
+
+export function extractPlayableStreamFromBody(
+  body: string,
+  baseUrl: string
+): ExtractedPlayableBodyResult | null {
+  const list = extractPlayableStreamsFromBody(body, baseUrl);
+  if (list.length === 0) return null;
+  const { detectedLang: _ignored, ...first } = list[0];
+  return first;
 }
 
 export function extractNestedEmbedUrls(html: string, baseUrl: string): string[] {
@@ -593,24 +673,223 @@ export function extractNestedEmbedUrls(html: string, baseUrl: string): string[] 
   const urls: string[] = [];
   const seen = new Set<string>();
 
-  for (const match of normalized.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) {
-    const raw = (match[1] || '').trim();
-    if (!raw || raw === 'about:blank' || raw.startsWith('javascript:')) continue;
+  const pushCandidate = (raw: string) => {
+    const clean = (raw || '').trim();
+    if (!clean || clean === 'about:blank' || clean.startsWith('javascript:')) return;
     try {
-      const resolved = new URL(raw, baseUrl);
-      if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') continue;
-      if (!isSafePublicHost(resolved.hostname) || isAdOrTrackerHost(resolved.hostname)) continue;
+      const resolved = new URL(clean, baseUrl);
+      if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') return;
+      if (!isSafePublicHost(resolved.hostname) || isAdOrTrackerHost(resolved.hostname)) return;
+      if (/\.(?:css|js|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|json)(?:$|\?)/i.test(resolved.pathname)) {
+        return;
+      }
       const finalStr = resolved.toString();
       if (!seen.has(finalStr)) {
         seen.add(finalStr);
         urls.push(finalStr);
       }
     } catch {
-      // ignore invalid iframe src
+      // ignore invalid URL
     }
+  };
+
+  for (const match of normalized.matchAll(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi)) {
+    pushCandidate(match[1]);
+  }
+  for (const match of normalized.matchAll(/(?:data-embed|data-url|data-player)=["'](https?:\/\/[^"']+)["']/gi)) {
+    pushCandidate(match[1]);
+  }
+  for (const match of normalized.matchAll(/\b(?:go|loadPlayer|setEmbed|changeServer)\(\s*["'](https?:\/\/[^"']+)["']/gi)) {
+    pushCandidate(match[1]);
   }
 
   return urls;
 }
 
+export function hasAdOrAntiSandboxTraps(html: string): boolean {
+  const sample = (html || '').slice(0, 80_000);
+  return (
+    /frameElement\.hasAttribute\(\s*["']sandbox["']\s*\)|\/asb\.html\b|cst-captcha|jw-gate-cst/i.test(
+      sample
+    ) ||
+    /mypopads\.com|popads\.net|popcash|exoclick|adsterra|waust\.at\/d\.js/i.test(sample)
+  );
+}
+
+export function parsePlayerFlixStyleUrl(urlStr: string): {
+  origin: string;
+  mediaType: 'movie' | 'tv';
+  id: string;
+  season: number | null;
+  episode: number | null;
+} | null {
+  try {
+    const parsed = new URL((urlStr || '').trim());
+    const host = parsed.hostname.toLowerCase();
+    if (
+      !/^(?:[a-z0-9-]+\.)?(?:myembed\.biz|playerflix\.ink|embedmovies\.org)$/i.test(host)
+    ) {
+      return null;
+    }
+    const tvMatch = parsed.pathname.match(
+      /^\/(?:serie|tv|tvshow)\/(\d+|tt\d+)\/(\d+)\/(\d+)/i
+    );
+    if (tvMatch) {
+      return {
+        origin: host.includes('playerflix.ink') ? parsed.origin : 'https://playerflix.ink',
+        mediaType: 'tv',
+        id: tvMatch[1],
+        season: Number(tvMatch[2]) || 1,
+        episode: Number(tvMatch[3]) || 1,
+      };
+    }
+    const movieMatch = parsed.pathname.match(/^\/(?:filme|movie)\/(\d+|tt\d+)/i);
+    if (movieMatch) {
+      return {
+        origin: host.includes('playerflix.ink') ? parsed.origin : 'https://playerflix.ink',
+        mediaType: 'movie',
+        id: movieMatch[1],
+        season: null,
+        episode: null,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface BuzzQServerPayload {
+  token: string;
+  playApiBases: string[];
+  servers: Array<{
+    ref: string;
+    name: string;
+    lang: string | null;
+  }>;
+}
+
+function extractBalancedJsonAfterVarQ(html: string): string | null {
+  const match = /\bvar\s+Q\s*=\s*\{/.exec(html);
+  if (!match) return null;
+  const start = match.index + match[0].length - 1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  const limit = Math.min(html.length, start + 120_000);
+  for (let i = start; i < limit; i++) {
+    const ch = html[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return html.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+export function parseBuzzQPayload(
+  html: string,
+  pageUrl: string
+): BuzzQServerPayload | null {
+  if (!html || !pageUrl) return null;
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(pageUrl);
+  } catch {
+    return null;
+  }
+
+  const rawJson = extractBalancedJsonAfterVarQ(html);
+  if (!rawJson) return null;
+
+  let qObj: {
+    t?: unknown;
+    ssr?: {
+      servers?: Array<{
+        ref?: unknown;
+        name?: unknown;
+        lang?: unknown;
+      }>;
+    };
+  };
+  try {
+    qObj = JSON.parse(rawJson);
+  } catch {
+    return null;
+  }
+
+  const token = typeof qObj.t === 'string' ? qObj.t.trim() : '';
+  const rawServers = Array.isArray(qObj.ssr?.servers) ? qObj.ssr.servers : [];
+  if (!token || rawServers.length === 0) return null;
+
+  const servers: BuzzQServerPayload['servers'] = [];
+  for (const s of rawServers) {
+    if (!s || typeof s.ref !== 'string' || !s.ref.trim()) continue;
+    servers.push({
+      ref: s.ref.trim(),
+      name: typeof s.name === 'string' ? s.name.trim() : '',
+      lang: typeof s.lang === 'string' && s.lang.trim() ? s.lang.trim() : null,
+    });
+  }
+  if (servers.length === 0) return null;
+
+  const baseHrefMatch = html.match(/<base[^>]+href=["']([^"']+)["']/i);
+  let resolvedBaseUrl = `${parsedUrl.origin}/`;
+  if (baseHrefMatch?.[1]) {
+    try {
+      resolvedBaseUrl = new URL(baseHrefMatch[1].trim(), parsedUrl.origin).toString();
+    } catch {
+      resolvedBaseUrl = `${parsedUrl.origin}/`;
+    }
+  }
+
+  const candidates: string[] = [];
+  const pushBase = (urlCandidate: string) => {
+    try {
+      const u = new URL(urlCandidate, resolvedBaseUrl).toString();
+      if (!candidates.includes(u)) {
+        candidates.push(u);
+      }
+    } catch {
+      // ignore invalid
+    }
+  };
+
+  const usesPlPrefix =
+    /pl\/api\.php/i.test(html) || /vidsrc\.buzz/i.test(parsedUrl.hostname);
+
+  if (usesPlPrefix) {
+    pushBase(`${parsedUrl.origin}/pl/api.php`);
+    pushBase(new URL('api.php', resolvedBaseUrl).toString());
+    pushBase(`${parsedUrl.origin}/api.php`);
+  } else {
+    pushBase(new URL('api.php', resolvedBaseUrl).toString());
+    pushBase(`${parsedUrl.origin}/api.php`);
+    pushBase(`${parsedUrl.origin}/pl/api.php`);
+  }
+
+  return {
+    token,
+    playApiBases: candidates,
+    servers,
+  };
+}
 

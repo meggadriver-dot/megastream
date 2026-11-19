@@ -39,6 +39,7 @@ import {
   DEFAULT_PLAYER_CONFIG,
   extractPlayerBranding,
   resolveHydratedSourceMode,
+  sanitizeCustomVideoSources,
 } from '../../shared/playerUrl';
 import {
   DEFAULT_SITE_CONFIG,
@@ -324,6 +325,9 @@ export function AdminPage() {
               typeof fsData.customEmbedTvTemplate === 'string'
                 ? fsData.customEmbedTvTemplate
                 : effectivePlayer.customEmbedTvTemplate,
+            customSources: sanitizeCustomVideoSources(
+              fsData.customSources ?? effectivePlayer.customSources
+            ),
             embedTimeoutSeconds:
               typeof fsData.embedTimeoutSeconds === 'number'
                 ? fsData.embedTimeoutSeconds
@@ -409,6 +413,7 @@ export function AdminPage() {
           };
         }
       }
+      effectivePlayer.customSources = sanitizeCustomVideoSources(effectivePlayer.customSources);
       setPlayerConfig(effectivePlayer);
 
       // 2b. System Settings & Runtime Token Overrides (cold-start sync from Firestore if needed)
@@ -921,6 +926,7 @@ export function AdminPage() {
         watchaflixLang: updated.watchaflixLang,
         customEmbedMovieTemplate: updated.customEmbedMovieTemplate,
         customEmbedTvTemplate: updated.customEmbedTvTemplate,
+        customSources: sanitizeCustomVideoSources(updated.customSources),
         embedTimeoutSeconds: updated.embedTimeoutSeconds,
         defaultAspectMode: updated.defaultAspectMode,
         autoEnableSubtitles: updated.autoEnableSubtitles,
@@ -950,7 +956,15 @@ export function AdminPage() {
         ),
         true
       );
-      showFeedback('Player Principal MegaStream e personalização salvos na nuvem.');
+      const dash = await apiRequest<{
+        stats: AdminDashboardStats;
+        integrations: IntegrationStatus;
+      }>('/api/admin/dashboard').catch(() => null);
+      if (dash) {
+        setStats(dash.stats);
+        setIntegrations(dash.integrations);
+      }
+      showFeedback('Player Principal MegaStream, fontes e personalização salvos na nuvem.');
     } catch (err) {
       showError(err, 'Erro ao salvar configuração de players.');
     } finally {
@@ -1814,6 +1828,10 @@ export function AdminPage() {
                   saving={saving}
                   testingTarget={testingTarget}
                   tmdbDiagnostic={diagnostics.tmdb ?? null}
+                  customVideoSourcesCount={
+                    (playerConfig?.customSources ?? []).filter((s) => s.active).length
+                  }
+                  onOpenVideoSources={() => setActiveTab('players')}
                   onSave={(e) =>
                     void handleSaveSystemSettings(
                       e,

@@ -190,13 +190,28 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidCustomVideoSource(src) {
+      return src is map
+        && src.keys().hasAll(['id', 'name', 'kind', 'movieTemplate', 'tvTemplate', 'lang', 'priority', 'active'])
+        && src.keys().hasOnly(['id', 'name', 'kind', 'movieTemplate', 'tvTemplate', 'lang', 'priority', 'active'])
+        && src.id is string && src.id.size() >= 1 && src.id.size() <= 48
+        && src.name is string && src.name.size() >= 1 && src.name.size() <= 60
+        && src.kind in ['api', 'embed', 'direct']
+        && src.movieTemplate is string && src.movieTemplate.size() <= 500
+        && src.tvTemplate is string && src.tvTemplate.size() <= 500
+        && (src.movieTemplate.size() > 0 || src.tvTemplate.size() > 0)
+        && src.lang in ['pt', 'sub', 'en', 'es', 'auto']
+        && src.priority is number && src.priority >= 1 && src.priority <= 999
+        && src.active is bool;
+    }
+
     function isValidPlayerSettings(data) {
       return data.keys().hasAll(['defaultDomain', 'defaultPlayer', 'defaultColorHex', 'updatedAt'])
         && data.keys().hasOnly([
           'sourceMode', 'defaultDomain', 'fallbackDomain', 'autoFallback',
           'defaultPlayer', 'defaultColorHex', 'myembedBaseUrl', 'antiAdSandbox',
           'preferImdbForMovies', 'watchaflixBaseUrl', 'watchaflixLang',
-          'customEmbedMovieTemplate', 'customEmbedTvTemplate', 'embedTimeoutSeconds',
+          'customEmbedMovieTemplate', 'customEmbedTvTemplate', 'customSources', 'embedTimeoutSeconds',
           'defaultAspectMode', 'autoEnableSubtitles', 'defaultSubtitleSize',
           'defaultSubtitleColor', 'defaultSubtitleBg', 'allowTvCast',
           'allowPipMode', 'allowTheaterMode',
@@ -217,6 +232,11 @@ service cloud.firestore {
         && (!('watchaflixLang' in data) || data.watchaflixLang in ['pt', 'en'])
         && (!('customEmbedMovieTemplate' in data) || (data.customEmbedMovieTemplate is string && data.customEmbedMovieTemplate.size() <= 500))
         && (!('customEmbedTvTemplate' in data) || (data.customEmbedTvTemplate is string && data.customEmbedTvTemplate.size() <= 500))
+        && (!('customSources' in data) || (
+          data.customSources is list
+          && data.customSources.size() <= 50
+          && (data.customSources.size() == 0 || isValidCustomVideoSource(data.customSources[0]))
+        ))
         && (!('embedTimeoutSeconds' in data) || (data.embedTimeoutSeconds is number && data.embedTimeoutSeconds >= 5 && data.embedTimeoutSeconds <= 30))
         && (!('defaultAspectMode' in data) || data.defaultAspectMode in ['contain', 'cover', 'fill', 'cinema'])
         && (!('autoEnableSubtitles' in data) || data.autoEnableSubtitles is bool)

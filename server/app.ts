@@ -31,6 +31,19 @@ export function createApiApp(): Express {
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', rateLimitMiddleware(240, 60_000));
+  app.use('/api', (req, res, next) => {
+    const p = req.path || '';
+    const isImmutableMediaChunk =
+      p.startsWith('/player/hls/') && p.endsWith('/seg') ||
+      p.startsWith('/player/video/') ||
+      p.startsWith('/player/subtitle/');
+    if (!isImmutableMediaChunk) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+    next();
+  });
 
   // --- Healthcheck ---
   app.get('/api/health', async (_req, res) => {
@@ -63,9 +76,9 @@ export function createApiApp(): Express {
   });
 
   // --- Integrations Status (Admin Only) ---
-  app.get('/api/integrations/status', requireAdmin, async (_req, res, next) => {
+  app.get('/api/integrations/status', requireAdmin, async (req, res, next) => {
     try {
-      const status = await AdminService.getIntegrationStatus();
+      const status = await AdminService.getIntegrationStatus(true, req.headers.authorization);
       res.json(status);
     } catch (err) {
       next(err);
@@ -267,10 +280,11 @@ export function createApiApp(): Express {
 
   app.get('/api/player/hls/:token/seg', async (req, res) => {
     const targetUrl = typeof req.query.u === 'string' ? req.query.u : '';
+    const sig = typeof req.query.s === 'string' ? req.query.s : '';
     if (!targetUrl) {
       return res.status(400).json({ error: 'Parâmetro de segmento ausente.' });
     }
-    await StreamResolverService.handleHlsSegmentRequest(req.params.token, targetUrl, req, res);
+    await StreamResolverService.handleHlsSegmentRequest(req.params.token, targetUrl, sig, req, res);
   });
 
   app.get('/api/player/subtitle/:subId.vtt', async (req, res) => {
@@ -515,11 +529,11 @@ export function createApiApp(): Express {
   });
 
   // --- Admin Panel (Backend Role-Verified) ---
-  app.get('/api/admin/dashboard', requireAdmin, async (_req, res, next) => {
+  app.get('/api/admin/dashboard', requireAdmin, async (req, res, next) => {
     try {
       const [stats, integrations] = await Promise.all([
-        AdminService.getDashboardStats(),
-        AdminService.getIntegrationStatus(),
+        AdminService.getDashboardStats(true, req.headers.authorization),
+        AdminService.getIntegrationStatus(true, req.headers.authorization),
       ]);
       res.json({ stats, integrations });
     } catch (err) {
@@ -539,7 +553,7 @@ export function createApiApp(): Express {
 
   app.get('/api/admin/channels', requireAdmin, async (_req, res, next) => {
     try {
-      res.json({ items: await ChannelService.listAllAdminAsync() });
+      res.json({ items: await ChannelService.listAllAdminAsync(true) });
     } catch (err) {
       next(err);
     }
@@ -562,7 +576,7 @@ export function createApiApp(): Express {
 
   app.get('/api/admin/player-config', requireAdmin, async (_req, res, next) => {
     try {
-      res.json(await PlayerService.getConfigAsync());
+      res.json(await PlayerService.getConfigAsync(true));
     } catch (err) {
       next(err);
     }
@@ -573,9 +587,22 @@ export function createApiApp(): Express {
     res.json(updated);
   });
 
+  app.post('/api/admin/player-sources/test', requireAdmin, async (req, res, next) => {
+    try {
+      const cfg = await PlayerService.getConfigAsync(true);
+      const rawSources = Array.isArray(req.body?.customSources)
+        ? req.body.customSources
+        : cfg.customSources || [];
+      const results = await StreamResolverService.testCustomSources(rawSources);
+      res.json({ results });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get('/api/admin/site-config', requireAdmin, async (_req, res, next) => {
     try {
-      res.json(await SiteConfigService.getConfigAsync());
+      res.json(await SiteConfigService.getConfigAsync(true));
     } catch (err) {
       next(err);
     }
@@ -586,9 +613,9 @@ export function createApiApp(): Express {
     res.json(updated);
   });
 
-  app.get('/api/admin/system-settings', requireAdmin, async (_req, res, next) => {
+  app.get('/api/admin/system-settings', requireAdmin, async (req, res, next) => {
     try {
-      res.json(await SystemSettingsService.getAdminPayloadAsync());
+      res.json(await SystemSettingsService.getAdminPayloadAsync(true, req.headers.authorization));
     } catch (err) {
       next(err);
     }
@@ -610,7 +637,7 @@ export function createApiApp(): Express {
         req.body?.target === 'player' || req.body?.target === 'firestore'
           ? req.body.target
           : 'tmdb';
-      const result = await AdminService.runDiagnostic(target);
+      const result = await AdminService.runDiagnostic(target, req.headers.authorization);
       res.json(result);
     } catch (err) {
       next(err);
@@ -619,7 +646,7 @@ export function createApiApp(): Express {
 
   app.get('/api/admin/catalog/custom', requireAdmin, async (_req, res, next) => {
     try {
-      res.json({ items: await SiteConfigService.listCustomCatalogAsync() });
+      res.json({ items: await SiteConfigService.listCustomCatalogAsync(true) });
     } catch (err) {
       next(err);
     }

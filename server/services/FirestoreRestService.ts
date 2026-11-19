@@ -73,10 +73,20 @@ class FirestoreRestServiceImpl {
     return `https://firestore.googleapis.com/v1/projects/${this.cfg.projectId}/databases/${this.cfg.firestoreDatabaseId}/documents`;
   }
 
-  async getDocument<T>(docPath: string): Promise<T | null> {
+  private buildHeaders(bearerToken?: string, jsonBody = false): Record<string, string> {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (jsonBody) headers['Content-Type'] = 'application/json';
+    const clean = bearerToken?.replace(/^Bearer\s+/i, '').trim();
+    if (clean) {
+      headers.Authorization = `Bearer ${clean}`;
+    }
+    return headers;
+  }
+
+  async getDocument<T>(docPath: string, bearerToken?: string): Promise<T | null> {
     try {
       const res = await fetch(`${this.baseDocumentsUrl}/${docPath}`, {
-        headers: { Accept: 'application/json' },
+        headers: this.buildHeaders(bearerToken, false),
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) return null;
@@ -88,11 +98,14 @@ class FirestoreRestServiceImpl {
     }
   }
 
-  async queryActiveCollection<T>(collectionId: string): Promise<T[]> {
+  async queryActiveCollectionChecked<T>(
+    collectionId: string,
+    bearerToken?: string
+  ): Promise<{ ok: boolean; items: T[] }> {
     try {
       const res = await fetch(`${this.baseDocumentsUrl}:runQuery`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: this.buildHeaders(bearerToken, true),
         body: JSON.stringify({
           structuredQuery: {
             from: [{ collectionId }],
@@ -107,7 +120,7 @@ class FirestoreRestServiceImpl {
         }),
         signal: AbortSignal.timeout(5000),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return { ok: false, items: [] };
       const rows = (await res.json()) as Array<{ document?: FirestoreDocument }>;
       const items: T[] = [];
       for (const row of rows) {
@@ -115,10 +128,15 @@ class FirestoreRestServiceImpl {
           items.push(decodeFields(row.document.fields) as T);
         }
       }
-      return items;
+      return { ok: true, items };
     } catch {
-      return [];
+      return { ok: false, items: [] };
     }
+  }
+
+  async queryActiveCollection<T>(collectionId: string, bearerToken?: string): Promise<T[]> {
+    const res = await this.queryActiveCollectionChecked<T>(collectionId, bearerToken);
+    return res.items;
   }
 }
 

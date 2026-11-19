@@ -167,6 +167,39 @@ export interface PlayerBrandingConfig {
   autoNextCountdownSeconds: number;
 }
 
+export type CustomVideoSourceKind = 'api' | 'embed' | 'direct';
+
+export type CustomVideoSourceLang = 'pt' | 'sub' | 'en' | 'es' | 'auto';
+
+export interface CustomVideoSource {
+  id: string;
+  name: string;
+  kind: CustomVideoSourceKind;
+  movieTemplate: string;
+  tvTemplate: string;
+  lang: CustomVideoSourceLang;
+  priority: number;
+  active: boolean;
+}
+
+export type CustomSourceProbeStatus =
+  | 'ok_direct'
+  | 'blocked_cloudflare'
+  | 'blocked_ads'
+  | 'missing_placeholders'
+  | 'unavailable';
+
+export interface CustomSourceTestResult {
+  id: string;
+  name: string;
+  status: CustomSourceProbeStatus;
+  detectedLanguages: string[];
+  streamKind?: StreamKind;
+  testedUrl: string;
+  message: string;
+  latencyMs: number;
+}
+
 export interface PlayerConfig {
   sourceMode: PlayerSourceMode;
   defaultDomain: MegaEmbedDomain;
@@ -183,6 +216,7 @@ export interface PlayerConfig {
   watchaflixLang: WatchaFlixLang;
   customEmbedMovieTemplate: string;
   customEmbedTvTemplate: string;
+  customSources?: CustomVideoSource[];
   embedTimeoutSeconds: number;
   defaultAspectMode: PlayerAspectMode;
   autoEnableSubtitles: boolean;
@@ -219,6 +253,10 @@ export interface PlayerAudioOption {
   lang: string;
   streamUrl: string;
   streamKind: StreamKind;
+  backupStreams?: Array<{ streamUrl: string; streamKind: StreamKind }>;
+  sourceName?: string;
+  languageLabel?: string;
+  isCustomSource?: boolean;
 }
 
 export interface EmbedPlayResponse {

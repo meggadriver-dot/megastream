@@ -387,10 +387,6 @@ export function PlayerPage() {
   };
 
   const streamKind: StreamKind = embedData?.streamKind ?? 'iframe';
-  const iframeSandbox =
-    embedData?.sandboxPolicy === 'none'
-      ? undefined
-      : 'allow-scripts allow-same-origin allow-forms allow-presentation';
 
   const playerAccentHex = `#${effectiveBranding.colorHex || siteConfig.accentColorHex || '00a8ff'}`;
   const watermarkLabel =
@@ -543,11 +539,13 @@ export function PlayerPage() {
               </div>
             ) : (
               <>
-                {embedData?.embedUrl && !errorMsg && (streamKind === 'hls' || streamKind === 'video') && (
+                {embedData?.embedUrl && !errorMsg && (
                   <WatchaPlayer
                     key={`${embedData.embedUrl}-${reloadNonce}`}
                     streamUrl={embedData.embedUrl}
                     streamKind={streamKind}
+                    sandboxPolicy={embedData.sandboxPolicy}
+                    referrerPolicy={embedData.referrerPolicy}
                     title={detail?.title || 'Reproduzindo conteúdo'}
                     subtitleMeta={
                       mediaType === 'tv'
@@ -587,26 +585,6 @@ export function PlayerPage() {
                     onStreamError={(msg) => {
                       setPlayerLoading(false);
                       setErrorMsg(msg);
-                    }}
-                  />
-                )}
-
-                {embedData?.embedUrl && !errorMsg && streamKind === 'iframe' && (
-                  <iframe
-                    key={`${embedData.embedUrl}-${reloadNonce}`}
-                    src={embedData.embedUrl}
-                    title={detail?.title || 'Player de vídeo'}
-                    className="w-full h-full border-0"
-                    sandbox={iframeSandbox}
-                    allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                    referrerPolicy={embedData.referrerPolicy ?? 'strict-origin'}
-                    onLoad={() => {
-                      setPlayerLoading(false);
-                      setPlayerTimedOut(false);
-                    }}
-                    onError={() => {
-                      setPlayerLoading(false);
-                      setErrorMsg('Não foi possível iniciar a reprodução deste título no momento.');
                     }}
                   />
                 )}
