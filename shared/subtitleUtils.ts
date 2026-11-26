@@ -9,11 +9,59 @@ export const SUBTITLE_LANG_LABELS: Record<string, string> = {
   es: 'Espanhol',
   fre: 'Francês',
   fra: 'Francês',
+  fr: 'Francês',
   ger: 'Alemão',
   deu: 'Alemão',
+  de: 'Alemão',
   ita: 'Italiano',
+  it: 'Italiano',
   jpn: 'Japonês',
+  ja: 'Japonês',
   kor: 'Coreano',
+  ko: 'Coreano',
+  rus: 'Russo',
+  ru: 'Russo',
+  ara: 'Árabe',
+  ar: 'Árabe',
+  chi: 'Chinês',
+  zho: 'Chinês',
+  zh: 'Chinês',
+  dut: 'Holandês',
+  nld: 'Holandês',
+  nl: 'Holandês',
+  pol: 'Polonês',
+  pl: 'Polonês',
+  tur: 'Turco',
+  tr: 'Turco',
+  hin: 'Hindi',
+  hi: 'Hindi',
+  ind: 'Indonésio',
+  id: 'Indonésio',
+  vie: 'Vietnamita',
+  vi: 'Vietnamita',
+  tha: 'Tailandês',
+  th: 'Tailandês',
+  heb: 'Hebraico',
+  he: 'Hebraico',
+  swe: 'Sueco',
+  sv: 'Sueco',
+  nor: 'Norueguês',
+  no: 'Norueguês',
+  dan: 'Dinamarquês',
+  da: 'Dinamarquês',
+  fin: 'Finlandês',
+  fi: 'Finlandês',
+  ell: 'Grego',
+  el: 'Grego',
+  ces: 'Tcheco',
+  cs: 'Tcheco',
+  hun: 'Húngaro',
+  hu: 'Húngaro',
+  rum: 'Romeno',
+  ron: 'Romeno',
+  ro: 'Romeno',
+  ukr: 'Ucraniano',
+  uk: 'Ucraniano',
 };
 
 export function formatSubtitleLangLabel(lang?: string | null): string {
@@ -21,10 +69,57 @@ export function formatSubtitleLangLabel(lang?: string | null): string {
   return SUBTITLE_LANG_LABELS[clean] || (clean ? clean.toUpperCase() : 'Outro');
 }
 
+export function mergeAndDisambiguateSubtitles<
+  T extends { id: string; lang: string; label: string; url: string; isDefault?: boolean },
+>(tracks: T[], maxItems = 30): Array<T & { isDefault: boolean }> {
+  const seenIds = new Set<string>();
+  const rank = (lang: string) =>
+    lang === 'pob' ? 0 : lang === 'por' ? 1 : lang === 'eng' ? 2 : lang === 'spa' ? 3 : 4;
+
+  const sorted = (tracks || [])
+    .filter((sub) => {
+      if (!sub?.id || !sub?.url || seenIds.has(sub.id)) return false;
+      seenIds.add(sub.id);
+      return true;
+    })
+    .sort((a, b) => rank(a.lang) - rank(b.lang))
+    .slice(0, maxItems);
+
+  const labelCounts = new Map<string, number>();
+  let hasDefaultSub = false;
+
+  return sorted.map((sub) => {
+    const baseLabel =
+      (sub.label || '').replace(/\s+#\d+$/, '').trim() || formatSubtitleLangLabel(sub.lang);
+    const count = (labelCounts.get(baseLabel) || 0) + 1;
+    labelCounts.set(baseLabel, count);
+    const finalLabel = count === 1 ? baseLabel : `${baseLabel} #${count}`;
+    const shouldBeDefault = !hasDefaultSub && sub.lang === 'pob';
+    if (shouldBeDefault) hasDefaultSub = true;
+    return {
+      ...sub,
+      label: finalLabel,
+      isDefault: shouldBeDefault,
+    };
+  });
+}
+
 export function isAllowedSubtitleHost(urlStr: string): boolean {
   try {
     const parsed = new URL(urlStr);
-    return parsed.protocol === 'https:' && /^subs\d*\.strem\.io$/i.test(parsed.hostname);
+    if (parsed.protocol !== 'https:') return false;
+    return (
+      /^subs\d*\.strem\.io$/i.test(parsed.hostname) ||
+      /^dl\.opensubtitles\.org$/i.test(parsed.hostname) ||
+      /^cacdn\.hakunaymatata\.com$/i.test(parsed.hostname) ||
+      /^cache\.vdrk\.site$/i.test(parsed.hostname) ||
+      /^rezesubs\.com$/i.test(parsed.hostname) ||
+      /^([a-z0-9-]+\.)?qqqcdn\.cloud$/i.test(parsed.hostname) ||
+      /^([a-z0-9-]+\.)?mysubsplay\.com$/i.test(parsed.hostname) ||
+      /^(?:www\.)?freeapi\.pro$/i.test(parsed.hostname) ||
+      /^(?:[a-z0-9-]+\.)?streambetter\.xyz$/i.test(parsed.hostname) ||
+      /^[a-z0-9-]+\.r2\.cloudflarestorage\.com$/i.test(parsed.hostname)
+    );
   } catch {
     return false;
   }
@@ -79,6 +174,70 @@ export function convertSrtToVtt(rawText: string, offsetSeconds = 0): string {
 
   if (!normalized) {
     return 'WEBVTT\n\n';
+  }
+
+  // Handle ASS / SSA subtitle scripts (common on anime & OpenSubtitles)
+  if (/\[Script Info\]/i.test(normalized) || /^Dialogue:\s*/m.test(normalized)) {
+    const assLines = normalized.split('\n');
+    let formatCols = ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text'];
+    let inEvents = false;
+    const vttOut: string[] = ['WEBVTT', ''];
+
+    for (const rawLine of assLines) {
+      const trimmed = rawLine.trim();
+      if (/^\[(.+)\]$/.test(trimmed)) {
+        inEvents = /^\[Events\]$/i.test(trimmed);
+        continue;
+      }
+      if ((inEvents || /^Format:/i.test(trimmed)) && /^Format:\s*/i.test(trimmed)) {
+        formatCols = trimmed
+          .replace(/^Format:\s*/i, '')
+          .split(',')
+          .map((c) => c.trim().toLowerCase());
+        continue;
+      }
+      if (!/^Dialogue:\s*/i.test(trimmed)) continue;
+
+      const body = trimmed.replace(/^Dialogue:\s*/i, '');
+      const textColIdx = formatCols.indexOf('text');
+      const startColIdx = formatCols.indexOf('start');
+      const endColIdx = formatCols.indexOf('end');
+      const splitCount = textColIdx >= 0 ? textColIdx : formatCols.length - 1;
+
+      const fields: string[] = [];
+      let cursor = 0;
+      for (let f = 0; f < splitCount; f++) {
+        const commaIdx = body.indexOf(',', cursor);
+        if (commaIdx === -1) break;
+        fields.push(body.slice(cursor, commaIdx).trim());
+        cursor = commaIdx + 1;
+      }
+      fields.push(body.slice(cursor));
+
+      const rawStart = fields[startColIdx >= 0 ? startColIdx : 1] || '';
+      const rawEnd = fields[endColIdx >= 0 ? endColIdx : 2] || '';
+      const startSec = parseVttTimestampToSeconds(rawStart);
+      const endSec = parseVttTimestampToSeconds(rawEnd);
+      if (startSec === null || endSec === null) continue;
+
+      const rawDialogue = (fields[splitCount] || '')
+        .replace(/\{[^}]*\}/g, '')
+        .replace(/\\N/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\h/g, ' ')
+        .trim();
+      if (!rawDialogue) continue;
+
+      const sOut = formatSecondsToVttTimestamp(startSec + offsetSeconds);
+      const eOut = formatSecondsToVttTimestamp(Math.max(startSec + offsetSeconds + 0.1, endSec + offsetSeconds));
+      vttOut.push(`${sOut} --> ${eOut}`);
+      vttOut.push(rawDialogue);
+      vttOut.push('');
+    }
+
+    if (vttOut.length > 2) {
+      return `${vttOut.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+    }
   }
 
   const timeLineRe =
@@ -274,6 +433,9 @@ export function resolveSegmentMimeType(targetUrl: string, upstreamContentType?: 
   if (cleanPath.endsWith('.mp4') || cleanPath.endsWith('.m4s') || cleanPath.endsWith('.m4v')) {
     return 'video/mp4';
   }
+  if (cleanPath.endsWith('.mkv')) {
+    return 'video/x-matroska';
+  }
   if (cleanPath.endsWith('.webm')) {
     return 'video/webm';
   }
@@ -363,7 +525,7 @@ export function detectMediaKindFromBytesOrHeaders(params: {
     return 'hls';
   }
   if (
-    /filename\*?=(?:UTF-8'')?["']?[^"';\s]+\.(?:mp4|webm|ogg|ogv|mov|m4v)(?:["';\s]|$)/i.test(
+    /filename\*?=(?:UTF-8'')?["']?[^"';\s]+\.(?:mp4|mkv|webm|ogg|ogv|mov|m4v)(?:["';\s]|$)/i.test(
       disp
     )
   ) {
@@ -376,13 +538,13 @@ export function detectMediaKindFromBytesOrHeaders(params: {
     if (cleanPath.endsWith('.m3u8') || /format=m3u8|type=hls/i.test(parsed.search)) {
       return 'hls';
     }
-    if (/\.(?:mp4|webm|ogg|ogv|mov|m4v)$/i.test(cleanPath)) {
+    if (/\.(?:mp4|mkv|webm|ogg|ogv|mov|m4v)$/i.test(cleanPath)) {
       return 'video';
     }
   } catch {
     const clean = (params.url || '').split('#')[0].split('?')[0].toLowerCase();
     if (clean.endsWith('.m3u8')) return 'hls';
-    if (/\.(?:mp4|webm|ogg|ogv|mov|m4v)$/i.test(clean)) return 'video';
+    if (/\.(?:mp4|mkv|webm|ogg|ogv|mov|m4v)$/i.test(clean)) return 'video';
   }
 
   return null;
@@ -459,7 +621,7 @@ function classifyPlayableMediaUrl(
     if (cleanPath.endsWith('.m3u8') || /format=m3u8|type=hls/i.test(resolved.search)) {
       return { streamUrl: resolved.toString(), streamKind: 'hls' };
     }
-    if (/\.(?:mp4|webm|ogg|ogv|mov|m4v)$/i.test(cleanPath)) {
+    if (/\.(?:mp4|mkv|webm|ogg|ogv|mov|m4v)$/i.test(cleanPath)) {
       return { streamUrl: resolved.toString(), streamKind: 'video' };
     }
     if (allowOpaqueStreamKey && !/\.(?:html?|php|asp|aspx|jsp)$/i.test(cleanPath)) {
@@ -635,9 +797,9 @@ export function extractPlayableStreamsFromBody(
   const patterns: Array<{ regex: RegExp; allowOpaque: boolean }> = [
     { regex: /hls\.loadSource\(\s*["']([^"']+)["']\s*\)/gi, allowOpaque: true },
     { regex: /(?:securedLink|videoSource|streamUrl|hlsUrl)\s*[:=]\s*["']([^"']+)["']/gi, allowOpaque: true },
-    { regex: /(?:file|url|src|source)\s*:\s*["']([^"']+\.(?:m3u8|mp4|webm|mov|m4v)(?:\?[^"']*)?)["']/gi, allowOpaque: false },
+    { regex: /(?:file|url|src|source)\s*:\s*["']([^"']+\.(?:m3u8|mp4|mkv|webm|mov|m4v)(?:\?[^"']*)?)["']/gi, allowOpaque: false },
     { regex: /<video[^>]+src=["']([^"']+)["']/gi, allowOpaque: false },
-    { regex: /https?:\/\/[^\s"'<>\\]+\.(?:m3u8|mp4|m4v|webm)(?:\?[^\s"'<>\\]*)?/gi, allowOpaque: false },
+    { regex: /https?:\/\/[^\s"'<>\\]+\.(?:m3u8|mp4|mkv|m4v|webm)(?:\?[^\s"'<>\\]*)?/gi, allowOpaque: false },
   ];
 
   for (const { regex, allowOpaque } of patterns) {
@@ -655,7 +817,104 @@ export function extractPlayableStreamsFromBody(
     if (results.length >= 8) break;
   }
 
+  if (results.length === 0) {
+    const unpackedHls = unpackFirePlayerScript(raw, baseUrl);
+    if (unpackedHls) {
+      const classified = classifyPlayableMediaUrl(unpackedHls, baseUrl, true);
+      if (classified) {
+        pushUnique({
+          ...classified,
+          posterUrl,
+        });
+      }
+    }
+  }
+
   return results;
+}
+
+function decodeDeanEdwardsPacker(p: string, a: number, c: number, k: string[]): string {
+  const encodeRadix = (n: number): string =>
+    (n < a ? '' : encodeRadix(Math.floor(n / a))) +
+    (n % a > 35 ? String.fromCharCode((n % a) + 29) : (n % a).toString(36));
+
+  const dict = new Map<string, string>();
+  let remaining = c;
+  while (remaining--) {
+    const token = encodeRadix(remaining);
+    dict.set(token, k[remaining] || token);
+  }
+  return p.replace(/\b\w+\b/g, (word) => dict.get(word) ?? word);
+}
+
+export function unpackFirePlayerScript(html: string, baseUrl?: string): string | null {
+  if (!html) return null;
+  const packerRegex =
+    /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?\}\('((?:[^'\\]|\\.)*)',\s*(\d+),\s*(\d+),\s*'((?:[^'\\]|\\.)*)'\.split\('\|'\)/g;
+
+  for (const match of html.matchAll(packerRegex)) {
+    const p = match[1].replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+    const a = Number(match[2]);
+    const c = Number(match[3]);
+    const k = match[4].split('|');
+    if (!Number.isFinite(a) || a < 2 || a > 62 || !Number.isFinite(c) || c <= 0 || c > 20_000) {
+      continue;
+    }
+
+    const unpacked = decodeDeanEdwardsPacker(p, a, c, k).replace(/\\\//g, '/');
+    const videoUrlMatch = unpacked.match(/"videoUrl"\s*:\s*"([^"]+)"/);
+    if (videoUrlMatch?.[1]) {
+      const rawUrl = videoUrlMatch[1].trim();
+      if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+      if (baseUrl) {
+        try {
+          return new URL(rawUrl, baseUrl).toString();
+        } catch {
+          return rawUrl;
+        }
+      }
+      return rawUrl;
+    }
+  }
+
+  return null;
+}
+
+export function parseNovelasCdnOrFshdHtml(
+  html: string,
+  mediaType: 'movie' | 'tv'
+): {
+  contentId: number;
+  inlineMovieOptions: Array<{ id: number; type: number }>;
+} {
+  if (!html) return { contentId: 0, inlineMovieOptions: [] };
+
+  let contentId = 0;
+  if (mediaType === 'movie') {
+    const infoMatch = html.match(/var\s+CONTENT_INFO\s*=\s*['"](\d+)['"]/);
+    if (infoMatch?.[1]) contentId = Number(infoMatch[1]) || 0;
+  } else {
+    const activeEpMatch =
+      html.match(/class="episodeOption[^"]*\bactive\b[^"]*"[^>]*data-contentid="(\d+)"/i) ||
+      html.match(/data-contentid="(\d+)"[^>]*class="episodeOption[^"]*\bactive\b/i) ||
+      html.match(/class="episodeOption[^"]*"[^>]*data-contentid="(\d+)"/i);
+    if (activeEpMatch?.[1]) contentId = Number(activeEpMatch[1]) || 0;
+  }
+
+  const inlineMovieOptions: Array<{ id: number; type: number }> = [];
+  if (mediaType === 'movie') {
+    const seen = new Set<number>();
+    for (const m of html.matchAll(/data-id="(\d+)"[^>]*data-lang="(\d+)"|data-lang="(\d+)"[^>]*data-id="(\d+)"/gi)) {
+      const id = Number(m[1] || m[4] || 0);
+      const langType = Number(m[2] || m[3] || 1);
+      if (id > 0 && !seen.has(id)) {
+        seen.add(id);
+        inlineMovieOptions.push({ id, type: langType });
+      }
+    }
+  }
+
+  return { contentId, inlineMovieOptions };
 }
 
 export function extractPlayableStreamFromBody(
@@ -714,6 +973,138 @@ export function hasAdOrAntiSandboxTraps(html: string): boolean {
     ) ||
     /mypopads\.com|popads\.net|popcash|exoclick|adsterra|waust\.at\/d\.js/i.test(sample)
   );
+}
+
+export function isAggregatorOrWrapperHtml(html: string): boolean {
+  const sample = (html || '').slice(0, 80_000);
+  return (
+    /disable-devtool|\b(?:go|loadPlayer|setEmbed|changeServer)\(\s*["']https?:\/\/|<iframe\b/i.test(
+      sample
+    ) ||
+    /Investidor\.blog|Player\s+n[ãa]o\s+dispon[íi]vel|Conte[úu]do\s+n[ãa]o\s+encontrado/i.test(
+      sample
+    )
+  );
+}
+
+export interface VidLinkMediaCandidate {
+  url: string;
+  streamKind: 'hls' | 'video';
+  sendUserAgent: boolean;
+  codecScore: number;
+  resolution: number;
+}
+
+export function selectVidLinkCandidates(
+  streamData: Record<string, unknown>
+): VidLinkMediaCandidate[] {
+  if (!streamData || typeof streamData !== 'object') return [];
+
+  const candidates: Array<{
+    url: string;
+    codecScore: number;
+    resolution: number;
+  }> = [];
+
+  const qualities = streamData.qualities;
+  if (qualities && typeof qualities === 'object' && !Array.isArray(qualities)) {
+    for (const [resKey, rawEntry] of Object.entries(qualities as Record<string, unknown>)) {
+      if (!rawEntry || typeof rawEntry !== 'object') continue;
+      const entry = rawEntry as Record<string, unknown>;
+      const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+      if (!/^https?:\/\//i.test(url)) continue;
+      const codecName =
+        typeof entry.codecName === 'string' ? entry.codecName.trim().toLowerCase() : '';
+      const resNum = Number.parseInt(resKey.replace(/\D+/g, ''), 10) || 0;
+      const codecScore = /(?:h264|avc)/i.test(codecName)
+        ? 0
+        : /(?:hevc|h265|vp9|av1)/i.test(codecName)
+          ? 2
+          : 1;
+      candidates.push({ url, codecScore, resolution: resNum });
+    }
+  } else if (Array.isArray(qualities)) {
+    for (const rawEntry of qualities) {
+      if (!rawEntry || typeof rawEntry !== 'object') continue;
+      const entry = rawEntry as Record<string, unknown>;
+      const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+      if (!/^https?:\/\//i.test(url)) continue;
+      const codecName =
+        typeof entry.codecName === 'string' ? entry.codecName.trim().toLowerCase() : '';
+      const resRaw =
+        typeof entry.quality === 'string' || typeof entry.quality === 'number'
+          ? String(entry.quality)
+          : '';
+      const resNum = Number.parseInt(resRaw.replace(/\D+/g, ''), 10) || 0;
+      const codecScore = /(?:h264|avc)/i.test(codecName)
+        ? 0
+        : /(?:hevc|h265|vp9|av1)/i.test(codecName)
+          ? 2
+          : 1;
+      candidates.push({ url, codecScore, resolution: resNum });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    if (a.codecScore !== b.codecScore) return a.codecScore - b.codecScore;
+    return b.resolution - a.resolution;
+  });
+
+  const out: VidLinkMediaCandidate[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (item: VidLinkMediaCandidate) => {
+    if (!item.url || seen.has(item.url)) return;
+    seen.add(item.url);
+    out.push(item);
+  };
+
+  for (const c of candidates.filter((x) => x.codecScore === 0)) {
+    pushUnique({
+      url: c.url,
+      streamKind: 'video',
+      sendUserAgent: !/bcdn\.hakunaymatata\.com/i.test(c.url),
+      codecScore: c.codecScore,
+      resolution: c.resolution,
+    });
+  }
+
+  const playlistUrl =
+    typeof streamData.playlist === 'string' ? streamData.playlist.trim() : '';
+  if (/^https?:\/\//i.test(playlistUrl)) {
+    pushUnique({
+      url: playlistUrl,
+      streamKind: 'hls',
+      sendUserAgent: !/bcdn\.hakunaymatata\.com/i.test(playlistUrl),
+      codecScore: 1,
+      resolution: 1080,
+    });
+  }
+
+  for (const c of candidates.filter((x) => x.codecScore !== 0)) {
+    pushUnique({
+      url: c.url,
+      streamKind: 'video',
+      sendUserAgent: !/bcdn\.hakunaymatata\.com/i.test(c.url),
+      codecScore: c.codecScore,
+      resolution: c.resolution,
+    });
+  }
+
+  return out;
+}
+
+export function selectBestVidLinkMedia(streamData: Record<string, unknown>): {
+  url: string;
+  streamKind: 'hls' | 'video';
+  sendUserAgent: boolean;
+} | null {
+  const first = selectVidLinkCandidates(streamData)[0];
+  if (!first) return null;
+  return {
+    url: first.url,
+    streamKind: first.streamKind,
+    sendUserAgent: first.sendUserAgent,
+  };
 }
 
 export function parsePlayerFlixStyleUrl(urlStr: string): {

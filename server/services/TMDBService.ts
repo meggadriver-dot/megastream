@@ -1,10 +1,18 @@
 import { buildTmdbImageUrl } from '../../shared/playerUrl.ts';
-import { deduplicateMediaByTmdbId, filterAndSortMedia } from '../../shared/catalogUtils.ts';
+import {
+  deduplicateMediaByTmdbId,
+  filterAndSortMedia,
+  mergeUnifiedTmdbGenres,
+  parseCatalogSearchTarget,
+  resolveTmdbGenreForMediaType,
+} from '../../shared/catalogUtils.ts';
 import { customMediaToMediaItem } from '../../shared/siteConfigUtils.ts';
 import type {
   CastMember,
+  CatalogSortBy,
   DiagnosticResult,
   GenreItem,
+  MediaCollectionSummary,
   MediaDetail,
   MediaItem,
   MediaType,
@@ -21,7 +29,9 @@ import {
 } from '../data/demoCatalog.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { CacheService } from './CacheService.ts';
+import { FreeApiProService } from './FreeApiProService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
+import { StreamBetterService } from './StreamBetterService.ts';
 import { SystemSettingsService } from './SystemSettingsService.ts';
 
 interface TmdbRawMedia {
@@ -368,14 +378,26 @@ class TMDBServiceImpl {
     };
   }
 
+  async getAllGenres(): Promise<{ movie: GenreItem[]; tv: GenreItem[]; unified: GenreItem[] }> {
+    const [movie, tv] = await Promise.all([this.getGenres('movie'), this.getGenres('tv')]);
+    return {
+      movie,
+      tv,
+      unified: mergeUnifiedTmdbGenres(movie, tv),
+    };
+  }
+
   async discover(params: {
     mediaType: 'all' | 'movie' | 'tv';
     genreId?: number | null;
     year?: number | null;
+    yearFrom?: number | null;
+    yearTo?: number | null;
     minRating?: number | null;
     language?: string | null;
     country?: string | null;
-    sortBy?: 'popularity' | 'rating' | 'release_date';
+    watchProvider?: number | null;
+    sortBy?: CatalogSortBy;
     query?: string;
     page?: number;
   }): Promise<PaginatedCatalogResponse> {
@@ -393,45 +415,80 @@ class TMDBServiceImpl {
 
     await this.ensureImageConfig();
     if (params.query && params.query.trim().length > 0) {
-      return this.search(params.query.trim(), params.mediaType, page);
+      return this.search(params.query.trim(), params.mediaType, page, params.year ?? null);
     }
 
-    const buildDiscoverQuery = (targetType: MediaType): Record<string, string | number | undefined> => {
-      const sortMap: Record<string, string> = {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const includeAdult = SystemSettingsService.getSettings().includeAdult ? 'true' : 'false';
+
+    const buildDiscoverQuery = (
+      targetType: MediaType,
+      mappedGenreId: number | undefined
+    ): Record<string, string | number | undefined> => {
+      const dateField = targetType === 'movie' ? 'primary_release_date' : 'first_air_date';
+      const sortMap: Record<CatalogSortBy, string> = {
         popularity: 'popularity.desc',
         rating: 'vote_average.desc',
-        release_date: targetType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc',
+        votes: 'vote_count.desc',
+        release_date: `${dateField}.desc`,
+        release_date_asc: `${dateField}.asc`,
+        title_asc: targetType === 'movie' ? 'original_title.asc' : 'original_name.asc',
       };
+      const sortKey = params.sortBy ?? 'popularity';
       const q: Record<string, string | number | undefined> = {
         page,
-        sort_by: sortMap[params.sortBy ?? 'popularity'] ?? 'popularity.desc',
-        with_genres: params.genreId ?? undefined,
+        include_adult: includeAdult,
+        sort_by: sortMap[sortKey] ?? 'popularity.desc',
+        with_genres: mappedGenreId,
         'vote_average.gte': params.minRating ?? undefined,
-        'vote_count.gte': params.sortBy === 'rating' ? 100 : undefined,
+        'vote_count.gte': sortKey === 'rating' ? 20 : undefined,
         with_original_language: params.language && params.language !== 'all' ? params.language : undefined,
         with_origin_country: params.country && params.country !== 'all' ? params.country : undefined,
       };
+      if (params.watchProvider && Number.isFinite(params.watchProvider)) {
+        q.with_watch_providers = params.watchProvider;
+        q.watch_region = 'BR';
+      }
       if (params.year) {
         if (targetType === 'movie') q.primary_release_year = params.year;
         else q.first_air_date_year = params.year;
+      } else {
+        if (params.yearFrom) {
+          q[`${dateField}.gte`] = `${params.yearFrom}-01-01`;
+        } else if (sortKey === 'release_date_asc') {
+          q[`${dateField}.gte`] = '1900-01-01';
+        }
+        if (params.yearTo) {
+          q[`${dateField}.lte`] = `${params.yearTo}-12-31`;
+        } else if (sortKey === 'release_date') {
+          q[`${dateField}.lte`] = todayIso;
+        }
       }
       return q;
     };
 
     if (params.mediaType === 'all') {
+      const movieGenre = resolveTmdbGenreForMediaType(params.genreId, 'movie');
+      const tvGenre = resolveTmdbGenreForMediaType(params.genreId, 'tv');
+
+      const emptyRes = { results: [] as TmdbRawMedia[], page, total_pages: 0, total_results: 0 };
       const [movieRes, tvRes] = await Promise.all([
-        this.request<{
-          results: TmdbRawMedia[];
-          page: number;
-          total_pages: number;
-          total_results: number;
-        }>('/discover/movie', buildDiscoverQuery('movie')),
-        this.request<{
-          results: TmdbRawMedia[];
-          page: number;
-          total_pages: number;
-          total_results: number;
-        }>('/discover/tv', buildDiscoverQuery('tv')),
+        movieGenre.compatible
+          ? this.request<{
+              results: TmdbRawMedia[];
+              page: number;
+              total_pages: number;
+              total_results: number;
+            }>('/discover/movie', buildDiscoverQuery('movie', movieGenre.genreId))
+          : Promise.resolve(emptyRes),
+        tvGenre.compatible
+          ? this.request<{
+              results: TmdbRawMedia[];
+              page: number;
+              total_pages: number;
+              total_results: number;
+            }>('/discover/tv', buildDiscoverQuery('tv', tvGenre.genreId))
+          : Promise.resolve(emptyRes),
       ]);
 
       const merged = deduplicateMediaByTmdbId([
@@ -439,14 +496,18 @@ class TMDBServiceImpl {
         ...(tvRes.results ?? []).map((r) => this.mapMedia(r, 'tv')),
       ]).sort((a, b) => {
         if (params.sortBy === 'rating') return b.voteAverage - a.voteAverage;
+        if (params.sortBy === 'votes') return b.voteCount - a.voteCount;
         if (params.sortBy === 'release_date') return (b.releaseDate || '').localeCompare(a.releaseDate || '');
+        if (params.sortBy === 'release_date_asc') return (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999');
+        if (params.sortBy === 'title_asc') return a.title.localeCompare(b.title, 'pt-BR');
         return b.popularity - a.popularity;
       });
 
+      const totalPages = Math.max(1, Math.min(Math.max(movieRes.total_pages ?? 1, tvRes.total_pages ?? 1), 500));
       return {
         items: merged,
         page,
-        totalPages: Math.min(Math.max(movieRes.total_pages ?? 1, tvRes.total_pages ?? 1), 500),
+        totalPages,
         totalResults: (movieRes.total_results ?? 0) + (tvRes.total_results ?? 0),
         source: 'tmdb',
         demoMode: false,
@@ -454,17 +515,21 @@ class TMDBServiceImpl {
     }
 
     const targetType: MediaType = params.mediaType === 'tv' ? 'tv' : 'movie';
+    const mappedGenre = resolveTmdbGenreForMediaType(params.genreId, targetType);
     const res = await this.request<{
       results: TmdbRawMedia[];
       page: number;
       total_pages: number;
       total_results: number;
-    }>(`/discover/${targetType}`, buildDiscoverQuery(targetType));
+    }>(
+      `/discover/${targetType}`,
+      buildDiscoverQuery(targetType, mappedGenre.genreId ?? params.genreId ?? undefined)
+    );
 
     return {
       items: deduplicateMediaByTmdbId((res.results ?? []).map((r) => this.mapMedia(r, targetType))),
       page: res.page ?? page,
-      totalPages: Math.min(res.total_pages ?? 1, 500),
+      totalPages: Math.max(1, Math.min(res.total_pages ?? 1, 500)),
       totalResults: res.total_results ?? 0,
       source: 'tmdb',
       demoMode: false,
@@ -474,12 +539,14 @@ class TMDBServiceImpl {
   async search(
     query: string,
     mediaType: 'all' | 'movie' | 'tv' = 'all',
-    page = 1
+    page = 1,
+    year?: number | null
   ): Promise<PaginatedCatalogResponse> {
     await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
       const subset = filterAndSortMedia(this.getDemoOrCustomBaseCatalog(), {
         mediaType,
+        year,
         query,
         page,
         pageSize: 20,
@@ -488,6 +555,75 @@ class TMDBServiceImpl {
     }
 
     await this.ensureImageConfig();
+    const target = parseCatalogSearchTarget(query);
+
+    if (page === 1 && target.kind === 'imdb') {
+      try {
+        const found = await this.request<{
+          movie_results?: TmdbRawMedia[];
+          tv_results?: TmdbRawMedia[];
+        }>(`/find/${target.imdbId}`, { external_source: 'imdb_id' });
+        const items = deduplicateMediaByTmdbId([
+          ...(mediaType !== 'tv' ? (found.movie_results ?? []).map((r) => this.mapMedia(r, 'movie')) : []),
+          ...(mediaType !== 'movie' ? (found.tv_results ?? []).map((r) => this.mapMedia(r, 'tv')) : []),
+        ]);
+        return {
+          items,
+          page: 1,
+          totalPages: 1,
+          totalResults: items.length,
+          source: 'tmdb',
+          demoMode: false,
+        };
+      } catch {
+        // Fallback to standard search
+      }
+    }
+
+    if (page === 1 && target.kind === 'tmdb_typed') {
+      try {
+        const detail = await this.getDetail(target.tmdbId, target.mediaType);
+        const items = detail ? [detail] : [];
+        return {
+          items,
+          page: 1,
+          totalPages: 1,
+          totalResults: items.length,
+          source: 'tmdb',
+          demoMode: false,
+        };
+      } catch {
+        return {
+          items: [],
+          page: 1,
+          totalPages: 1,
+          totalResults: 0,
+          source: 'tmdb',
+          demoMode: false,
+        };
+      }
+    }
+
+    let idMatches: MediaItem[] = [];
+    if (page === 1 && target.kind === 'tmdb_numeric') {
+      const lookups: Array<Promise<MediaItem | null>> = [];
+      if (mediaType !== 'tv') {
+        lookups.push(
+          this.request<TmdbRawMedia>(`/movie/${target.tmdbId}`)
+            .then((r) => this.mapMedia(r, 'movie'))
+            .catch(() => null)
+        );
+      }
+      if (mediaType !== 'movie') {
+        lookups.push(
+          this.request<TmdbRawMedia>(`/tv/${target.tmdbId}`)
+            .then((r) => this.mapMedia(r, 'tv'))
+            .catch(() => null)
+        );
+      }
+      idMatches = (await Promise.all(lookups)).filter((x): x is MediaItem => x !== null);
+    }
+
     const endpoint =
       mediaType === 'movie'
         ? '/search/movie'
@@ -496,24 +632,123 @@ class TMDBServiceImpl {
           : '/search/multi';
 
     const includeAdult = SystemSettingsService.getSettings().includeAdult ? 'true' : 'false';
+    const searchParams: Record<string, string | number | undefined> = {
+      query,
+      page,
+      include_adult: includeAdult,
+    };
+    if (year) {
+      if (mediaType === 'movie') searchParams.year = year;
+      else if (mediaType === 'tv') searchParams.first_air_date_year = year;
+    }
+
+    interface TmdbMultiSearchRaw extends TmdbRawMedia {
+      known_for?: TmdbRawMedia[];
+    }
+
     const res = await this.request<{
-      results: TmdbRawMedia[];
+      results: TmdbMultiSearchRaw[];
       page: number;
       total_pages: number;
       total_results: number;
-    }>(endpoint, { query, page, include_adult: includeAdult });
+    }>(endpoint, searchParams);
 
-    const valid = (res.results ?? []).filter((r) =>
-      mediaType === 'all' ? r.media_type === 'movie' || r.media_type === 'tv' : true
-    );
+    const directMedia: MediaItem[] = [];
+    const personKnownFor: MediaItem[] = [];
+    let topPersonId: number | null = null;
+
+    for (const r of res.results ?? []) {
+      if (r.media_type === 'person') {
+        if (!topPersonId) topPersonId = r.id;
+        for (const kf of r.known_for ?? []) {
+          if (kf.media_type === 'movie' || kf.media_type === 'tv') {
+            personKnownFor.push(this.mapMedia(kf));
+          }
+        }
+        continue;
+      }
+      if (mediaType === 'all' && r.media_type !== 'movie' && r.media_type !== 'tv') {
+        continue;
+      }
+      directMedia.push(this.mapMedia(r, mediaType === 'all' ? undefined : mediaType));
+    }
+
+    // If user searched an actor/director by name on page 1 and title matches are sparse, include full person filmography
+    let personCredits: MediaItem[] = [];
+    if (page === 1 && topPersonId && directMedia.length < 4) {
+      try {
+        const credits = await this.request<{
+          cast?: TmdbRawMedia[];
+          crew?: TmdbRawMedia[];
+        }>(`/person/${topPersonId}/combined_credits`);
+        personCredits = [...(credits.cast ?? []), ...(credits.crew ?? [])]
+          .filter((r) => r.media_type === 'movie' || r.media_type === 'tv')
+          .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
+          .slice(0, 24)
+          .map((r) => this.mapMedia(r));
+      } catch {
+        // Optional person expansion
+      }
+    }
+
+    // Fallback enrichment via FreeAPI.Pro (/api/msearch) when TMDB search yields sparse results
+    let freeApiMatches: MediaItem[] = [];
+    if (page === 1 && target.kind === 'text' && directMedia.length < 4 && query.trim().length >= 2) {
+      try {
+        const freeResults = await FreeApiProService.searchMoviesAndSeries(query);
+        const topImdbIds = freeResults
+          .filter((item) => {
+            if (!item?.id || !/^tt\d{5,12}$/i.test(item.id)) return false;
+            const rawType = (item.type || '').toLowerCase();
+            const isTv = /(?:tv series|mini series|tv mini series|tv special)/i.test(rawType);
+            if (mediaType === 'movie' && isTv) return false;
+            if (mediaType === 'tv' && !isTv) return false;
+            return true;
+          })
+          .slice(0, 4)
+          .map((item) => item.id!.trim().toLowerCase());
+
+        if (topImdbIds.length > 0) {
+          const foundByImdb = await Promise.all(
+            topImdbIds.map((imdbId) =>
+              this.request<{
+                movie_results?: TmdbRawMedia[];
+                tv_results?: TmdbRawMedia[];
+              }>(`/find/${imdbId}`, { external_source: 'imdb_id' }).catch(() => null)
+            )
+          );
+          for (const found of foundByImdb) {
+            if (!found) continue;
+            if (mediaType !== 'tv') {
+              freeApiMatches.push(...(found.movie_results ?? []).map((r) => this.mapMedia(r, 'movie')));
+            }
+            if (mediaType !== 'movie') {
+              freeApiMatches.push(...(found.tv_results ?? []).map((r) => this.mapMedia(r, 'tv')));
+            }
+          }
+        }
+      } catch {
+        // Optional FreeAPI search enrichment
+      }
+    }
+
+    const combined = deduplicateMediaByTmdbId([
+      ...idMatches,
+      ...directMedia,
+      ...freeApiMatches,
+      ...personKnownFor,
+      ...personCredits,
+    ]).filter((item) => {
+      if (mediaType !== 'all' && item.mediaType !== mediaType) return false;
+      if (year && Number(item.releaseYear) !== year) return false;
+      return true;
+    });
 
     return {
-      items: deduplicateMediaByTmdbId(
-        valid.map((r) => this.mapMedia(r, mediaType === 'all' ? undefined : mediaType))
-      ),
+      items: combined,
       page: res.page ?? page,
-      totalPages: Math.min(res.total_pages ?? 1, 500),
-      totalResults: res.total_results ?? 0,
+      totalPages: Math.max(1, Math.min(res.total_pages ?? 1, 500)),
+      totalResults: Math.max(res.total_results ?? 0, combined.length),
       source: 'tmdb',
       demoMode: false,
     };
@@ -584,6 +819,12 @@ class TMDBServiceImpl {
       videos?: {
         results?: Array<{ id: string; key: string; name: string; site: string; type: string; official: boolean }>;
       };
+      belongs_to_collection?: {
+        id: number;
+        name: string;
+        poster_path: string | null;
+        backdrop_path: string | null;
+      } | null;
       recommendations?: { results?: TmdbRawMedia[] };
       similar?: { results?: TmdbRawMedia[] };
     }
@@ -635,6 +876,35 @@ class TMDBServiceImpl {
       (raw.similar?.results ?? []).map((r) => this.mapMedia(r, mediaType))
     );
 
+    let collection: MediaCollectionSummary | null = null;
+    if (mediaType === 'movie' && raw.belongs_to_collection?.id) {
+      try {
+        const colRaw = await this.request<{
+          id: number;
+          name: string;
+          overview?: string;
+          poster_path?: string | null;
+          backdrop_path?: string | null;
+          parts?: TmdbRawMedia[];
+        }>(`/collection/${raw.belongs_to_collection.id}`);
+        const parts = deduplicateMediaByTmdbId(
+          (colRaw.parts ?? []).map((p) => this.mapMedia(p, 'movie'))
+        ).sort((a, b) => (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999'));
+        if (parts.length > 1) {
+          collection = {
+            id: colRaw.id,
+            name: colRaw.name,
+            overview: colRaw.overview || '',
+            posterPath: buildTmdbImageUrl(colRaw.poster_path, 'w342', imageBase),
+            backdropPath: buildTmdbImageUrl(colRaw.backdrop_path, 'w1280', imageBase),
+            parts,
+          };
+        }
+      } catch {
+        // Optional franchise collection lookup
+      }
+    }
+
     const detail: MediaDetail = {
       ...base,
       runtime: raw.runtime ?? raw.episode_run_time?.[0] ?? null,
@@ -645,6 +915,7 @@ class TMDBServiceImpl {
       videos,
       recommendations,
       similar,
+      collection,
       numberOfSeasons: raw.number_of_seasons,
       numberOfEpisodes: raw.number_of_episodes,
       seasons: (raw.seasons ?? []).map((s) => ({
@@ -677,7 +948,30 @@ class TMDBServiceImpl {
   async getSeasonEpisodes(tmdbId: number, seasonNumber: number): Promise<SeasonDetail> {
     await SystemSettingsService.ensureHydrated();
     if (!this.isConfigured()) {
-      return getDemoSeasonDetail(tmdbId, seasonNumber);
+      const demoSeason = getDemoSeasonDetail(tmdbId, seasonNumber);
+      if (demoSeason.episodes.length > 0) return demoSeason;
+      const sbFallback = await StreamBetterService.getSeasonEpisodes(tmdbId, seasonNumber).catch(
+        () => []
+      );
+      if (sbFallback.length > 0) {
+        const mapped = sbFallback.map((ep, idx) => ({
+          id: Number(`${tmdbId}${seasonNumber}${ep.episode ?? ep.episode_number ?? idx + 1}`) || idx + 1,
+          episodeNumber: Number(ep.episode ?? ep.episode_number ?? idx + 1),
+          seasonNumber,
+          name: ep.name || ep.title || `Episódio ${ep.episode ?? ep.episode_number ?? idx + 1}`,
+          overview: ep.overview || 'Descrição do episódio indisponível.',
+          stillPath: ep.still_path || ep.image || null,
+          runtime: ep.runtime ?? null,
+          airDate: ep.air_date ?? '',
+          voteAverage: 0,
+        }));
+        return {
+          ...demoSeason,
+          episodeCount: mapped.length,
+          episodes: mapped,
+        };
+      }
+      return demoSeason;
     }
     await this.ensureImageConfig();
     const imageBase = this.getActiveImageBaseUrl();
@@ -713,6 +1007,27 @@ class TMDBServiceImpl {
       voteAverage: Number((ep.vote_average ?? 0).toFixed(1)),
     }));
 
+    if (episodes.length === 0) {
+      const sbFallback = await StreamBetterService.getSeasonEpisodes(tmdbId, seasonNumber).catch(
+        () => []
+      );
+      for (let i = 0; i < sbFallback.length; i++) {
+        const ep = sbFallback[i];
+        const epNum = Number(ep.episode ?? ep.episode_number ?? i + 1);
+        episodes.push({
+          id: Number(`${tmdbId}${seasonNumber}${epNum}`) || i + 1,
+          episodeNumber: epNum,
+          seasonNumber,
+          name: ep.name || ep.title || `Episódio ${epNum}`,
+          overview: ep.overview || 'Descrição do episódio indisponível.',
+          stillPath: ep.still_path || ep.image || null,
+          runtime: ep.runtime ?? null,
+          airDate: ep.air_date ?? '',
+          voteAverage: 0,
+        });
+      }
+    }
+
     return {
       id: raw.id,
       seasonNumber: raw.season_number,
@@ -733,30 +1048,153 @@ class TMDBServiceImpl {
       return this.externalImdbCache.get(cacheKey) ?? null;
     }
     await SystemSettingsService.ensureHydrated();
-    if (!this.isConfigured()) {
-      return null;
-    }
-    try {
-      const path =
-        mediaType === 'tv' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`;
-      const data = await this.request<{ imdb_id?: string | null }>(path);
-      const valid =
-        typeof data.imdb_id === 'string' && /^tt\d{5,12}$/i.test(data.imdb_id.trim())
-          ? data.imdb_id.trim().toLowerCase()
-          : null;
-      if (this.externalImdbCache.size > 500) {
-        const firstKey = this.externalImdbCache.keys().next().value;
-        if (firstKey) this.externalImdbCache.delete(firstKey);
+    let valid: string | null = null;
+    if (this.isConfigured()) {
+      try {
+        const path =
+          mediaType === 'tv' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`;
+        const data = await this.request<{ imdb_id?: string | null }>(path);
+        valid =
+          typeof data.imdb_id === 'string' && /^tt\d{5,12}$/i.test(data.imdb_id.trim())
+            ? data.imdb_id.trim().toLowerCase()
+            : null;
+      } catch {
+        valid = null;
       }
-      this.externalImdbCache.set(cacheKey, valid);
-      return valid;
-    } catch {
-      return null;
     }
+
+    if (!valid) {
+      try {
+        const info = await this.getEnglishTitleAndYear(tmdbId, mediaType);
+        const freeMatch = await FreeApiProService.lookupBestMatch({
+          title: info.title,
+          ptTitle: info.ptTitle,
+          originalTitle: info.originalTitle,
+          releaseYear: info.releaseYear,
+          mediaType,
+        });
+        valid = freeMatch?.imdbId ?? null;
+      } catch {
+        valid = null;
+      }
+    }
+
+    if (this.externalImdbCache.size > 500) {
+      const firstKey = this.externalImdbCache.keys().next().value;
+      if (firstKey) this.externalImdbCache.delete(firstKey);
+    }
+    this.externalImdbCache.set(cacheKey, valid);
+    return valid;
   }
 
   async getMovieExternalImdbId(tmdbId: number): Promise<string | null> {
     return this.getExternalImdbId(tmdbId, 'movie');
+  }
+
+  private readonly titleYearCache = new Map<
+    string,
+    {
+      title: string | null;
+      ptTitle: string | null;
+      originalTitle: string | null;
+      releaseYear: string | null;
+      originalLanguage: string | null;
+      genreIds: number[];
+    }
+  >();
+
+  async getEnglishTitleAndYear(
+    tmdbId: number,
+    mediaType: MediaType
+  ): Promise<{
+    title: string | null;
+    ptTitle: string | null;
+    originalTitle: string | null;
+    releaseYear: string | null;
+    originalLanguage: string | null;
+    genreIds: number[];
+  }> {
+    const cacheKey = `${mediaType}:${tmdbId}`;
+    const cached = this.titleYearCache.get(cacheKey);
+    if (cached) return cached;
+
+    await SystemSettingsService.ensureHydrated();
+    if (!this.isConfigured()) {
+      const demo = DEMO_MEDIA_CATALOG.find(
+        (d) => d.tmdbId === tmdbId && d.mediaType === mediaType
+      );
+      return {
+        title: demo?.originalTitle || demo?.title || null,
+        ptTitle: demo?.title || null,
+        originalTitle: demo?.originalTitle || demo?.title || null,
+        releaseYear: demo?.releaseYear || null,
+        originalLanguage: demo?.originalLanguage || null,
+        genreIds: demo?.genreIds || [],
+      };
+    }
+
+    try {
+      const endpoint = mediaType === 'tv' ? `/tv/${tmdbId}` : `/movie/${tmdbId}`;
+      const [rawEn, rawPt] = await Promise.all([
+        this.request<{
+          title?: string;
+          name?: string;
+          original_title?: string;
+          original_name?: string;
+          release_date?: string;
+          first_air_date?: string;
+          original_language?: string;
+          genres?: Array<{ id?: number }>;
+        }>(endpoint, { language: 'en-US' }),
+        this.request<{
+          title?: string;
+          name?: string;
+          original_title?: string;
+          original_name?: string;
+        }>(endpoint, { language: 'pt-BR' }).catch(() => null),
+      ]);
+
+      const cleanTitle =
+        (rawEn.title || rawEn.name || rawEn.original_title || rawEn.original_name || '').trim() ||
+        null;
+      const ptTitle =
+        (rawPt?.title || rawPt?.name || '').trim() || cleanTitle;
+      const originalTitle =
+        (rawEn.original_title || rawEn.original_name || cleanTitle || '').trim() || null;
+      const dateStr = (rawEn.release_date || rawEn.first_air_date || '').trim();
+      const releaseYear = /^\d{4}/.test(dateStr) ? dateStr.slice(0, 4) : null;
+      const originalLanguage =
+        typeof rawEn.original_language === 'string' && rawEn.original_language.trim()
+          ? rawEn.original_language.trim().toLowerCase()
+          : null;
+      const genreIds = Array.isArray(rawEn.genres)
+        ? rawEn.genres.map((g) => Number(g?.id)).filter((id) => Number.isFinite(id) && id > 0)
+        : [];
+
+      const result = {
+        title: cleanTitle,
+        ptTitle,
+        originalTitle,
+        releaseYear,
+        originalLanguage,
+        genreIds,
+      };
+      if (this.titleYearCache.size > 500) {
+        const firstKey = this.titleYearCache.keys().next().value;
+        if (firstKey) this.titleYearCache.delete(firstKey);
+      }
+      this.titleYearCache.set(cacheKey, result);
+      return result;
+    } catch {
+      return {
+        title: null,
+        ptTitle: null,
+        originalTitle: null,
+        releaseYear: null,
+        originalLanguage: null,
+        genreIds: [],
+      };
+    }
   }
 }
 

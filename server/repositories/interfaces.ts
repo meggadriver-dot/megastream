@@ -64,6 +64,7 @@ export interface StoredPlayerSettings {
 export interface StoredAdminSecrets {
   tmdbAccessToken?: string;
   geminiApiKey?: string;
+  streamBetterApiKey?: string;
   updatedAt?: string;
 }
 

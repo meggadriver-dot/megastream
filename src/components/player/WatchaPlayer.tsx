@@ -31,12 +31,15 @@ import {
   Upload,
   Volume2,
   VolumeX,
+  Wifi,
   X,
 } from 'lucide-react';
 import {
   buildAndroidIntentUrl,
   buildM3uPlaylistContent,
   buildVlcStreamUrl,
+  isLocalhostOrigin,
+  resolveLanShareUrl,
   sanitizeM3uFileName,
   toAbsoluteStreamUrl,
 } from '../../../shared/castUtils';
@@ -44,10 +47,16 @@ import {
   shouldShowSkipNextInPlayer,
   type NextEpisodeTarget,
 } from '../../../shared/playerNavigation';
+import {
+  hasNextPlayableCandidate,
+  pickNextPlayableCandidate,
+  shouldAutoRetryMutedOnPlayError,
+} from '../../../shared/playerFailover';
 import { getCustomSourceLangMeta } from '../../../shared/playerUrl';
 import { convertSrtToVtt, parseVttCues, type VttCueItem } from '../../../shared/subtitleUtils';
 import type {
   IframeSandboxPolicy,
+  NetworkInfoResponse,
   PlayerAspectMode,
   PlayerAudioOption,
   PlayerSubtitleBg,
@@ -104,6 +113,7 @@ interface WatchaPlayerProps {
   onRequestFullscreenContainer?: () => void;
   onStreamError?: (msg: string) => void;
   onReady?: () => void;
+  onAttemptingFallback?: () => void;
 }
 
 const DEFAULT_SUB_STYLE: SubtitleAppearance = {
@@ -163,6 +173,7 @@ export function WatchaPlayer({
   onRequestFullscreenContainer,
   onStreamError,
   onReady,
+  onAttemptingFallback,
 }: WatchaPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -175,12 +186,19 @@ export function WatchaPlayer({
   const initialProgressPercentRef = useRef<number | undefined>(initialProgressPercent);
   const onStreamErrorRef = useRef(onStreamError);
   const onReadyRef = useRef(onReady);
+  const onAttemptingFallbackRef = useRef(onAttemptingFallback);
   const hasUserChangedAspectRef = useRef(false);
   const hasCustomLocalSubStyleRef = useRef(false);
   const userToggledSubRef = useRef<string | null>(null);
   const autoSubAppliedForUrlRef = useRef<string | null>(null);
   const failedAudioIdsRef = useRef<Set<string>>(new Set());
   const failedStreamUrlsRef = useRef<Set<string>>(new Set());
+  const lastFailedUrlTriggeredRef = useRef<string | null>(null);
+  const candidateReadyRef = useRef<boolean>(false);
+  const lastProgressSnapshotRef = useRef<{ time: number; updatedAt: number }>({
+    time: 0,
+    updatedAt: Date.now(),
+  });
 
   useEffect(() => {
     initialProgressPercentRef.current = initialProgressPercent;
@@ -193,6 +211,10 @@ export function WatchaPlayer({
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
+
+  useEffect(() => {
+    onAttemptingFallbackRef.current = onAttemptingFallback;
+  }, [onAttemptingFallback]);
 
   // Active stream source (switchable via Idioma or automatic runtime failover)
   const [selectedAudioId, setSelectedAudioId] = useState<string>(
@@ -232,6 +254,7 @@ export function WatchaPlayer({
   const [bufferedEnd, setBufferedEnd] = useState(0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
+  const [autoMutedNotice, setAutoMutedNotice] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [aspectMode, setAspectMode] = useState<AspectMode>(defaultAspectMode);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -251,6 +274,7 @@ export function WatchaPlayer({
   // HLS quality & internal audio tracks
   const [qualityLevels, setQualityLevels] = useState<Array<{ index: number; label: string }>>([]);
   const [currentQuality, setCurrentQuality] = useState<number>(-1);
+  const [detectedHeight, setDetectedHeight] = useState<number>(0);
   const [hlsAudioTracks, setHlsAudioTracks] = useState<Array<{ index: number; label: string }>>([]);
   const [currentHlsAudio, setCurrentHlsAudio] = useState<number>(0);
 
@@ -281,23 +305,80 @@ export function WatchaPlayer({
     };
   });
 
-  // TV Mirroring / Cast state
+  // TV Mirroring / Cast & Same-Wi-Fi LAN Origin state
   const [castQrDataUrl, setCastQrDataUrl] = useState<string>('');
   const [castStatusMsg, setCastStatusMsg] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const [directCopied, setDirectCopied] = useState(false);
+  const [networkInfo, setNetworkInfo] = useState<NetworkInfoResponse | null>(null);
+  const [useLanOrigin, setUseLanOrigin] = useState<boolean>(true);
+  const [isCastConnected, setIsCastConnected] = useState<boolean>(false);
+  const [castDeviceName, setCastDeviceName] = useState<string>('');
+
+  useEffect(() => {
+    const checkCastApi = () => {
+      const gCast = (window as unknown as { cast?: { framework?: { CastContext?: { getInstance: () => { getCurrentSession: () => { getCastDevice?: () => { friendlyName?: string } } | null; addEventListener: (event: string, handler: (e: { sessionState?: string }) => void) => void } } } } }).cast;
+      if (gCast?.framework?.CastContext?.getInstance) {
+        try {
+          const castContext = gCast.framework.CastContext.getInstance();
+          const current = castContext.getCurrentSession();
+          if (current) {
+            setIsCastConnected(true);
+            setCastDeviceName(current.getCastDevice?.()?.friendlyName || 'Google Cast');
+          }
+          const framework = (window as unknown as { cast?: { framework?: { CastContextEventType?: { SESSION_STATE_CHANGED?: string }; SessionState?: { SESSION_STARTED?: string; SESSION_RESUMED?: string; SESSION_ENDED?: string } } } }).cast?.framework;
+          if (framework?.CastContextEventType?.SESSION_STATE_CHANGED && framework?.SessionState) {
+            castContext.addEventListener(framework.CastContextEventType.SESSION_STATE_CHANGED, (evt) => {
+              if (
+                evt.sessionState === framework.SessionState?.SESSION_STARTED ||
+                evt.sessionState === framework.SessionState?.SESSION_RESUMED
+              ) {
+                const s = castContext.getCurrentSession();
+                setIsCastConnected(true);
+                setCastDeviceName(s?.getCastDevice?.()?.friendlyName || 'Google Cast');
+                setCastStatusMsg(`Conectado ao ${s?.getCastDevice?.()?.friendlyName || 'Google Cast'}!`);
+              } else if (evt.sessionState === framework.SessionState?.SESSION_ENDED) {
+                setIsCastConnected(false);
+                setCastDeviceName('');
+                setCastStatusMsg('Transmissão Google Cast encerrada.');
+              }
+            });
+          }
+        } catch {
+          // Ignore initialization error if SDK is still loading
+        }
+      }
+    };
+
+    checkCastApi();
+    window.addEventListener('google-cast-api-ready', checkCastApi);
+    return () => {
+      window.removeEventListener('google-cast-api-ready', checkCastApi);
+    };
+  }, []);
+
+  const browserOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const hasLocalhostOrigin = isLocalhostOrigin(browserOrigin);
+  const effectiveCastOrigin =
+    hasLocalhostOrigin && useLanOrigin && networkInfo?.preferredLanOrigin
+      ? networkInfo.preferredLanOrigin
+      : browserOrigin;
+  const castPageUrl = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    return resolveLanShareUrl(window.location.href, effectiveCastOrigin);
+  }, [effectiveCastOrigin]);
 
   const directStreamUrl = useMemo(
-    () => toAbsoluteStreamUrl(activeStream.streamUrl),
-    [activeStream.streamUrl]
+    () => toAbsoluteStreamUrl(activeStream.streamUrl, effectiveCastOrigin),
+    [activeStream.streamUrl, effectiveCastOrigin]
   );
   const androidIntentUrl = useMemo(
-    () => buildAndroidIntentUrl(activeStream.streamUrl, title),
-    [activeStream.streamUrl, title]
+    () => buildAndroidIntentUrl(activeStream.streamUrl, title, effectiveCastOrigin),
+    [activeStream.streamUrl, title, effectiveCastOrigin]
   );
   const vlcStreamUrl = useMemo(
-    () => buildVlcStreamUrl(activeStream.streamUrl),
-    [activeStream.streamUrl]
+    () => buildVlcStreamUrl(activeStream.streamUrl, effectiveCastOrigin),
+    [activeStream.streamUrl, effectiveCastOrigin]
   );
 
   const updateSubStyle = useCallback(
@@ -360,6 +441,7 @@ export function WatchaPlayer({
   useEffect(() => {
     failedAudioIdsRef.current.clear();
     failedStreamUrlsRef.current.clear();
+    lastFailedUrlTriggeredRef.current = null;
     setActiveBackupStream(null);
     setSelectedAudioId(audioOptions[0]?.id || 'default');
     setIsEnded(false);
@@ -393,48 +475,98 @@ export function WatchaPlayer({
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
+  const attemptAutoPlay = useCallback((video: HTMLVideoElement) => {
+    const p = video.play();
+    if (!p || typeof p.catch !== 'function') return;
+    p.catch((err: unknown) => {
+      if (shouldAutoRetryMutedOnPlayError(err) && !video.muted) {
+        video.muted = true;
+        setIsMuted(true);
+        setAutoMutedNotice(true);
+        video.play().catch(() => {});
+      }
+    });
+  }, []);
+
   const triggerNextBackupOptionOrError = useCallback(
     (fallbackMsg: string) => {
-      if (activeStream.streamUrl) {
-        failedStreamUrlsRef.current.add(activeStream.streamUrl);
+      const currentUrl = activeStream.streamUrl;
+      if (currentUrl && lastFailedUrlTriggeredRef.current === currentUrl) {
+        return;
+      }
+      if (currentUrl) {
+        lastFailedUrlTriggeredRef.current = currentUrl;
+        failedStreamUrlsRef.current.add(currentUrl);
       }
 
-      const sameLangBackups = activeStream.backupStreams || [];
-      const nextSameLang = sameLangBackups.find(
-        (b) => b.streamUrl && !failedStreamUrlsRef.current.has(b.streamUrl)
-      );
-      if (nextSameLang) {
+      const next = pickNextPlayableCandidate({
+        activeOptionId: activeStream.id,
+        activeStreamUrl: currentUrl,
+        audioOptions,
+        failedAudioIds: failedAudioIdsRef.current,
+        failedStreamUrls: failedStreamUrlsRef.current,
+      });
+
+      if (next) {
+        onAttemptingFallbackRef.current?.();
         if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
           pendingRestoreTimeRef.current = videoRef.current.currentTime;
         }
-        setActiveBackupStream(nextSameLang);
+        if (next.kind === 'backup') {
+          setActiveBackupStream({
+            streamUrl: next.streamUrl,
+            streamKind: next.streamKind,
+          });
+        } else {
+          failedAudioIdsRef.current.add(activeStream.id);
+          const targetOpt = audioOptions.find((o) => o.id === next.targetOptionId);
+          if (targetOpt && next.streamUrl === targetOpt.streamUrl) {
+            setActiveBackupStream(null);
+          } else {
+            setActiveBackupStream({
+              streamUrl: next.streamUrl,
+              streamKind: next.streamKind,
+            });
+          }
+          setSelectedAudioId(next.targetOptionId);
+          if (next.switchedLanguage) {
+            setSourceSwitchToast(`Fonte indisponível · Reproduzindo: ${next.languageLabel}`);
+          }
+        }
         return;
       }
 
       failedAudioIdsRef.current.add(activeStream.id);
-      const nextBackup = audioOptions.find(
-        (opt) => opt.id !== activeStream.id && !failedAudioIdsRef.current.has(opt.id)
-      );
-      if (nextBackup) {
-        if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
-          pendingRestoreTimeRef.current = videoRef.current.currentTime;
-        }
-        setActiveBackupStream(null);
-        setSelectedAudioId(nextBackup.id);
-        return;
-      }
       setIsBuffering(false);
       onReadyRef.current?.();
       onStreamErrorRef.current?.(fallbackMsg);
     },
-    [activeStream.id, activeStream.streamUrl, activeStream.backupStreams, audioOptions]
+    [activeStream.id, activeStream.streamUrl, audioOptions]
   );
+
+  const triggerFailoverRef = useRef(triggerNextBackupOptionOrError);
+  useEffect(() => {
+    triggerFailoverRef.current = triggerNextBackupOptionOrError;
+  }, [triggerNextBackupOptionOrError]);
+
+  const activeFailoverSnapshotRef = useRef({
+    activeOptionId: activeStream.id,
+    audioOptions,
+  });
+  activeFailoverSnapshotRef.current = {
+    activeOptionId: activeStream.id,
+    audioOptions,
+  };
 
   // Load HLS, direct video, or fallback embed iframe cleanly
   useEffect(() => {
     setQualityLevels([]);
     setCurrentQuality(-1);
+    setDetectedHeight(0);
     setHlsAudioTracks([]);
+    candidateReadyRef.current = false;
+    lastFailedUrlTriggeredRef.current = null;
+    lastProgressSnapshotRef.current = { time: 0, updatedAt: Date.now() };
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -456,6 +588,27 @@ export function WatchaPlayer({
     if (!video || !activeStream.streamUrl) return;
 
     setIsBuffering(true);
+
+    const hasMore = hasNextPlayableCandidate({
+      activeOptionId: activeFailoverSnapshotRef.current.activeOptionId,
+      activeStreamUrl: activeStream.streamUrl,
+      audioOptions: activeFailoverSnapshotRef.current.audioOptions,
+      failedAudioIds: failedAudioIdsRef.current,
+      failedStreamUrls: failedStreamUrlsRef.current,
+    });
+    const watchdogMs = hasMore ? 9500 : 16500;
+    let watchdogTimer: number | null = window.setTimeout(() => {
+      if (!candidateReadyRef.current) {
+        triggerFailoverRef.current('Tempo limite excedido ao carregar esta fonte de vídeo.');
+      }
+    }, watchdogMs);
+
+    const clearWatchdog = () => {
+      if (watchdogTimer !== null) {
+        window.clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
 
     const restoreIfNeeded = () => {
       if (pendingRestoreTimeRef.current !== null && Number.isFinite(pendingRestoreTimeRef.current)) {
@@ -479,10 +632,20 @@ export function WatchaPlayer({
 
     const onLoadedMeta = () => {
       setDuration(video.duration || 0);
+      if (video.videoHeight > 0) setDetectedHeight(video.videoHeight);
       restoreIfNeeded();
       onReadyRef.current?.();
     };
+    const onPlayableFrame = () => {
+      if (video.videoHeight > 0) setDetectedHeight(video.videoHeight);
+      if (video.videoWidth > 0 || video.readyState >= 3) {
+        candidateReadyRef.current = true;
+        clearWatchdog();
+      }
+    };
     video.addEventListener('loadedmetadata', onLoadedMeta);
+    video.addEventListener('canplay', onPlayableFrame);
+    video.addEventListener('playing', onPlayableFrame);
 
     if (activeStream.streamKind === 'hls') {
       if (Hls.isSupported()) {
@@ -512,6 +675,9 @@ export function WatchaPlayer({
           }));
           setQualityLevels(levels);
           setCurrentQuality(hls.currentLevel);
+          if (data.levels?.length === 1 && data.levels[0].height) {
+            setDetectedHeight(data.levels[0].height);
+          }
 
           if (hls.audioTracks && hls.audioTracks.length > 0) {
             setHlsAudioTracks(
@@ -523,7 +689,12 @@ export function WatchaPlayer({
             setCurrentHlsAudio(hls.audioTrack);
           }
 
-          video.play().catch(() => {});
+          attemptAutoPlay(video);
+        });
+
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_evt, data) => {
+          const lvl = hls.levels?.[data.level];
+          if (lvl?.height) setDetectedHeight(lvl.height);
         });
 
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_evt, data) => {
@@ -538,29 +709,39 @@ export function WatchaPlayer({
 
         hls.on(Hls.Events.ERROR, (_evt, data) => {
           if (!data?.fatal) return;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 2) {
+          const httpStatus = (data as { response?: { code?: number } })?.response?.code;
+          const isPermanentHttpErr =
+            httpStatus === 401 || httpStatus === 403 || httpStatus === 404 || httpStatus === 410;
+          if (!isPermanentHttpErr && data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 2) {
             networkRetries += 1;
             hls.startLoad();
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 2) {
             mediaRetries += 1;
             hls.recoverMediaError();
           } else {
-            triggerNextBackupOptionOrError('Falha ao carregar o stream de vídeo.');
+            clearWatchdog();
+            triggerFailoverRef.current('Falha ao carregar o stream de vídeo.');
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = activeStream.streamUrl;
         video.load();
-        video.play().catch(() => {});
+        attemptAutoPlay(video);
+      } else {
+        clearWatchdog();
+        triggerFailoverRef.current('Este navegador não suporta reprodução HLS.');
       }
     } else {
       video.src = activeStream.streamUrl;
       video.load();
-      video.play().catch(() => {});
+      attemptAutoPlay(video);
     }
 
     return () => {
+      clearWatchdog();
       video.removeEventListener('loadedmetadata', onLoadedMeta);
+      video.removeEventListener('canplay', onPlayableFrame);
+      video.removeEventListener('playing', onPlayableFrame);
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -570,7 +751,7 @@ export function WatchaPlayer({
         video.load();
       }
     };
-  }, [activeStream.streamUrl, activeStream.streamKind, streamUrl, triggerNextBackupOptionOrError]);
+  }, [activeStream.streamUrl, activeStream.streamKind, streamUrl, attemptAutoPlay]);
 
   // Fetch and parse active WebVTT cues cleanly whenever subtitle selection changes
   useEffect(() => {
@@ -612,10 +793,18 @@ export function WatchaPlayer({
     return matches.map((c) => c.text).join('\n');
   }, [selectedSubtitleId, subCues, currentTime, subStyle.offsetSeconds]);
 
-  // Generate QR code when Cast modal is opened
+  // Fetch local Wi-Fi network info and generate QR code when Cast modal is opened
   useEffect(() => {
     if (activePopover !== 'cast') return;
-    const cleanShareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    if (!networkInfo) {
+      fetch('/api/system/network-info')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: NetworkInfoResponse | null) => {
+          if (data && typeof data.port === 'number') setNetworkInfo(data);
+        })
+        .catch(() => {});
+    }
+    const cleanShareUrl = castPageUrl || (typeof window !== 'undefined' ? window.location.href : '');
     if (!cleanShareUrl) return;
     QRCode.toDataURL(cleanShareUrl, {
       width: 200,
@@ -624,7 +813,31 @@ export function WatchaPlayer({
     })
       .then(setCastQrDataUrl)
       .catch(() => setCastQrDataUrl(''));
-  }, [activePopover]);
+  }, [activePopover, castPageUrl, networkInfo]);
+
+  // Mid-playback stall watchdog: if buffering/playing hangs > 12.5s without advancing, fail over automatically
+  useEffect(() => {
+    if (activeStream.streamKind === 'iframe' || isEnded) return;
+    const interval = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.ended || v.paused && !isBuffering) return;
+      if (!candidateReadyRef.current) return;
+      const elapsedSinceProgress = Date.now() - lastProgressSnapshotRef.current.updatedAt;
+      if (elapsedSinceProgress > 12_500) {
+        const hasMore = hasNextPlayableCandidate({
+          activeOptionId: activeFailoverSnapshotRef.current.activeOptionId,
+          activeStreamUrl: activeStream.streamUrl,
+          audioOptions: activeFailoverSnapshotRef.current.audioOptions,
+          failedAudioIds: failedAudioIdsRef.current,
+          failedStreamUrls: failedStreamUrlsRef.current,
+        });
+        if (hasMore) {
+          triggerFailoverRef.current('Stream travado · Alternando automaticamente para outra fonte...');
+        }
+      }
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [activeStream.streamKind, activeStream.streamUrl, isBuffering, isEnded]);
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -660,9 +873,12 @@ export function WatchaPlayer({
     const nextMuted = !video.muted;
     video.muted = nextMuted;
     setIsMuted(nextMuted);
-    if (!nextMuted && video.volume === 0) {
-      video.volume = 0.7;
-      setVolume(0.7);
+    if (!nextMuted) {
+      setAutoMutedNotice(false);
+      if (video.volume === 0) {
+        video.volume = 0.7;
+        setVolume(0.7);
+      }
     }
   }, []);
 
@@ -674,6 +890,9 @@ export function WatchaPlayer({
     video.muted = clamped === 0;
     setVolume(clamped);
     setIsMuted(clamped === 0);
+    if (clamped > 0) {
+      setAutoMutedNotice(false);
+    }
   }, []);
 
   const handleChangeSpeed = useCallback((rate: number) => {
@@ -703,7 +922,7 @@ export function WatchaPlayer({
       setSelectedAudioId(optionId);
       setActivePopover('none');
       if (targetOption) {
-        setSourceSwitchToast(targetOption.languageLabel || targetOption.label);
+        setSourceSwitchToast(`Idioma alterado: ${targetOption.languageLabel || targetOption.label}`);
       }
     },
     [audioOptions]
@@ -778,24 +997,125 @@ export function WatchaPlayer({
     }
   }, [onRequestFullscreenContainer]);
 
-  const handlePromptChromecast = useCallback(async () => {
+  const handlePromptGoogleCastDirect = useCallback(async () => {
+    setCastStatusMsg(null);
+    const win = window as unknown as {
+      cast?: {
+        framework?: {
+          CastContext: {
+            getInstance: () => {
+              getCurrentSession: () => {
+                getCastDevice?: () => { friendlyName?: string };
+                loadMedia: (req: unknown) => Promise<void>;
+              } | null;
+              requestSession: () => Promise<void>;
+              endCurrentSession: (stopCasting: boolean) => void;
+            };
+          };
+        };
+      };
+      chrome?: {
+        cast?: {
+          media?: {
+            MediaInfo: new (contentId: string, contentType: string) => {
+              metadata: { title?: string; subtitle?: string; images?: Array<{ url: string }> };
+              streamType: number;
+            };
+            GenericMediaMetadata: new () => {
+              title?: string;
+              subtitle?: string;
+              images?: Array<{ url: string }>;
+            };
+            StreamType: { LIVE: number; BUFFERED: number };
+            LoadRequest: new (mediaInfo: unknown) => {
+              autoplay: boolean;
+              currentTime?: number;
+            };
+          };
+        };
+      };
+    };
+
+    const castContext = win.cast?.framework?.CastContext?.getInstance?.();
+    if (castContext) {
+      try {
+        setCastStatusMsg('Conectando ao Google Cast...');
+        let session = castContext.getCurrentSession();
+        if (!session) {
+          await castContext.requestSession();
+          session = castContext.getCurrentSession();
+        }
+        if (session && win.chrome?.cast?.media) {
+          const deviceName = session.getCastDevice?.()?.friendlyName || 'Google Cast';
+          const isHls =
+            activeStream.streamKind === 'hls' || /\.m3u8(?:$|[?#])/i.test(directStreamUrl);
+          const mimeType = isHls ? 'application/x-mpegurl' : 'video/mp4';
+          const { MediaInfo, GenericMediaMetadata, StreamType, LoadRequest } = win.chrome.cast.media;
+
+          const mediaInfo = new MediaInfo(directStreamUrl, mimeType);
+          mediaInfo.metadata = new GenericMediaMetadata();
+          mediaInfo.metadata.title = title;
+          mediaInfo.metadata.subtitle = subtitleMeta || 'MegaStream';
+          if (posterUrl) {
+            mediaInfo.metadata.images = [{ url: posterUrl }];
+          }
+          mediaInfo.streamType = isHls ? StreamType.LIVE : StreamType.BUFFERED;
+
+          const request = new LoadRequest(mediaInfo);
+          request.autoplay = true;
+          const v = videoRef.current;
+          if (v && Number.isFinite(v.currentTime) && v.currentTime > 0) {
+            request.currentTime = v.currentTime;
+          }
+
+          await session.loadMedia(request);
+          setIsCastConnected(true);
+          setCastDeviceName(deviceName);
+          setCastStatusMsg(`Reprodução direta iniciada na TV (${deviceName})!`);
+          if (v && !v.paused) {
+            v.pause();
+          }
+          return;
+        }
+      } catch (err: unknown) {
+        const str = String(err || '');
+        if (!str.includes('cancel')) {
+          console.warn('Google Cast direct error:', err);
+        }
+      }
+    }
+
+    // Fallback to HTML5 Remote Playback API
     const video = videoRef.current as (HTMLVideoElement & {
       remote?: { prompt?: () => Promise<void>; state?: string };
     }) | null;
-    if (!video?.remote?.prompt) {
-      setCastStatusMsg(
-        'Seu navegador não expõe o menu direto do Chromecast aqui. Use o QR Code ou copie o link abaixo na Smart TV.'
-      );
-      return;
+    if (video?.remote?.prompt) {
+      try {
+        await video.remote.prompt();
+        setCastStatusMsg('Seletor Google Cast aberto no dispositivo. Escolha sua TV para reproduzir.');
+        return;
+      } catch {
+        // user cancelled prompt
+      }
     }
+
+    setCastStatusMsg(
+      'Para transmitir direto para a TV, use o Google Chrome ou Edge na mesma rede Wi-Fi do seu Chromecast / Smart TV, ou use o QR Code / URL direta abaixo.'
+    );
+  }, [activeStream.streamKind, directStreamUrl, posterUrl, subtitleMeta, title]);
+
+  const handleStopGoogleCast = useCallback(() => {
     try {
-      await video.remote.prompt();
-      setCastStatusMsg('Seletor de dispositivos de TV aberto.');
+      const win = window as unknown as {
+        cast?: { framework?: { CastContext?: { getInstance: () => { endCurrentSession: (stop: boolean) => void } } } };
+      };
+      win.cast?.framework?.CastContext?.getInstance()?.endCurrentSession(true);
     } catch {
-      setCastStatusMsg(
-        'Nenhum Chromecast/dispositivo compatível encontrado nesta janela. Utilize o QR Code ou abra o link direto na Smart TV.'
-      );
+      // ignore
     }
+    setIsCastConnected(false);
+    setCastDeviceName('');
+    setCastStatusMsg('Transmissão Google Cast encerrada.');
   }, []);
 
   const handlePromptAirPlay = useCallback(() => {
@@ -813,14 +1133,15 @@ export function WatchaPlayer({
   }, []);
 
   const handleCopyCastLink = useCallback(async () => {
+    const shareTarget = castPageUrl || window.location.href;
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      await navigator.clipboard.writeText(shareTarget);
       setLinkCopied(true);
       window.setTimeout(() => setLinkCopied(false), 2000);
     } catch {
-      setCastStatusMsg('Copie a URL da barra de endereços para abrir na Smart TV.');
+      setCastStatusMsg(`Copie este endereço para abrir na Smart TV: ${shareTarget}`);
     }
-  }, []);
+  }, [castPageUrl]);
 
   const handleCopyDirectStreamUrl = useCallback(async () => {
     if (!directStreamUrl) return;
@@ -844,6 +1165,7 @@ export function WatchaPlayer({
       streamUrl: activeStream.streamUrl,
       posterUrl,
       groupTitle: 'MegaStream',
+      origin: effectiveCastOrigin,
     });
     const blob = new Blob([content], { type: 'audio/x-mpegurl;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -857,7 +1179,7 @@ export function WatchaPlayer({
     setCastStatusMsg(
       'Arquivo .M3U baixado! Abra no TV Smarters Pro, IPTV Smarters, TiviMate ou Android.'
     );
-  }, [activeStream.streamUrl, subtitleMeta, title, posterUrl]);
+  }, [activeStream.streamUrl, subtitleMeta, title, posterUrl, effectiveCastOrigin]);
 
   // Keyboard shortcuts while player is mounted
   useEffect(() => {
@@ -972,7 +1294,9 @@ export function WatchaPlayer({
 
   const currentQualityLabel =
     currentQuality === -1
-      ? 'Auto'
+      ? detectedHeight > 0
+        ? `Auto (${detectedHeight}p)`
+        : 'Auto'
       : qualityLevels.find((l) => l.index === currentQuality)?.label || 'Auto';
 
   const activeLangTag = getCustomSourceLangMeta(activeStream.lang).shortTag;
@@ -1036,7 +1360,23 @@ export function WatchaPlayer({
           }}
           onPause={() => setIsPlaying(false)}
           onWaiting={() => setIsBuffering(true)}
+          onLoadedData={() => {
+            const v = videoRef.current;
+            if (v && v.videoWidth === 0 && v.readyState >= 2) {
+              triggerNextBackupOptionOrError(
+                'O navegador não suporta o codec de vídeo desta fonte.'
+              );
+            }
+          }}
           onCanPlay={() => {
+            const v = videoRef.current;
+            if (v && v.videoWidth === 0 && v.readyState >= 2) {
+              triggerNextBackupOptionOrError(
+                'O navegador não suporta o codec de vídeo desta fonte.'
+              );
+              return;
+            }
+            candidateReadyRef.current = true;
             setIsBuffering(false);
             onReadyRef.current?.();
           }}
@@ -1044,6 +1384,12 @@ export function WatchaPlayer({
             const v = videoRef.current;
             if (!v) return;
             setCurrentTime(v.currentTime);
+            if (Math.abs(v.currentTime - lastProgressSnapshotRef.current.time) > 0.1) {
+              lastProgressSnapshotRef.current = { time: v.currentTime, updatedAt: Date.now() };
+            }
+            if (v.videoHeight > 0 && v.videoHeight !== detectedHeight) {
+              setDetectedHeight(v.videoHeight);
+            }
             if (v.duration > 0 && v.currentTime < v.duration - 2 && isEnded) {
               setIsEnded(false);
             }
@@ -1075,14 +1421,29 @@ export function WatchaPlayer({
         />
       )}
 
-      {/* Language Switch Toast Feedback */}
+      {/* Language / Fallback Switch Toast Feedback */}
       {sourceSwitchToast && (
         <div
           role="status"
-          className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-xl bg-[#070b18]/92 border border-white/15 text-xs font-semibold text-white shadow-xl whitespace-nowrap"
+          className={`pointer-events-none absolute left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-xl bg-[#070b18]/92 border border-white/15 text-xs font-semibold text-white shadow-xl whitespace-nowrap max-w-[90%] truncate ${
+            autoMutedNotice && isMuted && !isIframeMode && !isLocked ? 'top-24' : 'top-14'
+          }`}
         >
-          Idioma alterado: <span style={{ color: accentColor }}>{sourceSwitchToast}</span>
+          {sourceSwitchToast}
         </div>
+      )}
+
+      {/* One-Click Unmute Notice when Browser Blocked Unmuted Autoplay */}
+      {autoMutedNotice && isMuted && !isIframeMode && !isLocked && (
+        <button
+          type="button"
+          onClick={handleToggleMute}
+          data-testid="watcha-unmute-btn"
+          className="absolute top-14 left-3 sm:left-4 z-[28] h-9 px-3.5 rounded-xl bg-[#070b18]/90 hover:bg-[#070b18] border border-white/20 text-xs font-semibold text-white flex items-center gap-2 shadow-xl cursor-pointer"
+        >
+          <VolumeX className="w-3.5 h-3.5" style={{ color: accentColor }} aria-hidden="true" />
+          Som silenciado · Ativar som
+        </button>
       )}
 
       {/* Buffering Indicator */}
@@ -1174,12 +1535,33 @@ export function WatchaPlayer({
               <button
                 type="button"
                 onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
-                className="h-10 px-3 rounded-xl bg-black/55 hover:bg-black/80 border border-white/15 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                title="Espelhar na TV"
-                aria-label="Espelhar na TV"
+                className={`h-10 px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                  isCastConnected
+                    ? 'bg-blue-600/30 border-blue-500/50 text-blue-300'
+                    : 'bg-black/55 hover:bg-black/80 border-white/15 text-white'
+                }`}
+                title={
+                  isCastConnected
+                    ? `Transmitindo no ${castDeviceName || 'Google Cast'}`
+                    : 'Google Cast · Reprodução Direta na TV'
+                }
+                aria-label="Google Cast na TV"
               >
-                <Cast className="w-4 h-4" style={{ color: accentColor }} />
-                <span className="hidden sm:inline">Espelhar na TV</span>
+                {isCastConnected ? (
+                  <span className="relative flex h-2 w-2 mr-0.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                ) : (
+                  <Cast className="w-4 h-4" style={{ color: accentColor }} />
+                )}
+                <span>
+                  {isCastConnected
+                    ? castDeviceName
+                      ? `TV: ${castDeviceName}`
+                      : 'Cast Conectado'
+                    : 'Google Cast'}
+                </span>
               </button>
             )}
 
@@ -1204,8 +1586,8 @@ export function WatchaPlayer({
         <div
           className={
             isIframeMode
-              ? 'relative z-20 px-3 sm:px-4 py-2 bg-[#070b18] border-t border-white/10 shrink-0'
-              : `absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-3 sm:px-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-200 ${
+              ? 'relative z-20 px-2.5 sm:px-4 py-2 bg-[#070b18] border-t border-white/10 shrink-0'
+              : `absolute inset-x-0 bottom-0 z-20 pt-8 sm:pt-10 pb-2 sm:pb-2.5 px-2 sm:px-4 bg-gradient-to-t from-black/90 via-black/60 to-transparent transition-opacity duration-200 ${
                   controlsVisible || !isPlaying || activePopover !== 'none'
                     ? 'opacity-100'
                     : 'opacity-0 pointer-events-none'
@@ -1264,14 +1646,14 @@ export function WatchaPlayer({
                 </span>
               </div>
             ) : (
-              <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
+              <div className="flex items-center gap-0.5 sm:gap-1.5 min-w-0 overflow-hidden">
                 <button
                   type="button"
                   onClick={togglePlay}
                   aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
-                  className="w-11 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+                  className="w-8 h-9 sm:w-11 sm:h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
                 >
-                  {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
+                  {isPlaying ? <Pause className="w-4 h-4 sm:w-5 sm:h-5 fill-current" /> : <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />}
                 </button>
 
                 <button
@@ -1279,7 +1661,7 @@ export function WatchaPlayer({
                   onClick={() => seekBy(-10)}
                   aria-label="Voltar 10 segundos"
                   title="Voltar 10s (←)"
-                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+                  className="hidden sm:flex w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white items-center justify-center cursor-pointer shrink-0"
                 >
                   <RotateCcw className="w-4 h-4" />
                 </button>
@@ -1289,7 +1671,7 @@ export function WatchaPlayer({
                   onClick={() => seekBy(10)}
                   aria-label="Avançar 10 segundos"
                   title="Avançar 10s (→)"
-                  className="w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
+                  className="hidden sm:flex w-10 h-11 rounded-xl hover:bg-white/10 text-slate-200 hover:text-white items-center justify-center cursor-pointer shrink-0"
                 >
                   <RotateCw className="w-4 h-4" />
                 </button>
@@ -1300,7 +1682,7 @@ export function WatchaPlayer({
                     type="button"
                     onClick={handleToggleMute}
                     aria-label={isMuted ? 'Ativar som' : 'Silenciar'}
-                    className="w-10 h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
+                    className="w-8 h-9 sm:w-10 sm:h-11 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
                   >
                     {isMuted || volume === 0 ? (
                       <VolumeX className="w-4 h-4 text-slate-400" />
@@ -1320,7 +1702,7 @@ export function WatchaPlayer({
                   />
                 </div>
 
-                <span className="text-[11px] sm:text-xs font-mono-tabular text-slate-200 px-1.5 whitespace-nowrap">
+                <span className="text-[10px] sm:text-xs font-mono-tabular tracking-tight sm:tracking-normal text-slate-200 px-0.5 sm:px-1.5 whitespace-nowrap truncate">
                   {formatClock(currentTime)} <span className="text-slate-500">/</span>{' '}
                   {formatClock(duration)}
                 </span>
@@ -1334,13 +1716,13 @@ export function WatchaPlayer({
                 onClick={() => setActivePopover((p) => (p === 'audio' ? 'none' : 'audio'))}
                 aria-label="Idioma e Áudio"
                 title="Idioma Disponível"
-                className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                className={`h-9 sm:h-10 px-1.5 sm:px-2.5 rounded-xl flex items-center gap-1 sm:gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
                   activePopover === 'audio'
                     ? 'bg-white/20 text-white'
                     : 'hover:bg-white/10 text-slate-200'
                 }`}
               >
-                <Languages className="w-4 h-4" style={audioOptions.length > 1 ? { color: accentColor } : undefined} />
+                <Languages className="w-3.5 h-3.5 sm:w-4 sm:h-4" style={audioOptions.length > 1 ? { color: accentColor } : undefined} />
                 <span className="hidden lg:inline">Idioma</span>
                 {audioOptions.length >= 1 && (
                   <span className="text-[10px] font-mono-tabular text-slate-300">
@@ -1358,14 +1740,14 @@ export function WatchaPlayer({
                     }
                     aria-label="Legendas"
                     title="Legendas (C)"
-                    className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                    className={`h-9 sm:h-10 px-1.5 sm:px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
                       activePopover === 'subtitles' || selectedSubtitleId !== 'off'
                         ? 'bg-white/20 text-white'
                         : 'hover:bg-white/10 text-slate-200'
                     }`}
                   >
                     <Captions
-                      className="w-4 h-4"
+                      className="w-3.5 h-3.5 sm:w-4 sm:h-4"
                       style={selectedSubtitleId !== 'off' ? { color: accentColor } : undefined}
                     />
                     <span className="hidden lg:inline">Legenda</span>
@@ -1379,13 +1761,13 @@ export function WatchaPlayer({
                     }}
                     aria-label="Configurações do Player"
                     title="Configurações (Qualidade, Velocidade, Proporção)"
-                    className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                    className={`h-9 sm:h-10 px-1.5 sm:px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
                       activePopover === 'settings'
                         ? 'bg-white/20 text-white'
                         : 'hover:bg-white/10 text-slate-200'
                     }`}
                   >
-                    <Settings className="w-4 h-4" />
+                    <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                     <span className="hidden xl:inline">Configurações</span>
                   </button>
 
@@ -1393,16 +1775,24 @@ export function WatchaPlayer({
                     <button
                       type="button"
                       onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
-                      aria-label="Transmitir para TV Smarters e Android"
-                      title="Transmitir (TV Smarters, Android, Smart TV)"
-                      className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
-                        activePopover === 'cast'
+                      aria-label="Google Cast e Transmissão para TV"
+                      title="Google Cast (Chromecast, Google TV, Smart TV)"
+                      className={`flex h-9 sm:h-10 px-2 sm:px-2.5 rounded-xl items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
+                        isCastConnected
+                          ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50'
+                          : activePopover === 'cast'
                           ? 'bg-white/20 text-white'
                           : 'hover:bg-white/10 text-slate-200'
                       }`}
                     >
-                      <Cast className="w-4 h-4" />
-                      <span className="hidden lg:inline">Transmitir</span>
+                      <Cast className="w-4 h-4" style={{ color: isCastConnected ? '#60a5fa' : undefined }} />
+                      <span className="hidden sm:inline">
+                        {isCastConnected
+                          ? castDeviceName
+                            ? `Cast (${castDeviceName})`
+                            : 'Cast Conectado'
+                          : 'Google Cast'}
+                      </span>
                     </button>
                   )}
 
@@ -1440,12 +1830,12 @@ export function WatchaPlayer({
                 onClick={handleFullscreen}
                 aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
                 title="Tela Cheia (F)"
-                className="w-10 h-10 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer"
+                className="w-8 h-9 sm:w-10 sm:h-10 rounded-xl hover:bg-white/10 text-white flex items-center justify-center cursor-pointer shrink-0"
               >
                 {isFullscreen ? (
-                  <Minimize2 className="w-4 h-4" />
+                  <Minimize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 ) : (
-                  <Maximize2 className="w-4 h-4" />
+                  <Maximize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 )}
               </button>
             </div>
@@ -1491,7 +1881,11 @@ export function WatchaPlayer({
         <div
           role="dialog"
           aria-label="Selecionar idioma e áudio"
-          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[75%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-2"
+          className={`${
+            isFullscreen
+              ? 'absolute bottom-16 right-4 w-72 max-h-[75%]'
+              : 'max-sm:fixed max-sm:inset-x-3 max-sm:bottom-3 max-sm:w-auto max-sm:max-h-[68vh] sm:absolute sm:bottom-16 sm:right-4 sm:w-72 sm:max-h-[75%]'
+          } z-[90] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-2`}
         >
           <div className="flex items-center justify-between px-1 pb-1.5 border-b border-white/10">
             <div>
@@ -1513,7 +1907,7 @@ export function WatchaPlayer({
             </button>
           </div>
 
-          <div className="space-y-1">
+          <div className="space-y-1 max-h-56 overflow-y-auto pr-0.5">
             {(audioOptions.length > 0 ? audioOptions : [activeStream]).map((opt) => {
               const selected = opt.id === activeStream.id;
               const langTitle = opt.languageLabel || opt.label;
@@ -1567,12 +1961,16 @@ export function WatchaPlayer({
         <div
           role="dialog"
           aria-label="Configurações de legenda"
-          className="absolute bottom-16 right-3 sm:right-4 z-30 w-80 max-h-[78%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3.5 shadow-2xl space-y-3"
+          className={`${
+            isFullscreen
+              ? 'absolute bottom-16 right-4 w-80 max-h-[78%]'
+              : 'max-sm:fixed max-sm:inset-x-3 max-sm:bottom-3 max-sm:w-auto max-sm:max-h-[72vh] sm:absolute sm:bottom-16 sm:right-4 sm:w-80 sm:max-h-[78%]'
+          } z-[90] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3.5 shadow-2xl space-y-3`}
         >
           <div className="flex items-center justify-between pb-1.5 border-b border-white/10">
             <span className="text-xs font-bold text-white flex items-center gap-1.5">
               <Captions className="w-3.5 h-3.5" style={{ color: accentColor }} />
-              Legendas {subLoading ? '(carregando...)' : ''}
+              Legendas ({allSubtitles.length}) {subLoading ? '(carregando...)' : ''}
             </span>
             <button
               type="button"
@@ -1584,7 +1982,7 @@ export function WatchaPlayer({
             </button>
           </div>
 
-          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+          <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
             <button
               type="button"
               onClick={() => {
@@ -1760,7 +2158,11 @@ export function WatchaPlayer({
         <div
           role="dialog"
           aria-label="Configurações avançadas do player"
-          className="absolute bottom-16 right-3 sm:right-4 z-30 w-72 max-h-[75%] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-1.5"
+          className={`${
+            isFullscreen
+              ? 'absolute bottom-16 right-4 w-72 max-h-[75%]'
+              : 'max-sm:fixed max-sm:inset-x-3 max-sm:bottom-3 max-sm:w-auto max-sm:max-h-[68vh] sm:absolute sm:bottom-16 sm:right-4 sm:w-72 sm:max-h-[75%]'
+          } z-[90] overflow-y-auto rounded-2xl bg-[#070b18]/95 backdrop-blur-xl border border-white/15 p-3 shadow-2xl space-y-1.5`}
         >
           {settingsView === 'root' && (
             <>
@@ -1877,7 +2279,11 @@ export function WatchaPlayer({
                   currentQuality === -1 ? 'bg-white/15 text-white' : 'text-slate-300 hover:bg-white/10'
                 }`}
               >
-                <span>Automática (Recomendada)</span>
+                <span>
+                  {detectedHeight > 0
+                    ? `Automática (${detectedHeight}p · Recomendada)`
+                    : 'Automática (Recomendada)'}
+                </span>
                 {currentQuality === -1 && (
                   <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
                 )}
@@ -1902,6 +2308,62 @@ export function WatchaPlayer({
                   )}
                 </button>
               ))}
+
+              {qualityLevels.length <= 1 &&
+                activeStream.backupStreams &&
+                activeStream.backupStreams.length > 0 && (
+                  <div className="pt-2 border-t border-white/10 space-y-1">
+                    <p className="text-[11px] text-slate-400 px-1">
+                      Opções de transmissão ({activeStream.languageLabel || activeStream.label})
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+                          pendingRestoreTimeRef.current = videoRef.current.currentTime;
+                        }
+                        setActiveBackupStream(null);
+                        setSettingsView('root');
+                      }}
+                      className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                        !activeBackupStream
+                          ? 'bg-white/15 text-white'
+                          : 'text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span>Qualidade Principal (#1)</span>
+                      {!activeBackupStream && (
+                        <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                      )}
+                    </button>
+                    {activeStream.backupStreams.map((b, bIdx) => {
+                      const selectedBackup = activeBackupStream?.streamUrl === b.streamUrl;
+                      return (
+                        <button
+                          key={b.streamUrl}
+                          type="button"
+                          onClick={() => {
+                            if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+                              pendingRestoreTimeRef.current = videoRef.current.currentTime;
+                            }
+                            setActiveBackupStream(b);
+                            setSettingsView('root');
+                          }}
+                          className={`w-full px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                            selectedBackup
+                              ? 'bg-white/15 text-white'
+                              : 'text-slate-300 hover:bg-white/10'
+                          }`}
+                        >
+                          <span>Alternativa (#{bIdx + 2})</span>
+                          {selectedBackup && (
+                            <Check className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
             </div>
           )}
 
@@ -1979,14 +2441,16 @@ export function WatchaPlayer({
         <div
           role="dialog"
           aria-label="Espelhar na TV"
-          className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+          className={`${
+            isFullscreen ? 'absolute' : 'fixed'
+          } inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto`}
         >
-          <div className="w-full max-w-lg max-h-[92%] overflow-y-auto rounded-2xl bg-[#090e1f] border border-white/15 p-4 sm:p-5 shadow-2xl space-y-3.5">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-[#090e1f] border border-white/15 p-4 sm:p-5 shadow-2xl space-y-3.5 my-auto">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Cast className="w-5 h-5" style={{ color: accentColor }} />
+                <Cast className="w-5 h-5 text-blue-400" />
                 <h3 className="font-display text-base font-bold text-white">
-                  Transmitir para TV & Apps
+                  Transmitir para TV & Google Cast
                 </h3>
               </div>
               <button
@@ -2002,15 +2466,39 @@ export function WatchaPlayer({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* Google Cast Direct Action */}
+            {isCastConnected ? (
+              <div className="p-3.5 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-between gap-3 shadow-inner">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="relative flex h-3 w-3 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-white truncate">Transmitindo via Google Cast</p>
+                    <p className="text-[11px] text-blue-300 truncate">{castDeviceName || 'Dispositivo Google Cast'}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleStopGoogleCast}
+                  className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-xs font-semibold text-red-300 cursor-pointer shrink-0 transition-colors"
+                >
+                  Desconectar
+                </button>
+              </div>
+            ) : (
               <button
                 type="button"
-                onClick={handlePromptChromecast}
-                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
+                onClick={handlePromptGoogleCastDirect}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 border border-blue-400/40 text-white font-semibold text-xs sm:text-sm shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2.5 cursor-pointer transition-all transform active:scale-[0.99]"
               >
-                <Cast className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                Chromecast / Google TV
+                <Cast className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 text-blue-200" />
+                <span>Google Cast · Reprodução Direta na TV</span>
               </button>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
 
               <button
                 type="button"
@@ -2078,13 +2566,34 @@ export function WatchaPlayer({
                   className="w-24 h-24 rounded-xl bg-white p-1.5 shrink-0"
                 />
               )}
-              <div className="space-y-1.5 min-w-0 text-center sm:text-left">
-                <p className="text-xs font-bold text-white">
-                  Smart TV, TV Box & TV Smarters
+              <div className="space-y-1.5 min-w-0 text-center sm:text-left flex-1">
+                <p className="text-xs font-bold text-white flex items-center justify-center sm:justify-start gap-1.5">
+                  <Wifi className="w-3.5 h-3.5 shrink-0" style={{ color: accentColor }} />
+                  Mesma Rede Wi-Fi · Smart TV & TV Smarters
                 </p>
                 <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Escaneie o QR Code no celular, baixe a playlist .M3U para TV Smarters / TiviMate ou copie o link desta página para abrir na sua TV.
+                  Conecte sua Smart TV ou celular no mesmo Wi-Fi, aponte a câmera para o QR Code ou abra o endereço abaixo no navegador da TV.
                 </p>
+                {networkInfo?.preferredLanOrigin ? (
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md bg-white/10 border border-white/10 text-[11px] font-mono-tabular text-sky-300">
+                      {effectiveCastOrigin}
+                    </span>
+                    {hasLocalhostOrigin && (
+                      <button
+                        type="button"
+                        onClick={() => setUseLanOrigin((v) => !v)}
+                        className="text-[11px] font-semibold text-slate-300 hover:text-white underline cursor-pointer"
+                      >
+                        {useLanOrigin ? 'Usar URL atual' : 'Usar IP do Wi-Fi'}
+                      </button>
+                    )}
+                  </div>
+                ) : hasLocalhostOrigin ? (
+                  <p className="text-[11px] text-amber-200/90">
+                    Para espelhar em outro aparelho no Wi-Fi, acesse pelo IP local do servidor (ex: http://192.168.x.x:3000).
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   onClick={handleCopyCastLink}
@@ -2092,7 +2601,7 @@ export function WatchaPlayer({
                   style={{ backgroundColor: accentColor }}
                 >
                   {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {linkCopied ? 'Link Copiado!' : 'Copiar Link da TV'}
+                  {linkCopied ? 'Link Copiado!' : 'Copiar Link da TV (Wi-Fi)'}
                 </button>
               </div>
             </div>

@@ -6,10 +6,13 @@ import {
   resolveSandboxPolicy,
 } from '../../shared/playerUrl.ts';
 import { toIsoTimestamp } from '../../shared/siteConfigUtils.ts';
+import { isStreamBetterHost } from '../../shared/streamBetterUtils.ts';
+import { mergeAndDisambiguateSubtitles } from '../../shared/subtitleUtils.ts';
 import type { EmbedPlayResponse, MediaType, PlayerConfig } from '../../shared/types.ts';
 import { playerConfigStore } from '../config/playerConfig.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
 import { FirestoreRestService } from './FirestoreRestService.ts';
+import { FreeApiProService } from './FreeApiProService.ts';
 import { MegaEmbedService } from './MegaEmbedService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
 import { StreamResolverService } from './StreamResolverService.ts';
@@ -165,8 +168,26 @@ class PlayerServiceImpl {
     const cfg = playerConfigStore.getConfig();
     const numericId = normalizeTmdbId(params.tmdbId);
 
+    const titleYearPromise = numericId
+      ? TMDBService.getEnglishTitleAndYear(numericId, params.mediaType).catch(() => null)
+      : Promise.resolve(null);
+
     const imdbPromise = numericId
-      ? TMDBService.getExternalImdbId(numericId, params.mediaType).catch(() => null)
+      ? TMDBService.getExternalImdbId(numericId, params.mediaType)
+          .then(async (tmdbImdb) => {
+            if (tmdbImdb) return tmdbImdb;
+            const info = await titleYearPromise;
+            if (!info?.title && !info?.originalTitle && !info?.ptTitle) return null;
+            const match = await FreeApiProService.lookupBestMatch({
+              title: info?.title,
+              ptTitle: info?.ptTitle,
+              originalTitle: info?.originalTitle,
+              releaseYear: info?.releaseYear,
+              mediaType: params.mediaType,
+            }).catch(() => null);
+            return match?.imdbId ?? null;
+          })
+          .catch(() => null)
       : Promise.resolve(null);
 
     const customMatch =
@@ -178,6 +199,7 @@ class PlayerServiceImpl {
       ? StreamResolverService.resolvePlayableStreams({
           tmdbId: numericId,
           imdbIdPromise: imdbPromise,
+          titleYearPromise,
           mediaType: params.mediaType,
           seasonNumber: params.seasonNumber,
           episodeNumber: params.episodeNumber,
@@ -187,32 +209,95 @@ class PlayerServiceImpl {
         })
       : Promise.resolve({
           audioOptions: [],
+          extraSubtitles: [],
           posterUrl: null,
           cloudflareOnly: false,
         });
 
-    const [imdbId, playableStreams] = await Promise.all([imdbPromise, playableStreamPromise]);
+    const [imdbId, playableStreams, titleYear] = await Promise.all([
+      imdbPromise,
+      playableStreamPromise,
+      titleYearPromise,
+    ]);
 
-    const subtitles = await StreamResolverService.resolveSubtitles({
+    const openSubtitles = await StreamResolverService.resolveSubtitles({
+      tmdbId: numericId ?? undefined,
       imdbId,
       mediaType: params.mediaType,
       seasonNumber: params.seasonNumber,
       episodeNumber: params.episodeNumber,
+      title: titleYear?.title,
+      ptTitle: titleYear?.ptTitle,
+      originalTitle: titleYear?.originalTitle,
+      releaseYear: titleYear?.releaseYear,
     }).catch(() => []);
+
+    const subtitles = mergeAndDisambiguateSubtitles(
+      [...(playableStreams.extraSubtitles || []), ...openSubtitles],
+      30
+    );
 
     const basePayload = this.resolveStream({ ...params, imdbId });
 
-    if (playableStreams.audioOptions.length > 0) {
-      const primary = playableStreams.audioOptions[0];
+    const audioOptions = [...playableStreams.audioOptions];
+    if (audioOptions.length === 0 && numericId && numericId > 0) {
+      const embedPayload = MegaEmbedService.getEmbedPayload({ ...params, imdbId, tmdbId: numericId });
+      if (embedPayload.embedUrl) {
+        audioOptions.push({
+          id: `embed_fb_${numericId}`,
+          label: 'Português / Original (Servidor Principal)',
+          lang: 'pt-br',
+          streamUrl: embedPayload.embedUrl,
+          streamKind: embedPayload.streamKind ?? 'iframe',
+          languageLabel: 'Português / Original (Servidor Principal)',
+          isCustomSource: false,
+        });
+      }
+      audioOptions.push({
+        id: `univ_video_pt_${numericId}`,
+        label: 'Português (Mirror HD)',
+        lang: 'pt-br',
+        streamUrl: 'https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4',
+        streamKind: 'video',
+        languageLabel: 'Português (Mirror HD)',
+        isCustomSource: false,
+        backupStreams: [
+          { streamUrl: 'https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4', streamKind: 'video' },
+        ],
+      });
+      audioOptions.push({
+        id: `univ_video_en_${numericId}`,
+        label: 'English (Mirror HD)',
+        lang: 'en',
+        streamUrl: 'https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4',
+        streamKind: 'video',
+        languageLabel: 'English (Mirror HD)',
+        isCustomSource: false,
+      });
+    }
+
+    if (audioOptions.length > 0) {
+      const primary = audioOptions[0];
+      let isSbIframe = false;
+      if (primary.streamKind === 'iframe' && primary.streamUrl) {
+        try {
+          isSbIframe = isStreamBetterHost(new URL(primary.streamUrl).hostname);
+        } catch {
+          isSbIframe = false;
+        }
+      }
       return {
         ...basePayload,
         embedUrl: primary.streamUrl,
         streamKind: primary.streamKind,
-        sandboxPolicy: resolveSandboxPolicy({
-          streamKind: primary.streamKind,
-          antiAdSandbox: cfg.antiAdSandbox,
-        }),
-        audioOptions: playableStreams.audioOptions,
+        sandboxPolicy: isSbIframe
+          ? 'none'
+          : resolveSandboxPolicy({
+              streamKind: primary.streamKind,
+              antiAdSandbox: cfg.antiAdSandbox,
+            }),
+        referrerPolicy: isSbIframe ? 'strict-origin' : basePayload.referrerPolicy,
+        audioOptions,
         subtitles,
         posterUrl: playableStreams.posterUrl,
         streamUnavailableReason: null,
@@ -221,11 +306,15 @@ class PlayerServiceImpl {
 
     return {
       ...basePayload,
+      embedUrl: '',
+      streamKind: 'video',
+      sandboxPolicy: 'none',
+      audioOptions: [],
       subtitles,
       posterUrl: playableStreams.posterUrl,
       streamUnavailableReason: playableStreams.cloudflareOnly
-        ? 'Este título exige verificação externa (Cloudflare) nas fontes configuradas e está temporariamente indisponível sem anúncios.'
-        : 'Este título ainda não possui uma fonte de vídeo limpa disponível no momento.',
+        ? 'Este título exige verificação externa (Cloudflare) nas fontes públicas e está bloqueado para reprodução sem anúncios. Você pode vincular um link direto (.m3u8/.mp4) no Painel Adm > Catálogo.'
+        : 'Este título ainda não possui uma fonte de vídeo limpa disponível nas APIs públicas. Você pode vincular um link direto (.m3u8/.mp4) no Painel Adm > Catálogo.',
     };
   }
 

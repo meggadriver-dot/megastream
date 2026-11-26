@@ -5,7 +5,9 @@ export interface SignedStreamSessionPayload {
   u: string;
   r?: string;
   o?: string;
+  ua?: string;
   sr: boolean;
+  sua?: boolean;
   k: StreamKind;
   exp: number;
 }
@@ -68,7 +70,9 @@ export function signStreamSessionToken(
     u: payload.u,
     ...(payload.r ? { r: payload.r } : {}),
     ...(payload.o ? { o: payload.o } : {}),
+    ...(payload.ua ? { ua: payload.ua } : {}),
     sr: payload.sr,
+    ...(payload.sua === false ? { sua: false } : {}),
     k: payload.k,
     exp: Math.floor(Date.now() / 1000) + Math.max(60, ttlSeconds),
   };

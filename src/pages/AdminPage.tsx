@@ -151,12 +151,15 @@ export function AdminPage() {
   const [secretsStatus, setSecretsStatus] = useState<AdminSecretsStatus | null>(null);
   const [tmdbTokenInput, setTmdbTokenInput] = useState('');
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [streamBetterKeyInput, setStreamBetterKeyInput] = useState('');
   const [siteDraft, setSiteDraft] = useState<SiteConfig>(siteConfig);
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<
-    Partial<Record<'tmdb' | 'player' | 'firestore', DiagnosticResult>>
+    Partial<Record<'tmdb' | 'player' | 'firestore' | 'streambetter', DiagnosticResult>>
   >({});
-  const [testingTarget, setTestingTarget] = useState<'tmdb' | 'player' | 'firestore' | null>(null);
+  const [testingTarget, setTestingTarget] = useState<
+    'tmdb' | 'player' | 'firestore' | 'streambetter' | null
+  >(null);
 
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -435,16 +438,21 @@ export function AdminPage() {
         const secData = fsSecretsSnap.data() as {
           tmdbAccessToken?: string;
           geminiApiKey?: string;
+          streamBetterApiKey?: string;
         };
         const needsTmdbSync = Boolean(secData.tmdbAccessToken && !effectiveSecrets.hasCustomTmdbToken);
         const needsGeminiSync = Boolean(secData.geminiApiKey && !effectiveSecrets.hasCustomGeminiKey);
-        if (needsTmdbSync || needsGeminiSync) {
+        const needsStreamBetterSync = Boolean(
+          secData.streamBetterApiKey && !effectiveSecrets.hasCustomStreamBetterKey
+        );
+        if (needsTmdbSync || needsGeminiSync || needsStreamBetterSync) {
           const synced = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
             method: 'PUT',
             body: JSON.stringify({
               ...effectiveSystem,
               ...(needsTmdbSync ? { tmdbAccessToken: secData.tmdbAccessToken } : {}),
               ...(needsGeminiSync ? { geminiApiKey: secData.geminiApiKey } : {}),
+              ...(needsStreamBetterSync ? { streamBetterApiKey: secData.streamBetterApiKey } : {}),
             }),
           }).catch(() => null);
           if (synced) {
@@ -1005,6 +1013,7 @@ export function AdminPage() {
       const payload: Record<string, unknown> = { ...systemSettings };
       if (tmdbTokenInput.trim()) payload.tmdbAccessToken = tmdbTokenInput.trim();
       if (geminiKeyInput.trim()) payload.geminiApiKey = geminiKeyInput.trim();
+      if (streamBetterKeyInput.trim()) payload.streamBetterApiKey = streamBetterKeyInput.trim();
 
       const res = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
         method: 'PUT',
@@ -1013,10 +1022,14 @@ export function AdminPage() {
 
       await persistSystemSettingsToFirestore(res.settings);
 
-      if (tmdbTokenInput.trim() || geminiKeyInput.trim()) {
+      if (tmdbTokenInput.trim() || geminiKeyInput.trim() || streamBetterKeyInput.trim()) {
         const secretsSnap = await getDoc(doc(db, 'adminSecrets', 'apiKeys')).catch(() => null);
         const existingSecrets = secretsSnap?.exists()
-          ? (secretsSnap.data() as { tmdbAccessToken?: string; geminiApiKey?: string })
+          ? (secretsSnap.data() as {
+              tmdbAccessToken?: string;
+              geminiApiKey?: string;
+              streamBetterApiKey?: string;
+            })
           : {};
         await setDoc(doc(db, 'adminSecrets', 'apiKeys'), {
           ...(tmdbTokenInput.trim()
@@ -1029,6 +1042,11 @@ export function AdminPage() {
             : existingSecrets.geminiApiKey
               ? { geminiApiKey: existingSecrets.geminiApiKey }
               : {}),
+          ...(streamBetterKeyInput.trim()
+            ? { streamBetterApiKey: streamBetterKeyInput.trim() }
+            : existingSecrets.streamBetterApiKey
+              ? { streamBetterApiKey: existingSecrets.streamBetterApiKey }
+              : {}),
           updatedAt: serverTimestamp(),
         });
       }
@@ -1037,6 +1055,7 @@ export function AdminPage() {
       setSecretsStatus(res.secretsStatus);
       setTmdbTokenInput('');
       setGeminiKeyInput('');
+      setStreamBetterKeyInput('');
       applyRuntimeSettings(
         extractPublicRuntimeSettings(
           res.settings,
@@ -1061,26 +1080,37 @@ export function AdminPage() {
     }
   };
 
-  const handleClearSecret = async (target: 'tmdb' | 'gemini') => {
+  const handleClearSecret = async (target: 'tmdb' | 'gemini' | 'streambetter') => {
     setSaving(true);
     try {
       ensureVerifiedAdminSession();
       const res = await apiRequest<AdminSystemSettingsResponse>('/api/admin/system-settings', {
         method: 'PUT',
         body: JSON.stringify(
-          target === 'tmdb' ? { clearTmdbAccessToken: true } : { clearGeminiApiKey: true }
+          target === 'tmdb'
+            ? { clearTmdbAccessToken: true }
+            : target === 'gemini'
+              ? { clearGeminiApiKey: true }
+              : { clearStreamBetterApiKey: true }
         ),
       });
 
       const secretsSnap = await getDoc(doc(db, 'adminSecrets', 'apiKeys')).catch(() => null);
       if (secretsSnap?.exists()) {
-        const data = secretsSnap.data() as { tmdbAccessToken?: string; geminiApiKey?: string };
+        const data = secretsSnap.data() as {
+          tmdbAccessToken?: string;
+          geminiApiKey?: string;
+          streamBetterApiKey?: string;
+        };
         const nextDoc: Record<string, unknown> = { updatedAt: serverTimestamp() };
         if (target !== 'tmdb' && data.tmdbAccessToken) {
           nextDoc.tmdbAccessToken = data.tmdbAccessToken;
         }
         if (target !== 'gemini' && data.geminiApiKey) {
           nextDoc.geminiApiKey = data.geminiApiKey;
+        }
+        if (target !== 'streambetter' && data.streamBetterApiKey) {
+          nextDoc.streamBetterApiKey = data.streamBetterApiKey;
         }
         await setDoc(doc(db, 'adminSecrets', 'apiKeys'), nextDoc);
       }
@@ -1089,7 +1119,9 @@ export function AdminPage() {
       showFeedback(
         target === 'tmdb'
           ? 'Token customizado do TMDB removido. Voltando para configuração padrão.'
-          : 'Chave Gemini customizada removida. Voltando para configuração padrão.'
+          : target === 'gemini'
+            ? 'Chave Gemini customizada removida. Voltando para configuração padrão.'
+            : 'Chave secreta StreamBetter removida. Feeds públicos continuam ativos.'
       );
     } catch (err) {
       showError(err, 'Erro ao limpar credencial.');
@@ -1124,7 +1156,9 @@ export function AdminPage() {
     }
   };
 
-  const handleRunDiagnostic = async (target: 'tmdb' | 'player' | 'firestore') => {
+  const handleRunDiagnostic = async (
+    target: 'tmdb' | 'player' | 'firestore' | 'streambetter'
+  ) => {
     setTestingTarget(target);
     try {
       const result = await apiRequest<DiagnosticResult>('/api/admin/diagnostics/test', {
@@ -1149,7 +1183,7 @@ export function AdminPage() {
   };
 
   const handleRunAllDiagnostics = async () => {
-    for (const target of ['tmdb', 'player', 'firestore'] as const) {
+    for (const target of ['tmdb', 'player', 'streambetter', 'firestore'] as const) {
       await handleRunDiagnostic(target);
     }
     showFeedback('Diagnósticos completos finalizados.');
@@ -1825,9 +1859,12 @@ export function AdminPage() {
                   onTmdbTokenInputChange={setTmdbTokenInput}
                   geminiKeyInput={geminiKeyInput}
                   onGeminiKeyInputChange={setGeminiKeyInput}
+                  streamBetterKeyInput={streamBetterKeyInput}
+                  onStreamBetterKeyInputChange={setStreamBetterKeyInput}
                   saving={saving}
                   testingTarget={testingTarget}
                   tmdbDiagnostic={diagnostics.tmdb ?? null}
+                  streamBetterDiagnostic={diagnostics.streambetter ?? null}
                   customVideoSourcesCount={
                     (playerConfig?.customSources ?? []).filter((s) => s.active).length
                   }
@@ -1840,6 +1877,7 @@ export function AdminPage() {
                   }
                   onClearSecret={(target) => void handleClearSecret(target)}
                   onTestTmdb={() => void handleRunDiagnostic('tmdb')}
+                  onTestStreamBetter={() => void handleRunDiagnostic('streambetter')}
                   onResetDefaults={() => void handleResetSystemSettings()}
                 />
               )}

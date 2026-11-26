@@ -263,11 +263,12 @@
     },
     "AdminSecrets": {
       "title": "AdminSecrets",
-      "description": "Admin-only runtime API token overrides for TMDB and Gemini.",
+      "description": "Admin-only runtime API token overrides for TMDB, Gemini, and StreamBetter.",
       "type": "object",
       "properties": {
         "tmdbAccessToken": { "type": "string", "maxLength": 500 },
         "geminiApiKey": { "type": "string", "maxLength": 500 },
+        "streamBetterApiKey": { "type": "string", "maxLength": 500 },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["updatedAt"]

@@ -24,6 +24,8 @@ export interface UpdateSystemSettingsPayload extends Partial<SystemSettings> {
   clearTmdbAccessToken?: boolean;
   geminiApiKey?: string;
   clearGeminiApiKey?: boolean;
+  streamBetterApiKey?: string;
+  clearStreamBetterApiKey?: boolean;
 }
 
 class SystemSettingsServiceImpl {
@@ -93,10 +95,17 @@ class SystemSettingsServiceImpl {
         if (typeof remoteSecrets.geminiApiKey === 'string' && remoteSecrets.geminiApiKey.trim()) {
           next.geminiApiKey = remoteSecrets.geminiApiKey.trim();
         }
+        if (
+          typeof remoteSecrets.streamBetterApiKey === 'string' &&
+          remoteSecrets.streamBetterApiKey.trim()
+        ) {
+          next.streamBetterApiKey = remoteSecrets.streamBetterApiKey.trim();
+        }
         if (remoteIso) next.updatedAt = remoteIso;
         repositoryStore.saveAdminSecrets(next);
         CacheService.clear('catalog:');
         CacheService.clear('tmdb:');
+        CacheService.clear('streambetter:');
       }
     }
     this.lastSecretsHydratedAt = Date.now();
@@ -130,11 +139,15 @@ class SystemSettingsServiceImpl {
     const secrets = repositoryStore.getAdminSecrets();
     const envTmdb = process.env.TMDB_ACCESS_TOKEN?.trim() ?? '';
     const envGemini = process.env.GEMINI_API_KEY?.trim() ?? '';
+    const envStreamBetter =
+      (process.env.STREAMBETTER_SECRET_KEY || process.env.STREAMBETTER_API_KEY)?.trim() ?? '';
     const hasEnvTmdbToken = Boolean(envTmdb && envTmdb !== 'MY_TMDB_ACCESS_TOKEN');
     const hasEnvGeminiKey = Boolean(envGemini && envGemini !== 'MY_GEMINI_API_KEY');
+    const hasEnvStreamBetterKey = Boolean(envStreamBetter);
 
     const customTmdb = secrets.tmdbAccessToken?.trim() ?? '';
     const customGemini = secrets.geminiApiKey?.trim() ?? '';
+    const customStreamBetter = secrets.streamBetterApiKey?.trim() ?? '';
 
     return {
       hasCustomTmdbToken: Boolean(customTmdb),
@@ -143,6 +156,9 @@ class SystemSettingsServiceImpl {
       hasCustomGeminiKey: Boolean(customGemini),
       geminiKeyMask: maskSecretValue(customGemini),
       hasEnvGeminiKey,
+      hasCustomStreamBetterKey: Boolean(customStreamBetter),
+      streamBetterKeyMask: maskSecretValue(customStreamBetter),
+      hasEnvStreamBetterKey,
     };
   }
 
@@ -188,9 +204,21 @@ class SystemSettingsServiceImpl {
       }
     }
 
+    if (payload.clearStreamBetterApiKey) {
+      delete nextSecrets.streamBetterApiKey;
+      secretsChanged = true;
+    } else if (typeof payload.streamBetterApiKey === 'string') {
+      const cleanKey = sanitizeSecretToken(payload.streamBetterApiKey, 500);
+      if (cleanKey) {
+        nextSecrets.streamBetterApiKey = cleanKey;
+        secretsChanged = true;
+      }
+    }
+
     if (secretsChanged) {
       nextSecrets.updatedAt = new Date().toISOString();
       repositoryStore.saveAdminSecrets(nextSecrets);
+      CacheService.clear('streambetter:');
     }
 
     this.lastHydratedAt = Date.now();
@@ -249,6 +277,20 @@ class SystemSettingsServiceImpl {
     }
     const envKey = process.env.GEMINI_API_KEY?.trim();
     if (envKey && envKey !== 'MY_GEMINI_API_KEY') {
+      return { key: envKey, source: 'env' };
+    }
+    return { key: null, source: 'none' };
+  }
+
+  getActiveStreamBetterKey(): { key: string | null; source: 'env' | 'admin_override' | 'none' } {
+    const custom = repositoryStore.getAdminSecrets().streamBetterApiKey?.trim();
+    if (custom) {
+      return { key: custom, source: 'admin_override' };
+    }
+    const envKey = (
+      process.env.STREAMBETTER_SECRET_KEY || process.env.STREAMBETTER_API_KEY
+    )?.trim();
+    if (envKey) {
       return { key: envKey, source: 'env' };
     }
     return { key: null, source: 'none' };

@@ -160,7 +160,9 @@ export function sanitizeCustomVideoSourceLang(input: unknown): CustomVideoSource
 
 export function hasUrlTemplatePlaceholder(template?: string | null): boolean {
   if (!template || typeof template !== 'string') return false;
-  return /\{(?:tmdbId|tmdb_id|TMDB_ID|id|imdbId|imdb_id|IMDB_ID)\}/.test(template);
+  return /\{(?:tmdbId|tmdb_id|TMDB_ID|id|imdbId|imdb_id|IMDB_ID|title|TITLE|query|QUERY)\}/.test(
+    template
+  );
 }
 
 const EXTENDED_LANG_META: Record<string, { label: string; shortTag: string; langCode: string }> = {
@@ -184,6 +186,23 @@ const EXTENDED_LANG_META: Record<string, { label: string; shortTag: string; lang
   hi: { label: 'Hindi', shortTag: 'HI', langCode: 'hi' },
   hin: { label: 'Hindi', shortTag: 'HI', langCode: 'hi' },
   hindi: { label: 'Hindi', shortTag: 'HI', langCode: 'hi' },
+  ru: { label: 'Russo', shortTag: 'RU', langCode: 'ru' },
+  rus: { label: 'Russo', shortTag: 'RU', langCode: 'ru' },
+  russian: { label: 'Russo', shortTag: 'RU', langCode: 'ru' },
+  ar: { label: 'Árabe', shortTag: 'AR', langCode: 'ar' },
+  ara: { label: 'Árabe', shortTag: 'AR', langCode: 'ar' },
+  arabic: { label: 'Árabe', shortTag: 'AR', langCode: 'ar' },
+  zh: { label: 'Chinês', shortTag: 'ZH', langCode: 'zh' },
+  chi: { label: 'Chinês', shortTag: 'ZH', langCode: 'zh' },
+  zho: { label: 'Chinês', shortTag: 'ZH', langCode: 'zh' },
+  chinese: { label: 'Chinês', shortTag: 'ZH', langCode: 'zh' },
+  nl: { label: 'Holandês', shortTag: 'NL', langCode: 'nl' },
+  dut: { label: 'Holandês', shortTag: 'NL', langCode: 'nl' },
+  nld: { label: 'Holandês', shortTag: 'NL', langCode: 'nl' },
+  pl: { label: 'Polonês', shortTag: 'PL', langCode: 'pl' },
+  pol: { label: 'Polonês', shortTag: 'PL', langCode: 'pl' },
+  tr: { label: 'Turco', shortTag: 'TR', langCode: 'tr' },
+  tur: { label: 'Turco', shortTag: 'TR', langCode: 'tr' },
 };
 
 export function getCustomSourceLangMeta(lang?: string | null): CustomSourceLangMeta {
@@ -377,13 +396,23 @@ export function sanitizeCustomVideoSources(input: unknown): CustomVideoSource[] 
 
 export const RECOMMENDED_CUSTOM_SOURCES: readonly CustomVideoSource[] = [
   {
-    id: 'rec_myembed_pt',
-    name: 'MyEmbed / EmbedMovies (PT-BR)',
-    kind: 'embed',
-    lang: 'pt',
-    movieTemplate: 'https://myembed.biz/filme/{tmdbId}',
-    tvTemplate: 'https://myembed.biz/serie/{tmdbId}/{season}/{episode}',
+    id: 'rec_vidlink_en',
+    name: 'VidLink HD (Inglês + Legendas PT-BR)',
+    kind: 'api',
+    lang: 'auto',
+    movieTemplate: 'https://vidlink.pro/movie/{tmdbId}',
+    tvTemplate: 'https://vidlink.pro/tv/{tmdbId}/{season}/{episode}',
     priority: 1,
+    active: true,
+  },
+  {
+    id: 'rec_cinejoy_en',
+    name: 'Cinejoy Full HD (Inglês H.264)',
+    kind: 'api',
+    lang: 'en',
+    movieTemplate: 'https://cinejoy.pk/movie/{tmdbId}',
+    tvTemplate: 'https://cinejoy.pk/tv/{tmdbId}/{season}/{episode}',
+    priority: 2,
     active: true,
   },
   {
@@ -393,7 +422,7 @@ export const RECOMMENDED_CUSTOM_SOURCES: readonly CustomVideoSource[] = [
     lang: 'auto',
     movieTemplate: 'https://playerflix.ink/filme/{tmdbId}',
     tvTemplate: 'https://playerflix.ink/serie/{tmdbId}/{season}/{episode}',
-    priority: 2,
+    priority: 3,
     active: true,
   },
   {
@@ -403,7 +432,7 @@ export const RECOMMENDED_CUSTOM_SOURCES: readonly CustomVideoSource[] = [
     lang: 'pt',
     movieTemplate: 'https://v1.watchplay.shop/movie/{tmdbId}',
     tvTemplate: 'https://v1.watchplay.shop/tvshow/{tmdbId}/{season}/{episode}',
-    priority: 3,
+    priority: 4,
     active: true,
   },
   {
@@ -413,53 +442,173 @@ export const RECOMMENDED_CUSTOM_SOURCES: readonly CustomVideoSource[] = [
     lang: 'pt',
     movieTemplate: 'https://v2.watchplay.shop/movie/{tmdbId}',
     tvTemplate: 'https://v2.watchplay.shop/tvshow/{tmdbId}/{season}/{episode}',
-    priority: 4,
-    active: true,
-  },
-  {
-    id: 'rec_videm_buzz_en',
-    name: 'VidEm Buzz (Inglês / Multi)',
-    kind: 'embed',
-    lang: 'auto',
-    movieTemplate: 'https://videm.buzz/embed/movie/{tmdbId}',
-    tvTemplate: 'https://videm.buzz/embed/tv/{tmdbId}/{season}/{episode}',
     priority: 5,
     active: true,
   },
   {
-    id: 'rec_videm_cc_en',
-    name: 'VidEm CC (Inglês / Multi)',
+    id: 'rec_novelascdn_pt',
+    name: 'NovelasCDN (PT-BR Dublado/Legendado)',
     kind: 'embed',
-    lang: 'auto',
-    movieTemplate: 'https://videm.cc/embed/movie/{tmdbId}',
-    tvTemplate: 'https://videm.cc/embed/tv/{tmdbId}/{season}/{episode}',
+    lang: 'pt',
+    movieTemplate: 'https://novelascdn.link/filme/{tmdbId}',
+    tvTemplate: 'https://novelascdn.link/serie/{tmdbId}/{season}/{episode}',
     priority: 6,
     active: true,
   },
   {
-    id: 'rec_vidsrc_buzz_en',
-    name: 'VidSrc Buzz (Inglês / Multi)',
+    id: 'rec_fshd_pt',
+    name: 'FSHD Stream (PT-BR Dublado/Legendado)',
     kind: 'embed',
-    lang: 'auto',
-    movieTemplate: 'https://vidsrc.buzz/embed/movie/{tmdbId}',
-    tvTemplate: 'https://vidsrc.buzz/embed/tv/{tmdbId}/{season}/{episode}',
+    lang: 'pt',
+    movieTemplate: 'https://fshd.link/filme/{tmdbId}',
+    tvTemplate: 'https://fshd.link/serie/{tmdbId}/{season}/{episode}',
     priority: 7,
     active: true,
   },
   {
-    id: 'rec_2embed_cc_en',
-    name: '2Embed (Inglês / Multi)',
-    kind: 'embed',
-    lang: 'auto',
-    movieTemplate: 'https://www.2embed.cc/embed/{tmdbId}',
-    tvTemplate: 'https://www.2embed.cc/embedtv/{tmdbId}&s={season}&e={episode}',
+    id: 'rec_vidup_en',
+    name: 'VidUp 4K/HD (Inglês)',
+    kind: 'api',
+    lang: 'en',
+    movieTemplate: 'https://vidup.to/movie/{tmdbId}',
+    tvTemplate: 'https://vidup.to/tv/{tmdbId}/{season}/{episode}',
     priority: 8,
+    active: true,
+  },
+  {
+    id: 'rec_fshd_imdb_pt',
+    name: 'FSHD IMDb (PT-BR Dublado/Legendado)',
+    kind: 'embed',
+    lang: 'pt',
+    movieTemplate: 'https://fshd.link/filme/{imdbId}',
+    tvTemplate: 'https://fshd.link/serie/{imdbId}/{season}/{episode}',
+    priority: 9,
+    active: true,
+  },
+  {
+    id: 'rec_meowtv_multi',
+    name: 'MeowTV Multi-Áudio (Auto)',
+    kind: 'api',
+    lang: 'auto',
+    movieTemplate: 'https://meowtv.ru/movie/{tmdbId}',
+    tvTemplate: 'https://meowtv.ru/tv/{tmdbId}/{season}/{episode}',
+    priority: 10,
+    active: true,
+  },
+  {
+    id: 'rec_freeapi_anime',
+    name: 'FreeAPI Pro · Anime HLS (EN / JA + Leg.)',
+    kind: 'api',
+    lang: 'auto',
+    movieTemplate: 'https://freeapi.pro/api/anime?action=search&q={title}',
+    tvTemplate: 'https://freeapi.pro/api/anime?action=search&q={title}&ep={episode}',
+    priority: 11,
+    active: true,
+  },
+  {
+    id: 'rec_freeapi_movies',
+    name: 'FreeAPI Pro · Movies & Series (/api/msearch)',
+    kind: 'api',
+    lang: 'auto',
+    movieTemplate: 'https://freeapi.pro/api/msearch?q={title}',
+    tvTemplate: 'https://freeapi.pro/api/msearch?q={title}',
+    priority: 12,
+    active: true,
+  },
+  {
+    id: 'rec_streambetter_json',
+    name: 'StreamBetter · API JSON / Embed (PT-BR)',
+    kind: 'api',
+    lang: 'auto',
+    movieTemplate: 'https://streambetter.xyz/api/v1/stream?tmdb_id={tmdbId}&type=movie',
+    tvTemplate: 'https://streambetter.xyz/api/v1/stream?tmdb_id={tmdbId}&type=tv&season={season}&episode={episode}',
+    priority: 13,
     active: true,
   },
 ] as const;
 
-const KNOWN_CLOUDFLARE_BLOCKED_SOURCE_RE =
-  /(?:embedmaster\.link|api\.watcha\.one|superflixapi\.(?:lat|boats)|mgeb\.(?:lat|space))/i;
+export const KNOWN_CLOUDFLARE_BLOCKED_SOURCE_RE =
+  /(?:embedmaster\.link|api\.watcha\.one|superflixapi\.(?:lat|boats)|mgeb\.(?:lat|space)|myembed\.biz|2embed\.cc|videm\.buzz|vidsrc\.buzz)/i;
+
+export function parseM3uPlaylistText(
+  rawText: string,
+  maxEntries = 60
+): Array<{
+  name: string;
+  groupTitle: string;
+  streamUrl: string;
+  logoUrl?: string;
+  lang: CustomVideoSourceLang;
+}> {
+  const lines = (rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const results: Array<{
+    name: string;
+    groupTitle: string;
+    streamUrl: string;
+    logoUrl?: string;
+    lang: CustomVideoSourceLang;
+  }> = [];
+  const seenUrls = new Set<string>();
+
+  let pendingTitle = '';
+  let pendingGroup = 'M3U';
+  let pendingLogo = '';
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    if (line.startsWith('#EXTINF')) {
+      const commaIdx = line.lastIndexOf(',');
+      pendingTitle = commaIdx !== -1 ? line.slice(commaIdx + 1).trim() : '';
+      const groupMatch = line.match(/group-title=["']([^"']*)["']/i);
+      pendingGroup = groupMatch?.[1]?.trim() || 'M3U';
+      const logoMatch = line.match(/tvg-logo=["']([^"']*)["']/i);
+      pendingLogo = logoMatch?.[1]?.trim() || '';
+      continue;
+    }
+
+    if (line.startsWith('#')) continue;
+    if (!/^https?:\/\//i.test(line)) {
+      pendingTitle = '';
+      pendingGroup = 'M3U';
+      pendingLogo = '';
+      continue;
+    }
+
+    if (seenUrls.has(line)) continue;
+    seenUrls.add(line);
+
+    const safeName = (pendingTitle || `Stream M3U ${results.length + 1}`)
+      .replace(/[<>]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 60);
+
+    const hint = `${safeName} ${pendingGroup}`.toLowerCase();
+    let lang: CustomVideoSourceLang = 'auto';
+    if (/(?:legend|pt-sub|\bleg\b)/i.test(hint)) lang = 'sub';
+    else if (/(?:\bpt\b|pt-br|dublado|brasil|brazil|portugu)/i.test(hint)) lang = 'pt';
+    else if (/(?:espan|spanish|latino|castellano|\bes\b)/i.test(hint)) lang = 'es';
+    else if (/(?:english|ingl[eê]s|\ben\b)/i.test(hint)) lang = 'en';
+
+    results.push({
+      name: safeName,
+      groupTitle: pendingGroup.slice(0, 40),
+      streamUrl: line.slice(0, 500),
+      ...(pendingLogo && /^https?:\/\//i.test(pendingLogo) ? { logoUrl: pendingLogo } : {}),
+      lang,
+    });
+
+    pendingTitle = '';
+    pendingGroup = 'M3U';
+    pendingLogo = '';
+
+    if (results.length >= maxEntries) break;
+  }
+
+  return results;
+}
 
 function normalizeTemplateKey(url?: string | null): string {
   return (url || '').trim().toLowerCase().replace(/\/+$/, '');
@@ -885,6 +1034,7 @@ export function detectStreamKind(url?: string | null): StreamKind {
   }
   if (
     clean.endsWith('.mp4') ||
+    clean.endsWith('.mkv') ||
     clean.endsWith('.webm') ||
     clean.endsWith('.ogg') ||
     clean.endsWith('.ogv') ||
@@ -996,6 +1146,8 @@ export function buildCustomEmbedUrl(params: {
   template: string;
   tmdbId: number;
   imdbId?: string | null;
+  title?: string | null;
+  releaseYear?: string | null;
   mediaType?: MediaType;
   seasonNumber?: number | string | null;
   episodeNumber?: number | string | null;
@@ -1011,10 +1163,14 @@ export function buildCustomEmbedUrl(params: {
   const player = validateMegaEmbedPlayer(params.player, DEFAULT_PLAYER_CONFIG.defaultPlayer);
   const color = sanitizeHexColor(params.colorHex, DEFAULT_PLAYER_CONFIG.defaultColorHex);
   const imdb = sanitizeImdbId(params.imdbId) || String(validId);
+  const encodedTitle = encodeURIComponent((params.title || '').trim());
+  const cleanYear = encodeURIComponent((params.releaseYear || '').trim().slice(0, 4));
 
   return cleanTemplate
     .replace(/\{tmdbId\}|\{tmdb_id\}|\{TMDB_ID\}|\{id\}/g, String(validId))
     .replace(/\{imdbId\}|\{imdb_id\}|\{IMDB_ID\}/g, imdb)
+    .replace(/\{title\}|\{TITLE\}|\{query\}|\{QUERY\}/g, encodedTitle)
+    .replace(/\{year\}|\{YEAR\}/g, cleanYear)
     .replace(/\{season\}|\{SEASON\}|\{temporada\}/g, String(season))
     .replace(/\{episode\}|\{EPISODE\}|\{episodio\}|\{episódio\}/g, String(episode))
     .replace(/\{player\}/g, encodeURIComponent(player))
@@ -1051,6 +1207,8 @@ export function buildOrderedSourceCascade(
   params: {
     tmdbId: number;
     imdbId?: string | null;
+    title?: string | null;
+    releaseYear?: string | null;
     mediaType: MediaType;
     seasonNumber?: number;
     episodeNumber?: number;
@@ -1071,6 +1229,8 @@ export function buildOrderedSourceCascade(
         template: customTemplateRaw,
         tmdbId: validId,
         imdbId: params.imdbId,
+        title: params.title,
+        releaseYear: params.releaseYear,
         mediaType: params.mediaType,
         seasonNumber: season,
         episodeNumber: episode,
@@ -1138,6 +1298,8 @@ export function buildOrderedSourceCascade(
         template,
         tmdbId: validId,
         imdbId: params.imdbId,
+        title: params.title,
+        releaseYear: params.releaseYear,
         mediaType: params.mediaType,
         seasonNumber: season,
         episodeNumber: episode,

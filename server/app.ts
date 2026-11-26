@@ -1,6 +1,9 @@
 import './env.ts';
+import os from 'node:os';
 import express, { type Express } from 'express';
+import { TMDB_BR_WATCH_PROVIDERS } from '../shared/catalogUtils.ts';
 import { normalizeTmdbId } from '../shared/playerUrl.ts';
+import type { CatalogSortBy, NetworkInfoResponse } from '../shared/types.ts';
 import {
   type AuthenticatedRequest,
   globalErrorHandler,
@@ -19,6 +22,7 @@ import { PlayerService } from './services/PlayerService.ts';
 import { ProfileService } from './services/ProfileService.ts';
 import { RecommendationService } from './services/RecommendationService.ts';
 import { SiteConfigService } from './services/SiteConfigService.ts';
+import { StreamBetterService } from './services/StreamBetterService.ts';
 import { StreamResolverService } from './services/StreamResolverService.ts';
 import { SubscriptionService } from './services/SubscriptionService.ts';
 import { SystemSettingsService } from './services/SystemSettingsService.ts';
@@ -75,6 +79,46 @@ export function createApiApp(): Express {
     }
   });
 
+  // --- Local Wi-Fi / LAN Origins for Smart TV Mirroring (No Secrets) ---
+  app.get('/api/system/network-info', (_req, res) => {
+    const port = Number(process.env.PORT) || 3000;
+    const ifaces = os.networkInterfaces();
+    const lanIps: string[] = [];
+
+    const isPrivateLanIp = (ip: string): boolean =>
+      ip.startsWith('192.168.') ||
+      ip.startsWith('10.') ||
+      /^172\.(?:1[6-9]|2\d|3[01])\./.test(ip);
+
+    for (const list of Object.values(ifaces)) {
+      if (!Array.isArray(list)) continue;
+      for (const info of list) {
+        if (!info || info.internal || info.family !== 'IPv4' || !info.address) continue;
+        if (!isPrivateLanIp(info.address)) continue;
+        if (!lanIps.includes(info.address)) {
+          lanIps.push(info.address);
+        }
+      }
+    }
+
+    const rankIp = (ip: string): number => {
+      if (ip.startsWith('192.168.')) return 0;
+      if (ip.startsWith('10.')) return 1;
+      if (/^172\.(?:1[6-9]|2\d|3[01])\./.test(ip)) return 2;
+      return 3;
+    };
+    lanIps.sort((a, b) => rankIp(a) - rankIp(b));
+
+    const portSuffix = port === 80 ? '' : `:${port}`;
+    const localOrigins = lanIps.map((ip) => `http://${ip}${portSuffix}`);
+    const payload: NetworkInfoResponse = {
+      port,
+      localOrigins,
+      preferredLanOrigin: localOrigins[0] ?? null,
+    };
+    res.json(payload);
+  });
+
   // --- Integrations Status (Admin Only) ---
   app.get('/api/integrations/status', requireAdmin, async (req, res, next) => {
     try {
@@ -97,11 +141,8 @@ export function createApiApp(): Express {
 
   app.get('/api/genres', async (_req, res, next) => {
     try {
-      const [movie, tv] = await Promise.all([
-        TMDBService.getGenres('movie'),
-        TMDBService.getGenres('tv'),
-      ]);
-      res.json({ movie, tv });
+      const genres = await TMDBService.getAllGenres();
+      res.json({ ...genres, providers: TMDB_BR_WATCH_PROVIDERS });
     } catch (err) {
       next(err);
     }
@@ -113,21 +154,35 @@ export function createApiApp(): Express {
         req.query.type === 'movie' || req.query.type === 'tv' ? req.query.type : 'all';
       const genreId = req.query.genreId ? Number(req.query.genreId) : null;
       const year = req.query.year ? Number(req.query.year) : null;
+      const yearFrom = req.query.yearFrom ? Number(req.query.yearFrom) : null;
+      const yearTo = req.query.yearTo ? Number(req.query.yearTo) : null;
       const minRating = req.query.minRating ? Number(req.query.minRating) : null;
+      const watchProvider = req.query.provider ? Number(req.query.provider) : null;
       const language = typeof req.query.language === 'string' ? req.query.language : 'all';
       const country = typeof req.query.country === 'string' ? req.query.country : 'all';
-      const sortBy =
-        req.query.sortBy === 'rating' || req.query.sortBy === 'release_date'
-          ? req.query.sortBy
-          : 'popularity';
+      const rawSort = typeof req.query.sortBy === 'string' ? req.query.sortBy : 'popularity';
+      const validSorts: readonly CatalogSortBy[] = [
+        'popularity',
+        'rating',
+        'votes',
+        'release_date',
+        'release_date_asc',
+        'title_asc',
+      ];
+      const sortBy: CatalogSortBy = validSorts.includes(rawSort as CatalogSortBy)
+        ? (rawSort as CatalogSortBy)
+        : 'popularity';
       const query = typeof req.query.q === 'string' ? req.query.q : '';
-      const page = req.query.page ? Math.max(1, Number(req.query.page)) : 1;
+      const page = req.query.page ? Math.max(1, Math.min(500, Number(req.query.page))) : 1;
 
       const data = await TMDBService.discover({
         mediaType,
         genreId: Number.isFinite(genreId) ? genreId : null,
         year: Number.isFinite(year) ? year : null,
+        yearFrom: Number.isFinite(yearFrom) ? yearFrom : null,
+        yearTo: Number.isFinite(yearTo) ? yearTo : null,
         minRating: Number.isFinite(minRating) ? minRating : null,
+        watchProvider: Number.isFinite(watchProvider) ? watchProvider : null,
         language,
         country,
         sortBy,
@@ -145,7 +200,8 @@ export function createApiApp(): Express {
       const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
       const type =
         req.query.type === 'movie' || req.query.type === 'tv' ? req.query.type : 'all';
-      const page = req.query.page ? Math.max(1, Number(req.query.page)) : 1;
+      const page = req.query.page ? Math.max(1, Math.min(500, Number(req.query.page))) : 1;
+      const year = req.query.year ? Number(req.query.year) : null;
       if (!q) {
         return res.json({
           items: [],
@@ -156,7 +212,7 @@ export function createApiApp(): Express {
           demoMode: !TMDBService.isConfigured(),
         });
       }
-      const data = await TMDBService.search(q, type, page);
+      const data = await TMDBService.search(q, type, page, Number.isFinite(year) ? year : null);
       res.json(data);
     } catch (err) {
       next(err);
@@ -361,13 +417,59 @@ export function createApiApp(): Express {
     }
   });
 
-  // --- Channels & Plans ---
+  // --- Channels, Live Hub & Plans ---
   app.get('/api/channels', async (req, res, next) => {
     try {
       const category = typeof req.query.category === 'string' ? req.query.category : undefined;
       res.json({ items: await ChannelService.listPublicAsync(category) });
     } catch (err) {
       next(err);
+    }
+  });
+
+  app.get('/api/live/hub', async (_req, res, next) => {
+    try {
+      const adminChannels = await ChannelService.listPublicAsync();
+      const hub = await StreamBetterService.getLiveHub(adminChannels);
+      res.json(hub);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/live/resolve', optionalAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      await SystemSettingsService.ensureHydrated();
+      const sys = SystemSettingsService.getSettings();
+      if (sys.requireAuthForPlayer && !req.identity) {
+        return res.status(401).json({ error: 'Faça login na plataforma para assistir ao vivo.' });
+      }
+
+      const id = typeof req.query.id === 'string' ? req.query.id.trim().slice(0, 120) : undefined;
+      const rawKind = typeof req.query.kind === 'string' ? req.query.kind.trim() : '';
+      const kind =
+        rawKind === 'channel' || rawKind === 'game' || rawKind === 'event' ? rawKind : undefined;
+      const slug = typeof req.query.slug === 'string' ? req.query.slug.trim().slice(0, 140) : undefined;
+      const title =
+        typeof req.query.title === 'string' ? req.query.title.trim().slice(0, 160) : undefined;
+      const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim().slice(0, 600) : '';
+
+      if (rawUrl && !/^https?:\/\//i.test(rawUrl)) {
+        return res.status(400).json({ error: 'URL de transmissão ao vivo inválida.' });
+      }
+
+      const resolution = await StreamResolverService.resolveLiveStreamBetterPlayback({
+        id,
+        kind,
+        slug,
+        rawUrl: rawUrl || undefined,
+        title,
+      });
+      res.json(resolution);
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Erro ao resolver transmissão ao vivo.',
+      });
     }
   });
 
@@ -600,6 +702,27 @@ export function createApiApp(): Express {
     }
   });
 
+  app.post('/api/admin/player-sources/discover', requireAdmin, async (req, res, next) => {
+    try {
+      const cfg = await PlayerService.getConfigAsync(true);
+      const rawSources = Array.isArray(req.body?.customSources)
+        ? req.body.customSources
+        : cfg.customSources || [];
+      const extraUrls = Array.isArray(req.body?.extraUrls)
+        ? req.body.extraUrls.filter((u: unknown): u is string => typeof u === 'string')
+        : [];
+      const m3uUrl = typeof req.body?.m3uUrl === 'string' ? req.body.m3uUrl : undefined;
+      const result = await StreamResolverService.discoverAndVerifySources({
+        customSources: rawSources,
+        extraUrls,
+        m3uUrl,
+      });
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get('/api/admin/site-config', requireAdmin, async (_req, res, next) => {
     try {
       res.json(await SiteConfigService.getConfigAsync(true));
@@ -634,7 +757,9 @@ export function createApiApp(): Express {
   app.post('/api/admin/diagnostics/test', requireAdmin, async (req, res, next) => {
     try {
       const target =
-        req.body?.target === 'player' || req.body?.target === 'firestore'
+        req.body?.target === 'player' ||
+        req.body?.target === 'firestore' ||
+        req.body?.target === 'streambetter'
           ? req.body.target
           : 'tmdb';
       const result = await AdminService.runDiagnostic(target, req.headers.authorization);

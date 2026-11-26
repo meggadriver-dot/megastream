@@ -3,6 +3,7 @@ import { Bookmark, Check, ChevronRight, Play, Sparkles, Star, X } from 'lucide-r
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import type { GenreItem, MediaItem } from '../../shared/types';
+import type { WatchProviderOption } from '../../shared/catalogUtils';
 import { DemoBanner } from '../components/DemoBanner';
 import { MediaRow } from '../components/MediaRow';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,7 +19,12 @@ interface HomeCatalogPayload {
   popularSeries: MediaItem[];
   topRatedSeries: MediaItem[];
   onAirSeries: MediaItem[];
-  genres: { movie: GenreItem[]; tv: GenreItem[] };
+  novelas?: MediaItem[];
+  animes?: MediaItem[];
+  doramas?: MediaItem[];
+  brazilian?: MediaItem[];
+  genres: { movie: GenreItem[]; tv: GenreItem[]; unified?: GenreItem[] };
+  providers?: WatchProviderOption[];
   source: 'tmdb' | 'demo';
   demoMode: boolean;
 }
@@ -217,29 +223,100 @@ export function HomePage() {
         </motion.section>
       )}
 
-      {/* Quick Genre Bar */}
-      <section className="space-y-3" aria-label="Categorias por gênero">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-lg font-bold text-white">Categorias</h2>
-          <Link
-            to="/ai"
-            className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-medium text-sky-300 hover:text-sky-200"
-          >
-            <Sparkles className="w-4 h-4" aria-hidden="true" />
-            Descobrir com IA Inteligente
-          </Link>
+      {/* Quick Genre & Streaming Bar */}
+      <section className="space-y-3" aria-label="Categorias e plataformas TMDB">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-display text-lg font-bold text-white">Explorar Catálogo TMDB</h2>
+          <div className="flex items-center gap-4">
+            <Link
+              to="/explore"
+              className="text-xs sm:text-sm font-medium text-sky-300 hover:text-sky-200 whitespace-nowrap"
+            >
+              Ver catálogo completo
+            </Link>
+            <Link
+              to="/ai"
+              className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-medium text-sky-300 hover:text-sky-200 whitespace-nowrap"
+            >
+              <Sparkles className="w-4 h-4" aria-hidden="true" />
+              IA Inteligente
+            </Link>
+          </div>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto ms-scrollbar-hide pb-1">
-          {data.genres.movie.slice(0, 10).map((g) => (
+          <Link
+            to="/explore"
+            className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+            style={{ backgroundColor: 'var(--ms-accent)' }}
+          >
+            Todos os Títulos
+          </Link>
+          <Link
+            to="/explore?type=movie"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Filmes
+          </Link>
+          <Link
+            to="/explore?type=tv"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Séries
+          </Link>
+          <Link
+            to="/explore?type=tv&genre=10766"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Novelas
+          </Link>
+          <Link
+            to="/explore?genre=16&lang=ja"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Animes
+          </Link>
+          <Link
+            to="/explore?type=tv&country=KR"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Doramas
+          </Link>
+          <Link
+            to="/explore?country=BR"
+            className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+          >
+            Brasil
+          </Link>
+          {(data.genres.unified && data.genres.unified.length > 0
+            ? data.genres.unified
+            : data.genres.movie
+          ).map((g) => (
             <Link
               key={g.id}
-              to={`/explore?type=movie&genre=${g.id}`}
+              to={`/explore?genre=${g.id}`}
               className="px-4 py-2 rounded-xl ms-glass text-xs sm:text-sm font-medium text-slate-200 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
             >
               {g.name}
             </Link>
           ))}
         </div>
+
+        {data.providers && data.providers.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto ms-scrollbar-hide pb-1">
+            <span className="text-xs font-medium text-slate-400 whitespace-nowrap shrink-0 pr-1">
+              Por Streaming:
+            </span>
+            {data.providers.slice(0, 8).map((p) => (
+              <Link
+                key={p.id}
+                to={`/explore?provider=${p.id}`}
+                className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-medium text-slate-300 hover:text-white hover:border-sky-400/50 transition-colors whitespace-nowrap shrink-0"
+              >
+                {p.name}
+              </Link>
+            ))}
+          </div>
+        )}
       </section>
 
       {history.length > 0 && (
@@ -367,6 +444,46 @@ export function HomePage() {
         items={data.popularSeries}
         seeMoreTo="/explore?type=tv"
       />
+
+      {data.onAirSeries && data.onAirSeries.length > 0 && (
+        <MediaRow
+          title="Séries no Ar e Episódios de Hoje"
+          items={data.onAirSeries}
+          seeMoreTo="/explore?type=tv&sort=release_date"
+        />
+      )}
+
+      {data.novelas && data.novelas.length > 0 && (
+        <MediaRow
+          title="Novelas e Dramaturgia"
+          items={data.novelas}
+          seeMoreTo="/explore?type=tv&genre=10766"
+        />
+      )}
+
+      {data.animes && data.animes.length > 0 && (
+        <MediaRow
+          title="Animes e Animações"
+          items={data.animes}
+          seeMoreTo="/explore?genre=16&lang=ja"
+        />
+      )}
+
+      {data.brazilian && data.brazilian.length > 0 && (
+        <MediaRow
+          title="Cinema e Séries do Brasil"
+          items={data.brazilian}
+          seeMoreTo="/explore?country=BR"
+        />
+      )}
+
+      {data.doramas && data.doramas.length > 0 && (
+        <MediaRow
+          title="Doramas e Produções Asiáticas"
+          items={data.doramas}
+          seeMoreTo="/explore?type=tv&country=KR"
+        />
+      )}
 
       <MediaRow
         title="Lançamentos e Em Cartaz"

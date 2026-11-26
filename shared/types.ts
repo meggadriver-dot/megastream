@@ -90,6 +90,23 @@ export interface SeasonDetail extends SeasonSummary {
   episodes: EpisodeItem[];
 }
 
+export type CatalogSortBy =
+  | 'popularity'
+  | 'rating'
+  | 'votes'
+  | 'release_date'
+  | 'release_date_asc'
+  | 'title_asc';
+
+export interface MediaCollectionSummary {
+  id: number;
+  name: string;
+  overview: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  parts: MediaItem[];
+}
+
 export interface MediaDetail extends MediaItem {
   runtime: number | null;
   status: string;
@@ -99,6 +116,7 @@ export interface MediaDetail extends MediaItem {
   videos: VideoItem[];
   recommendations: MediaItem[];
   similar: MediaItem[];
+  collection?: MediaCollectionSummary | null;
   numberOfSeasons?: number;
   numberOfEpisodes?: number;
   seasons?: SeasonSummary[];
@@ -198,6 +216,35 @@ export interface CustomSourceTestResult {
   testedUrl: string;
   message: string;
   latencyMs: number;
+}
+
+export interface DiscoveredM3uEntry {
+  name: string;
+  groupTitle: string;
+  streamUrl: string;
+  logoUrl?: string;
+  lang: CustomVideoSourceLang;
+  verified?: boolean;
+}
+
+export interface SourceDiscoveryResponse {
+  sources: CustomVideoSource[];
+  testResults: CustomSourceTestResult[];
+  discoveredM3uEntries: DiscoveredM3uEntry[];
+  summary: {
+    totalScanned: number;
+    activeCount: number;
+    addedCount: number;
+    pausedBrokenCount: number;
+    m3uEntriesCount: number;
+    elapsedMs: number;
+  };
+}
+
+export interface NetworkInfoResponse {
+  port: number;
+  localOrigins: string[];
+  preferredLanOrigin: string | null;
 }
 
 export interface PlayerConfig {
@@ -399,6 +446,8 @@ export interface IntegrationStatus {
   tmdbActiveTokenSource: 'env' | 'admin_override' | 'none';
   geminiConfigured: boolean;
   geminiActiveKeySource: 'env' | 'admin_override' | 'none';
+  streamBetterConfigured?: boolean;
+  streamBetterActiveKeySource?: 'env' | 'admin_override' | 'none';
   firebaseConfigured: boolean;
   megaEmbedConfigured: boolean;
   playerSourceMode: PlayerSourceMode;
@@ -447,6 +496,9 @@ export interface AdminSecretsStatus {
   hasCustomGeminiKey: boolean;
   geminiKeyMask: string;
   hasEnvGeminiKey: boolean;
+  hasCustomStreamBetterKey?: boolean;
+  streamBetterKeyMask?: string;
+  hasEnvStreamBetterKey?: boolean;
 }
 
 export interface AdminSystemSettingsResponse {
@@ -455,13 +507,78 @@ export interface AdminSystemSettingsResponse {
 }
 
 export interface DiagnosticResult {
-  target: 'tmdb' | 'player' | 'firestore';
+  target: 'tmdb' | 'player' | 'firestore' | 'streambetter';
   ok: boolean;
   latencyMs: number;
   statusCode?: number;
   message: string;
   detail?: string;
   testedAt: string;
+}
+
+export interface LiveEpgProgram {
+  title: string;
+  startAt: string;
+  stopAt: string;
+  isLive: boolean;
+  image?: string | null;
+  description?: string | null;
+}
+
+export interface LiveHubChannel extends LiveChannel {
+  slug?: string;
+  source?: 'admin' | 'direct' | 'streambetter';
+  isDirectStream?: boolean;
+  directStreamUrl?: string;
+  backupDirectUrls?: string[];
+  rawCategories?: string[];
+  nowPlaying?: LiveEpgProgram | null;
+  nextProgram?: LiveEpgProgram | null;
+}
+
+export interface LiveGameCard {
+  id: string;
+  slug: string;
+  title: string;
+  sport: string;
+  league?: string;
+  startTime?: string;
+  homeTeam?: { name: string; image?: string | null };
+  awayTeam?: { name: string; image?: string | null };
+  players: string[];
+  primaryUrl: string;
+}
+
+export interface LiveEventCard {
+  id: string;
+  slug: string;
+  title: string;
+  category: string;
+  image?: string | null;
+  startTime?: string;
+  players: string[];
+  primaryUrl: string;
+}
+
+export interface LiveHubResponse {
+  channels: LiveHubChannel[];
+  games: LiveGameCard[];
+  events: LiveEventCard[];
+  categories: string[];
+  sports: string[];
+  hasStreamBetterKey: boolean;
+}
+
+export interface LivePlayResolution {
+  id: string;
+  title: string;
+  streamUrl: string;
+  streamKind: StreamKind;
+  sandboxPolicy: IframeSandboxPolicy;
+  referrerPolicy: 'no-referrer' | 'strict-origin';
+  subtitles?: SubtitleTrack[];
+  audioOptions?: PlayerAudioOption[];
+  resolvedFromApi: boolean;
 }
 
 export interface AdminDashboardStats {

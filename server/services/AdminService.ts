@@ -13,6 +13,7 @@ import { FirestoreRestService } from './FirestoreRestService.ts';
 import { PlayerService } from './PlayerService.ts';
 import { RecommendationService } from './RecommendationService.ts';
 import { SiteConfigService } from './SiteConfigService.ts';
+import { StreamBetterService } from './StreamBetterService.ts';
 import { StreamResolverService } from './StreamResolverService.ts';
 import { SystemSettingsService } from './SystemSettingsService.ts';
 import { TMDBService } from './TMDBService.ts';
@@ -66,6 +67,7 @@ class AdminServiceImpl {
     const sys = SystemSettingsService.getSettings();
     const tmdbToken = SystemSettingsService.getActiveTmdbToken();
     const geminiKey = SystemSettingsService.getActiveGeminiKey();
+    const streamBetterKey = SystemSettingsService.getActiveStreamBetterKey();
     const playerCfg = playerConfigStore.getConfig();
 
     return {
@@ -74,6 +76,8 @@ class AdminServiceImpl {
       tmdbActiveTokenSource: tmdbToken.source,
       geminiConfigured: RecommendationService.isGeminiConfigured(),
       geminiActiveKeySource: geminiKey.source,
+      streamBetterConfigured: Boolean(streamBetterKey.key),
+      streamBetterActiveKeySource: streamBetterKey.source,
       firebaseConfigured: true,
       megaEmbedConfigured: true,
       playerSourceMode: playerCfg.sourceMode,
@@ -86,7 +90,7 @@ class AdminServiceImpl {
   }
 
   async runDiagnostic(
-    target: 'tmdb' | 'player' | 'firestore',
+    target: 'tmdb' | 'player' | 'firestore' | 'streambetter',
     bearerToken?: string
   ): Promise<DiagnosticResult> {
     const started = Date.now();
@@ -96,6 +100,9 @@ class AdminServiceImpl {
     ]);
     if (target === 'tmdb') {
       return TMDBService.testConnection();
+    }
+    if (target === 'streambetter') {
+      return StreamBetterService.testConnection();
     }
 
     if (target === 'player') {

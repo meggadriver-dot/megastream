@@ -72,3 +72,36 @@ export function sanitizeM3uFileName(title: string): string {
     .slice(0, 60);
   return `${slug || 'megastream-video'}.m3u`;
 }
+
+export function isLocalhostOrigin(urlOrHost?: string | null): boolean {
+  const raw = (urlOrHost || '').trim();
+  if (!raw) return false;
+  try {
+    const host = raw.includes('://') ? new URL(raw).hostname.toLowerCase() : raw.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+export function resolveLanShareUrl(rawUrl: string, preferredLanOrigin?: string | null): string {
+  const clean = (rawUrl || '').trim();
+  const lanOrigin = (preferredLanOrigin || '').trim().replace(/\/+$/, '');
+  if (!clean) return lanOrigin;
+  if (!lanOrigin) return clean;
+  try {
+    const parsed = new URL(clean);
+    if (isLocalhostOrigin(parsed.hostname)) {
+      const target = new URL(lanOrigin);
+      parsed.protocol = target.protocol;
+      parsed.host = target.host;
+      return parsed.toString();
+    }
+    return parsed.toString();
+  } catch {
+    if (clean.startsWith('/')) {
+      return `${lanOrigin}${clean}`;
+    }
+    return clean;
+  }
+}

@@ -30,14 +30,18 @@ interface AdminApiSourcesTabProps {
   onTmdbTokenInputChange: (v: string) => void;
   geminiKeyInput: string;
   onGeminiKeyInputChange: (v: string) => void;
+  streamBetterKeyInput: string;
+  onStreamBetterKeyInputChange: (v: string) => void;
   saving: boolean;
-  testingTarget: 'tmdb' | 'player' | 'firestore' | null;
+  testingTarget: 'tmdb' | 'player' | 'firestore' | 'streambetter' | null;
   tmdbDiagnostic: DiagnosticResult | null;
+  streamBetterDiagnostic?: DiagnosticResult | null;
   customVideoSourcesCount?: number;
   onOpenVideoSources?: () => void;
   onSave: (e: React.FormEvent) => void;
-  onClearSecret: (target: 'tmdb' | 'gemini') => void;
+  onClearSecret: (target: 'tmdb' | 'gemini' | 'streambetter') => void;
   onTestTmdb: () => void;
+  onTestStreamBetter?: () => void;
   onResetDefaults: () => void;
 }
 
@@ -83,14 +87,18 @@ export function AdminApiSourcesTab({
   onTmdbTokenInputChange,
   geminiKeyInput,
   onGeminiKeyInputChange,
+  streamBetterKeyInput,
+  onStreamBetterKeyInputChange,
   saving,
   testingTarget,
   tmdbDiagnostic,
+  streamBetterDiagnostic = null,
   customVideoSourcesCount = 0,
   onOpenVideoSources,
   onSave,
   onClearSecret,
   onTestTmdb,
+  onTestStreamBetter,
   onResetDefaults,
 }: AdminApiSourcesTabProps) {
   return (
@@ -377,6 +385,82 @@ export function AdminApiSourcesTab({
                 </button>
               )}
             </div>
+          </div>
+
+          {/* StreamBetter Secret Key Override */}
+          <div className="space-y-1.5 pt-2 border-t border-white/10">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="api-streambetter-key" className="text-xs text-slate-300">
+                Chave Secreta StreamBetter API (sb_sk_...)
+              </label>
+              <span className="text-[11px] font-mono-tabular text-sky-300">
+                {secretsStatus?.hasCustomStreamBetterKey
+                  ? `Custom (${secretsStatus.streamBetterKeyMask})`
+                  : secretsStatus?.hasEnvStreamBetterKey
+                    ? 'Variável de Ambiente'
+                    : 'Feeds Públicos Sem Chave'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input
+                id="api-streambetter-key"
+                type="password"
+                autoComplete="off"
+                value={streamBetterKeyInput}
+                onChange={(e) => onStreamBetterKeyInputChange(e.target.value)}
+                placeholder="Cole sb_sk_... para habilitar extração direta /api/v1/stream..."
+                className="flex-1 min-w-[220px] h-10 px-3.5 rounded-xl bg-black/40 border border-white/10 text-sm text-white font-mono-tabular"
+              />
+              {secretsStatus?.hasCustomStreamBetterKey && (
+                <button
+                  type="button"
+                  onClick={() => onClearSecret('streambetter')}
+                  disabled={saving}
+                  title="Remover chave StreamBetter customizada"
+                  className="h-10 px-3 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs font-medium inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Limpar
+                </button>
+              )}
+              {onTestStreamBetter && (
+                <button
+                  type="button"
+                  onClick={onTestStreamBetter}
+                  disabled={testingTarget === 'streambetter'}
+                  className="h-10 px-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs font-semibold text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+                >
+                  <Activity className="w-3.5 h-3.5 text-sky-400" />
+                  {testingTarget === 'streambetter'
+                    ? 'Testando StreamBetter...'
+                    : 'Testar StreamBetter JSON'}
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Canais ao vivo, jogos, eventos, EPG e episódios funcionam sem chave. A chave secreta libera links diretos .m3u8/.mp4 via <span className="font-mono-tabular">/api/v1/stream</span> com Bearer Auth exclusivamente no servidor.
+            </p>
+            {streamBetterDiagnostic && (
+              <div
+                className={`rounded-xl p-3 border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                  streamBetterDiagnostic.ok
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                    : 'bg-amber-500/10 border-amber-500/35 text-amber-200'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {streamBetterDiagnostic.ok ? (
+                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  )}
+                  <span className="font-medium">{streamBetterDiagnostic.message}</span>
+                </div>
+                <span className="font-mono-tabular text-[11px] opacity-80 shrink-0">
+                  {streamBetterDiagnostic.latencyMs} ms
+                </span>
+              </div>
+            )}
           </div>
 
           {/* AI Mode & Limit */}

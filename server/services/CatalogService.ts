@@ -1,4 +1,4 @@
-import { deduplicateMediaByTmdbId } from '../../shared/catalogUtils.ts';
+import { deduplicateMediaByTmdbId, TMDB_BR_WATCH_PROVIDERS } from '../../shared/catalogUtils.ts';
 import { customMediaToMediaItem, mergeCustomCatalogIntoList } from '../../shared/siteConfigUtils.ts';
 import type { GenreItem, MediaItem } from '../../shared/types.ts';
 import { repositoryStore } from '../repositories/interfaces.ts';
@@ -86,9 +86,11 @@ class CatalogServiceImpl {
       .filter((c) => c.active)
       .map((c) => `${c.id}:${c.updatedAt}`)
       .join('|');
-    const homeCacheKey = `catalog:home:${sys.catalogSource}:${sys.tmdbLanguage}:${sys.tmdbImageQuality}:${sys.tmdbImageBaseUrl}:${customRev}`;
+    const homeCacheKey = `catalog:home:v2:${sys.catalogSource}:${sys.tmdbLanguage}:${sys.tmdbImageQuality}:${sys.tmdbImageBaseUrl}:${customRev}`;
     const cached = CacheService.get<Record<string, unknown>>(homeCacheKey);
     if (cached) return cached;
+
+    const emptyPage = { items: [] as MediaItem[], page: 1, totalPages: 1, totalResults: 0, source: 'tmdb' as const, demoMode: false };
 
     const [
       trending,
@@ -99,8 +101,12 @@ class CatalogServiceImpl {
       popularSeries,
       topRatedSeries,
       onAirSeries,
-      movieGenres,
-      tvGenres,
+      airingTodaySeries,
+      novelas,
+      animes,
+      doramas,
+      brazilian,
+      allGenres,
     ] = await Promise.all([
       TMDBService.getTrending(1),
       TMDBService.getMovieList('popular', 1),
@@ -110,8 +116,12 @@ class CatalogServiceImpl {
       TMDBService.getSeriesList('popular', 1),
       TMDBService.getSeriesList('top_rated', 1),
       TMDBService.getSeriesList('on_the_air', 1),
-      TMDBService.getGenres('movie'),
-      TMDBService.getGenres('tv'),
+      TMDBService.getSeriesList('airing_today', 1).catch(() => emptyPage),
+      TMDBService.discover({ mediaType: 'tv', genreId: 10766, sortBy: 'popularity', page: 1 }).catch(() => emptyPage),
+      TMDBService.discover({ mediaType: 'all', genreId: 16, language: 'ja', sortBy: 'popularity', page: 1 }).catch(() => emptyPage),
+      TMDBService.discover({ mediaType: 'tv', country: 'KR', sortBy: 'popularity', page: 1 }).catch(() => emptyPage),
+      TMDBService.discover({ mediaType: 'all', country: 'BR', sortBy: 'popularity', page: 1 }).catch(() => emptyPage),
+      TMDBService.getAllGenres(),
     ]);
 
     const customItems = repositoryStore.getCustomCatalog().filter((c) => c.active);
@@ -133,9 +143,14 @@ class CatalogServiceImpl {
       ...upcomingMovies.items,
       ...topRatedSeries.items,
       ...onAirSeries.items,
+      ...airingTodaySeries.items,
+      ...novelas.items,
+      ...animes.items,
+      ...doramas.items,
+      ...brazilian.items,
     ]);
     this.syncedCatalog = deduplicateMediaByTmdbId([...this.syncedCatalog, ...combined]);
-    this.syncedGenres = { movie: movieGenres, tv: tvGenres };
+    this.syncedGenres = { movie: allGenres.movie, tv: allGenres.tv };
 
     const payload = {
       featured: featuredCustoms[0] ?? mergedTrending[0] ?? mergedPopularMovies[0] ?? null,
@@ -146,11 +161,13 @@ class CatalogServiceImpl {
       upcomingMovies: upcomingMovies.items,
       popularSeries: mergedPopularSeries,
       topRatedSeries: topRatedSeries.items,
-      onAirSeries: onAirSeries.items,
-      genres: {
-        movie: movieGenres,
-        tv: tvGenres,
-      },
+      onAirSeries: deduplicateMediaByTmdbId([...airingTodaySeries.items, ...onAirSeries.items]),
+      novelas: novelas.items,
+      animes: animes.items,
+      doramas: doramas.items,
+      brazilian: brazilian.items,
+      genres: allGenres,
+      providers: TMDB_BR_WATCH_PROVIDERS,
       source: popularMovies.source,
       demoMode: popularMovies.demoMode,
     };

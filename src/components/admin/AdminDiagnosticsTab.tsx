@@ -14,9 +14,9 @@ import type { DiagnosticResult, IntegrationStatus, SystemLogEntry } from '../../
 interface AdminDiagnosticsTabProps {
   integrations: IntegrationStatus | null;
   logs: SystemLogEntry[];
-  diagnostics: Partial<Record<'tmdb' | 'player' | 'firestore', DiagnosticResult>>;
-  testingTarget: 'tmdb' | 'player' | 'firestore' | null;
-  onRunDiagnostic: (target: 'tmdb' | 'player' | 'firestore') => void;
+  diagnostics: Partial<Record<'tmdb' | 'player' | 'firestore' | 'streambetter', DiagnosticResult>>;
+  testingTarget: 'tmdb' | 'player' | 'firestore' | 'streambetter' | null;
+  onRunDiagnostic: (target: 'tmdb' | 'player' | 'firestore' | 'streambetter') => void;
   onRunAllDiagnostics: () => void;
   onExportBackup: () => void;
   onClearCache: () => void;
@@ -41,7 +41,7 @@ export function AdminDiagnosticsTab({
   );
 
   const diagnosticCards: Array<{
-    target: 'tmdb' | 'player' | 'firestore';
+    target: 'tmdb' | 'player' | 'firestore' | 'streambetter';
     title: string;
     subtitle: string;
   }> = [
@@ -54,6 +54,11 @@ export function AdminDiagnosticsTab({
       target: 'player',
       title: 'Resolução de Player',
       subtitle: 'Testa construção de URLs para filmes e episódios.',
+    },
+    {
+      target: 'streambetter',
+      title: 'StreamBetter JSON & API',
+      subtitle: 'Testa feeds ao vivo, EPG e extração autenticada /api/v1/stream.',
     },
     {
       target: 'firestore',
@@ -181,7 +186,7 @@ export function AdminDiagnosticsTab({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {diagnosticCards.map((card) => {
             const res = diagnostics[card.target];
             const isRunning = testingTarget === card.target;

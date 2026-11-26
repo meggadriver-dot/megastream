@@ -317,7 +317,11 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-3">
               {detail.cast.map((actor) => (
-                <div key={actor.id} className="ms-glass rounded-2xl p-3 text-center space-y-2">
+                <Link
+                  key={actor.id}
+                  to={`/explore?q=${encodeURIComponent(actor.name)}`}
+                  className="ms-glass rounded-2xl p-3 text-center space-y-2 hover:border-sky-400/50 transition-colors"
+                >
                   {actor.profilePath ? (
                     <img
                       src={actor.profilePath}
@@ -334,7 +338,7 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
                     <p className="text-xs font-semibold text-white truncate">{actor.name}</p>
                     <p className="text-[11px] text-slate-400 truncate">{actor.character}</p>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
@@ -421,6 +425,12 @@ export function DetailsPage({ mediaType }: DetailsPageProps) {
         </section>
       )}
 
+      {detail.collection && detail.collection.parts.length > 0 && (
+        <MediaRow
+          title={`Coleção: ${detail.collection.name}`}
+          items={detail.collection.parts}
+        />
+      )}
       <MediaRow title="Recomendações" items={detail.recommendations} />
       <MediaRow title="Títulos Semelhantes" items={detail.similar} />
 

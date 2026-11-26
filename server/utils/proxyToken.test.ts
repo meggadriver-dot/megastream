@@ -42,6 +42,22 @@ test('stateless stream session tokens roundtrip and reject tampering or expiry',
   const segSig = signSegmentUrl(token, segUrl, 'test-secret-0123456789');
   assert.equal(verifySegmentUrl(token, segUrl, segSig, 'test-secret-0123456789'), true);
   assert.equal(verifySegmentUrl(token, 'https://evil.com/ssrf', segSig, 'test-secret-0123456789'), false);
+
+  // Explicit sua: false for CDNs rejecting Chrome User-Agent
+  const noUaToken = signStreamSessionToken(
+    {
+      u: 'https://bcdn.hakunaymatata.com/video.mp4',
+      sr: false,
+      sua: false,
+      k: 'video',
+    },
+    300,
+    'test-secret-0123456789'
+  );
+  const noUaDecoded = verifyStreamSessionToken(noUaToken, 'test-secret-0123456789');
+  assert.ok(noUaDecoded);
+  assert.equal(noUaDecoded.sua, false);
+  assert.equal(noUaDecoded.sr, false);
 });
 
 test('stateless subtitle tokens roundtrip and reject invalid signatures', () => {

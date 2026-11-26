@@ -292,9 +292,10 @@ service cloud.firestore {
 
     function isValidAdminSecrets(data) {
       return data.keys().hasAll(['updatedAt'])
-        && data.keys().hasOnly(['tmdbAccessToken', 'geminiApiKey', 'updatedAt'])
+        && data.keys().hasOnly(['tmdbAccessToken', 'geminiApiKey', 'streamBetterApiKey', 'updatedAt'])
         && (!('tmdbAccessToken' in data) || (data.tmdbAccessToken is string && data.tmdbAccessToken.size() <= 500))
         && (!('geminiApiKey' in data) || (data.geminiApiKey is string && data.geminiApiKey.size() <= 500))
+        && (!('streamBetterApiKey' in data) || (data.streamBetterApiKey is string && data.streamBetterApiKey.size() <= 500))
         && data.updatedAt is timestamp;
     }
 

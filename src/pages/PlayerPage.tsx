@@ -73,7 +73,15 @@ export function PlayerPage() {
   const { type, tmdbId } = useParams<{ type: string; tmdbId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { recordPlayback, history, loading: authLoading, firebaseUser, activeProfile } = useAuth();
+  const {
+    recordPlayback,
+    history,
+    loading: authLoading,
+    firebaseUser,
+    profile,
+    activeProfile,
+  } = useAuth();
+  const isAdmin = profile?.role === 'admin';
   const { siteConfig, runtimeSettings, playerBranding } = useSiteConfig();
 
   const mediaType: MediaType = type === 'tv' ? 'tv' : 'movie';
@@ -93,6 +101,7 @@ export function PlayerPage() {
   const [playerTimedOut, setPlayerTimedOut] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [fallbackActivityNonce, setFallbackActivityNonce] = useState(0);
 
   // Auto-next state
   const effectiveBranding = embedData?.branding ?? playerBranding;
@@ -246,7 +255,15 @@ export function PlayerPage() {
       setPlayerTimedOut(true);
     }, timeoutMs);
     return () => clearTimeout(timer);
-  }, [playerLoading, authBlocked, authPending, reloadNonce, embedData?.embedUrl, runtimeSettings.embedTimeoutSeconds]);
+  }, [
+    playerLoading,
+    authBlocked,
+    authPending,
+    reloadNonce,
+    fallbackActivityNonce,
+    embedData?.embedUrl,
+    runtimeSettings.embedTimeoutSeconds,
+  ]);
 
   const currentEpisode =
     mediaType === 'tv'
@@ -508,19 +525,21 @@ export function PlayerPage() {
         >
           <div
             ref={containerRef}
-            className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border shadow-2xl"
+            className={`relative w-full rounded-2xl overflow-hidden bg-black border shadow-2xl ${
+              errorMsg || authBlocked ? 'min-h-[260px] sm:aspect-video' : 'aspect-video'
+            }`}
             style={{ borderColor: `${playerAccentHex}55` }}
           >
             {authBlocked ? (
-              <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-4 p-6 text-center">
-                <AlertTriangle className="w-10 h-10 text-sky-400" />
-                <div className="space-y-1 max-w-md">
+              <div className="w-full min-h-[260px] sm:absolute sm:inset-0 bg-[#050814] flex flex-col items-center justify-center gap-4 px-5 py-7 sm:p-6 text-center">
+                <AlertTriangle className="w-9 h-9 sm:w-10 sm:h-10 text-sky-400 shrink-0" />
+                <div className="space-y-1.5 max-w-md">
                   <p className="text-base font-bold text-white">Login necessário para assistir</p>
-                  <p className="text-xs sm:text-sm text-slate-300">
+                  <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
                     O administrador restringiu o player apenas para usuários autenticados na plataforma.
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2.5 justify-center">
+                <div className="flex flex-wrap gap-2.5 justify-center pt-1">
                   <Link
                     to="/login"
                     className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
@@ -581,6 +600,10 @@ export function PlayerPage() {
                     onReady={() => {
                       setPlayerLoading(false);
                       setPlayerTimedOut(false);
+                    }}
+                    onAttemptingFallback={() => {
+                      setPlayerTimedOut(false);
+                      setFallbackActivityNonce((n) => n + 1);
                     }}
                     onStreamError={(msg) => {
                       setPlayerLoading(false);
@@ -731,25 +754,42 @@ export function PlayerPage() {
                 )}
 
                 {errorMsg && (
-                  <div className="absolute inset-0 bg-[#050814] flex flex-col items-center justify-center gap-3 p-6 text-center">
-                    <AlertTriangle className="w-10 h-10 text-amber-400" />
-                    <p className="text-base font-semibold text-white max-w-md">{errorMsg}</p>
-                    <div className="flex flex-wrap items-center justify-center gap-2.5">
+                  <div className="w-full min-h-[260px] sm:absolute sm:inset-0 bg-[#050814] flex flex-col items-center justify-center gap-4 px-5 py-7 sm:p-6 text-center">
+                    <div className="w-11 h-11 rounded-full bg-amber-500/15 border border-amber-400/25 flex items-center justify-center shrink-0">
+                      <AlertTriangle className="w-5 h-5 text-amber-400" aria-hidden="true" />
+                    </div>
+                    <div className="space-y-1.5 max-w-md">
+                      <p className="text-sm sm:text-base font-bold text-white">
+                        Reprodução indisponível no momento
+                      </p>
+                      <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                        {errorMsg}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
                       <button
                         type="button"
                         onClick={() => setReloadNonce((n) => n + 1)}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer"
+                        className="inline-flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-white cursor-pointer"
                         style={{ backgroundColor: playerAccentHex }}
                       >
-                        <RotateCcw className="w-4 h-4" />
+                        <RotateCcw className="w-4 h-4" aria-hidden="true" />
                         Tentar Novamente
                       </button>
+                      {isAdmin && (
+                        <Link
+                          to="/admin"
+                          className="inline-flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs sm:text-sm font-semibold text-white"
+                        >
+                          Painel Adm
+                        </Link>
+                      )}
                       <button
                         type="button"
                         onClick={handleExitPlayer}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white cursor-pointer"
+                        className="inline-flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs sm:text-sm font-semibold text-white cursor-pointer"
                       >
-                        <ArrowLeft className="w-4 h-4" />
+                        <ArrowLeft className="w-4 h-4" aria-hidden="true" />
                         Voltar
                       </button>
                     </div>
