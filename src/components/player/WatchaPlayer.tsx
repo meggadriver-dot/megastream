@@ -1,15 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import QRCode from 'qrcode';
 import {
   Captions,
   Cast,
   Check,
   ChevronLeft,
   ChevronRight,
-  Copy,
-  Download,
-  ExternalLink,
   FastForward,
   Gauge,
   Languages,
@@ -25,22 +21,15 @@ import {
   Settings,
   SkipForward,
   SlidersHorizontal,
-  Smartphone,
   Tv,
   Unlock,
   Upload,
   Volume2,
   VolumeX,
-  Wifi,
   X,
 } from 'lucide-react';
 import {
-  buildAndroidIntentUrl,
-  buildM3uPlaylistContent,
-  buildVlcStreamUrl,
   isLocalhostOrigin,
-  resolveLanShareUrl,
-  sanitizeM3uFileName,
   toAbsoluteStreamUrl,
 } from '../../../shared/castUtils';
 import {
@@ -305,13 +294,9 @@ export function WatchaPlayer({
     };
   });
 
-  // TV Mirroring / Cast & Same-Wi-Fi LAN Origin state
-  const [castQrDataUrl, setCastQrDataUrl] = useState<string>('');
+  // TV Direct Playback & Same-Wi-Fi LAN Origin state
   const [castStatusMsg, setCastStatusMsg] = useState<string | null>(null);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const [directCopied, setDirectCopied] = useState(false);
   const [networkInfo, setNetworkInfo] = useState<NetworkInfoResponse | null>(null);
-  const [useLanOrigin, setUseLanOrigin] = useState<boolean>(true);
   const [isCastConnected, setIsCastConnected] = useState<boolean>(false);
   const [castDeviceName, setCastDeviceName] = useState<string>('');
 
@@ -360,24 +345,12 @@ export function WatchaPlayer({
   const browserOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   const hasLocalhostOrigin = isLocalhostOrigin(browserOrigin);
   const effectiveCastOrigin =
-    hasLocalhostOrigin && useLanOrigin && networkInfo?.preferredLanOrigin
+    hasLocalhostOrigin && networkInfo?.preferredLanOrigin
       ? networkInfo.preferredLanOrigin
       : browserOrigin;
-  const castPageUrl = useMemo(() => {
-    if (typeof window === 'undefined') return '';
-    return resolveLanShareUrl(window.location.href, effectiveCastOrigin);
-  }, [effectiveCastOrigin]);
 
   const directStreamUrl = useMemo(
     () => toAbsoluteStreamUrl(activeStream.streamUrl, effectiveCastOrigin),
-    [activeStream.streamUrl, effectiveCastOrigin]
-  );
-  const androidIntentUrl = useMemo(
-    () => buildAndroidIntentUrl(activeStream.streamUrl, title, effectiveCastOrigin),
-    [activeStream.streamUrl, title, effectiveCastOrigin]
-  );
-  const vlcStreamUrl = useMemo(
-    () => buildVlcStreamUrl(activeStream.streamUrl, effectiveCastOrigin),
     [activeStream.streamUrl, effectiveCastOrigin]
   );
 
@@ -793,27 +766,15 @@ export function WatchaPlayer({
     return matches.map((c) => c.text).join('\n');
   }, [selectedSubtitleId, subCues, currentTime, subStyle.offsetSeconds]);
 
-  // Fetch local Wi-Fi network info and generate QR code when Cast modal is opened
+  // Fetch local Wi-Fi network info for direct cast origin
   useEffect(() => {
-    if (activePopover !== 'cast') return;
-    if (!networkInfo) {
-      fetch('/api/system/network-info')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data: NetworkInfoResponse | null) => {
-          if (data && typeof data.port === 'number') setNetworkInfo(data);
-        })
-        .catch(() => {});
-    }
-    const cleanShareUrl = castPageUrl || (typeof window !== 'undefined' ? window.location.href : '');
-    if (!cleanShareUrl) return;
-    QRCode.toDataURL(cleanShareUrl, {
-      width: 200,
-      margin: 1,
-      color: { dark: '#050814', light: '#ffffff' },
-    })
-      .then(setCastQrDataUrl)
-      .catch(() => setCastQrDataUrl(''));
-  }, [activePopover, castPageUrl, networkInfo]);
+    fetch('/api/system/network-info')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: NetworkInfoResponse | null) => {
+        if (data && typeof data.port === 'number') setNetworkInfo(data);
+      })
+      .catch(() => {});
+  }, []);
 
   // Mid-playback stall watchdog: if buffering/playing hangs > 12.5s without advancing, fail over automatically
   useEffect(() => {
@@ -1118,68 +1079,6 @@ export function WatchaPlayer({
     setCastStatusMsg('Transmissão Google Cast encerrada.');
   }, []);
 
-  const handlePromptAirPlay = useCallback(() => {
-    const video = videoRef.current as (HTMLVideoElement & {
-      webkitShowPlaybackTargetPicker?: () => void;
-    }) | null;
-    if (!video?.webkitShowPlaybackTargetPicker) {
-      setCastStatusMsg(
-        'AirPlay está disponível apenas no navegador Safari (iPhone, iPad ou Mac).'
-      );
-      return;
-    }
-    video.webkitShowPlaybackTargetPicker();
-    setCastStatusMsg('Seletor AirPlay aberto.');
-  }, []);
-
-  const handleCopyCastLink = useCallback(async () => {
-    const shareTarget = castPageUrl || window.location.href;
-    try {
-      await navigator.clipboard.writeText(shareTarget);
-      setLinkCopied(true);
-      window.setTimeout(() => setLinkCopied(false), 2000);
-    } catch {
-      setCastStatusMsg(`Copie este endereço para abrir na Smart TV: ${shareTarget}`);
-    }
-  }, [castPageUrl]);
-
-  const handleCopyDirectStreamUrl = useCallback(async () => {
-    if (!directStreamUrl) return;
-    try {
-      await navigator.clipboard.writeText(directStreamUrl);
-      setDirectCopied(true);
-      setCastStatusMsg(
-        'URL direta do vídeo copiada! Cole no TV Smarters, IPTV Smarters, VLC ou player da Smart TV.'
-      );
-      window.setTimeout(() => setDirectCopied(false), 2200);
-    } catch {
-      setCastStatusMsg('Não foi possível copiar automaticamente. Use o botão de baixar .M3U.');
-    }
-  }, [directStreamUrl]);
-
-  const handleDownloadM3u = useCallback(() => {
-    if (!activeStream.streamUrl) return;
-    const displayTitle = subtitleMeta ? `${title} - ${subtitleMeta}` : title;
-    const content = buildM3uPlaylistContent({
-      title: displayTitle,
-      streamUrl: activeStream.streamUrl,
-      posterUrl,
-      groupTitle: 'MegaStream',
-      origin: effectiveCastOrigin,
-    });
-    const blob = new Blob([content], { type: 'audio/x-mpegurl;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = sanitizeM3uFileName(displayTitle);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
-    setCastStatusMsg(
-      'Arquivo .M3U baixado! Abra no TV Smarters Pro, IPTV Smarters, TiviMate ou Android.'
-    );
-  }, [activeStream.streamUrl, subtitleMeta, title, posterUrl, effectiveCastOrigin]);
 
   // Keyboard shortcuts while player is mounted
   useEffect(() => {
@@ -1534,7 +1433,14 @@ export function WatchaPlayer({
             {allowTvCast && (
               <button
                 type="button"
-                onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
+                onClick={() => {
+                  if (isCastConnected) {
+                    setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'));
+                  } else {
+                    handlePromptGoogleCastDirect();
+                    setActivePopover('cast');
+                  }
+                }}
                 className={`h-10 px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
                   isCastConnected
                     ? 'bg-blue-600/30 border-blue-500/50 text-blue-300'
@@ -1542,10 +1448,10 @@ export function WatchaPlayer({
                 }`}
                 title={
                   isCastConnected
-                    ? `Transmitindo no ${castDeviceName || 'Google Cast'}`
-                    : 'Google Cast · Reprodução Direta na TV'
+                    ? `Transmitindo na TV (${castDeviceName || 'Google Cast'})`
+                    : 'Reproduzir Diretamente na TV'
                 }
-                aria-label="Google Cast na TV"
+                aria-label="Reproduzir diretamente na TV"
               >
                 {isCastConnected ? (
                   <span className="relative flex h-2 w-2 mr-0.5">
@@ -1559,8 +1465,8 @@ export function WatchaPlayer({
                   {isCastConnected
                     ? castDeviceName
                       ? `TV: ${castDeviceName}`
-                      : 'Cast Conectado'
-                    : 'Google Cast'}
+                      : 'TV Conectada'
+                    : 'Reproduzir na TV'}
                 </span>
               </button>
             )}
@@ -1774,9 +1680,16 @@ export function WatchaPlayer({
                   {allowTvCast && (
                     <button
                       type="button"
-                      onClick={() => setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'))}
-                      aria-label="Google Cast e Transmissão para TV"
-                      title="Google Cast (Chromecast, Google TV, Smart TV)"
+                      onClick={() => {
+                        if (isCastConnected) {
+                          setActivePopover((p) => (p === 'cast' ? 'none' : 'cast'));
+                        } else {
+                          handlePromptGoogleCastDirect();
+                          setActivePopover('cast');
+                        }
+                      }}
+                      aria-label="Reproduzir diretamente na TV"
+                      title="Reproduzir diretamente na TV (Google Cast)"
                       className={`flex h-9 sm:h-10 px-2 sm:px-2.5 rounded-xl items-center gap-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors ${
                         isCastConnected
                           ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50'
@@ -1789,9 +1702,9 @@ export function WatchaPlayer({
                       <span className="hidden sm:inline">
                         {isCastConnected
                           ? castDeviceName
-                            ? `Cast (${castDeviceName})`
-                            : 'Cast Conectado'
-                          : 'Google Cast'}
+                            ? `TV: ${castDeviceName}`
+                            : 'TV Conectada'
+                          : 'Reproduzir na TV'}
                       </span>
                     </button>
                   )}
@@ -2436,22 +2349,27 @@ export function WatchaPlayer({
         </div>
       )}
 
-      {/* POPOVER 4: Espelhar na TV & Apps Externos (Chromecast, AirPlay, TV Smarters .M3U, Android, VLC, QR Code) */}
+      {/* POPOVER 4: Reproduzir Diretamente na TV */}
       {activePopover === 'cast' && (
         <div
           role="dialog"
-          aria-label="Espelhar na TV"
+          aria-label="Reproduzir Diretamente na TV"
           className={`${
             isFullscreen ? 'absolute' : 'fixed'
           } inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto`}
         >
-          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-[#090e1f] border border-white/15 p-4 sm:p-5 shadow-2xl space-y-3.5 my-auto">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl bg-[#090e1f] border border-white/15 p-5 shadow-2xl space-y-4 my-auto">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Cast className="w-5 h-5 text-blue-400" />
-                <h3 className="font-display text-base font-bold text-white">
-                  Transmitir para TV & Google Cast
-                </h3>
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                  <Cast className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-display text-base font-bold text-white">
+                    Reproduzir Diretamente na TV
+                  </h3>
+                  <p className="text-[11px] text-slate-400">Transmissão para Smart TV e Google Cast</p>
+                </div>
               </div>
               <button
                 type="button"
@@ -2459,152 +2377,101 @@ export function WatchaPlayer({
                   setCastStatusMsg(null);
                   setActivePopover('none');
                 }}
-                aria-label="Fechar espelhar na TV"
+                aria-label="Fechar reprodução na TV"
                 className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Google Cast Direct Action */}
-            {isCastConnected ? (
-              <div className="p-3.5 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-between gap-3 shadow-inner">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="relative flex h-3 w-3 shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-white truncate">Transmitindo via Google Cast</p>
-                    <p className="text-[11px] text-blue-300 truncate">{castDeviceName || 'Dispositivo Google Cast'}</p>
-                  </div>
+            {/* Media Information */}
+            <div className="p-3 rounded-xl bg-black/40 border border-white/10 flex items-center gap-3">
+              {posterUrl ? (
+                <img
+                  src={posterUrl}
+                  alt={title}
+                  className="w-12 h-16 object-cover rounded-lg shrink-0 border border-white/10 shadow"
+                />
+              ) : (
+                <div className="w-12 h-16 bg-white/5 rounded-lg flex items-center justify-center shrink-0 border border-white/10">
+                  <Tv className="w-5 h-5 text-slate-500" />
                 </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-white truncate">{title}</p>
+                {subtitleMeta && (
+                  <p className="text-xs text-slate-400 truncate mt-0.5">{subtitleMeta}</p>
+                )}
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                    Transmissão Direta
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono-tabular">
+                    {currentTime ? formatClock(currentTime) : '00:00'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Active Connected State */}
+            {isCastConnected ? (
+              <div className="space-y-3">
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-2">
+                  <div className="flex items-center gap-2.5">
+                    <span className="relative flex h-3 w-3 shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                    </span>
+                    <p className="text-xs font-bold text-emerald-300 uppercase tracking-wide">
+                      Transmitindo Agora
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold text-white">
+                    {castDeviceName || 'Smart TV'}
+                  </p>
+                  <p className="text-xs text-slate-300">
+                    O vídeo está reproduzindo diretamente na sua TV. Use o player do celular/computador para pausar ou avançar.
+                  </p>
+                </div>
+
                 <button
                   type="button"
                   onClick={handleStopGoogleCast}
-                  className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-xs font-semibold text-red-300 cursor-pointer shrink-0 transition-colors"
+                  className="w-full py-2.5 px-4 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 hover:text-red-200 text-xs font-semibold cursor-pointer transition-colors flex items-center justify-center gap-2"
                 >
-                  Desconectar
+                  <X className="w-4 h-4" />
+                  Desconectar da TV
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={handlePromptGoogleCastDirect}
-                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 border border-blue-400/40 text-white font-semibold text-xs sm:text-sm shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2.5 cursor-pointer transition-all transform active:scale-[0.99]"
-              >
-                <Cast className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 text-blue-200" />
-                <span>Google Cast · Reprodução Direta na TV</span>
-              </button>
+              /* Disconnected State - Direct TV action */
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={handlePromptGoogleCastDirect}
+                  className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 border border-blue-400/40 text-white font-bold text-sm shadow-xl shadow-blue-500/25 flex items-center justify-center gap-2.5 cursor-pointer transition-all transform active:scale-[0.99]"
+                >
+                  <Cast className="w-5 h-5 shrink-0 text-blue-200" />
+                  <span>Reproduzir Diretamente na TV</span>
+                </button>
+
+                <div className="rounded-xl bg-white/[0.03] border border-white/10 p-3.5 space-y-2 text-slate-300">
+                  <p className="text-xs font-semibold text-white flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                    Como conectar:
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-slate-300">
+                    Certifique-se de que sua Smart TV, Chromecast ou Google TV está ligada e conectada na mesma rede Wi-Fi. Ao clicar no botão acima, selecione sua TV para iniciar a reprodução imediata.
+                  </p>
+                </div>
+              </div>
             )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-
-              <button
-                type="button"
-                onClick={handlePromptAirPlay}
-                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Tv className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                Apple AirPlay
-              </button>
-
-              <button
-                type="button"
-                onClick={handleDownloadM3u}
-                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Download className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                TV Smarters / IPTV (.M3U)
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCopyDirectStreamUrl}
-                className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {directCopied ? (
-                  <Check className="w-4 h-4 shrink-0 text-emerald-400" />
-                ) : (
-                  <Copy className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                )}
-                {directCopied ? 'URL Direta Copiada!' : 'Copiar URL Direta (IPTV)'}
-              </button>
-
-              {androidIntentUrl && (
-                <a
-                  href={androidIntentUrl}
-                  className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2"
-                >
-                  <Smartphone className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                  Abrir no Android (VLC / MX)
-                </a>
-              )}
-
-              {vlcStreamUrl && (
-                <a
-                  href={vlcStreamUrl}
-                  className="h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-semibold text-white flex items-center justify-center gap-2"
-                >
-                  <ExternalLink className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                  Abrir no VLC Player
-                </a>
-              )}
-            </div>
 
             {castStatusMsg && (
               <p className="text-[11px] text-amber-200 bg-amber-500/10 border border-amber-400/25 rounded-xl px-3 py-2">
                 {castStatusMsg}
               </p>
             )}
-
-            <div className="rounded-xl bg-black/40 border border-white/10 p-3 flex flex-col sm:flex-row items-center gap-3.5">
-              {castQrDataUrl && (
-                <img
-                  src={castQrDataUrl}
-                  alt="QR Code para abrir na Smart TV"
-                  className="w-24 h-24 rounded-xl bg-white p-1.5 shrink-0"
-                />
-              )}
-              <div className="space-y-1.5 min-w-0 text-center sm:text-left flex-1">
-                <p className="text-xs font-bold text-white flex items-center justify-center sm:justify-start gap-1.5">
-                  <Wifi className="w-3.5 h-3.5 shrink-0" style={{ color: accentColor }} />
-                  Mesma Rede Wi-Fi · Smart TV & TV Smarters
-                </p>
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Conecte sua Smart TV ou celular no mesmo Wi-Fi, aponte a câmera para o QR Code ou abra o endereço abaixo no navegador da TV.
-                </p>
-                {networkInfo?.preferredLanOrigin ? (
-                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
-                    <span className="px-2 py-0.5 rounded-md bg-white/10 border border-white/10 text-[11px] font-mono-tabular text-sky-300">
-                      {effectiveCastOrigin}
-                    </span>
-                    {hasLocalhostOrigin && (
-                      <button
-                        type="button"
-                        onClick={() => setUseLanOrigin((v) => !v)}
-                        className="text-[11px] font-semibold text-slate-300 hover:text-white underline cursor-pointer"
-                      >
-                        {useLanOrigin ? 'Usar URL atual' : 'Usar IP do Wi-Fi'}
-                      </button>
-                    )}
-                  </div>
-                ) : hasLocalhostOrigin ? (
-                  <p className="text-[11px] text-amber-200/90">
-                    Para espelhar em outro aparelho no Wi-Fi, acesse pelo IP local do servidor (ex: http://192.168.x.x:3000).
-                  </p>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={handleCopyCastLink}
-                  className="h-8 px-3 rounded-lg text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
-                  style={{ backgroundColor: accentColor }}
-                >
-                  {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {linkCopied ? 'Link Copiado!' : 'Copiar Link da TV (Wi-Fi)'}
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       )}

@@ -1701,7 +1701,7 @@ export function AdminPlayerTab({
               <label className="rounded-xl bg-black/30 border border-white/10 p-3 flex items-center justify-between gap-3 cursor-pointer">
                 <span className="text-xs font-semibold text-white flex items-center gap-2">
                   <Cast className="w-4 h-4 text-sky-400 shrink-0" />
-                  Botão Espelhar na TV
+                  Reproduzir Diretamente na TV
                 </span>
                 <input
                   type="checkbox"
